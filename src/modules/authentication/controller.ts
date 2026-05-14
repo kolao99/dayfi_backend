@@ -510,7 +510,8 @@ class AuthController {
           data.email.toLowerCase(),
           'Verification Successful',
           'Hello,\n\nYour verification was successful! Welcome to Dayfi.\n\nBest,\nDayfi Team',
-          `<p>Hello,</p><p>Your verification was successful! Welcome to Dayfi.</p><p>Best,<br>Dayfi Team</p>`
+          `<p>Hello,</p><p>Your verification was successful! Welcome to Dayfi.</p><p>Best,<br>Dayfi Team</p>`,
+          { throwOnFailure: false }
         );
       }
 
