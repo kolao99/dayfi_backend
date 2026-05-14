@@ -50,9 +50,19 @@ class AuthController {
         body.nonce != null && String(body.nonce).length > 0
           ? String(body.nonce)
           : undefined;
+      const firstName =
+        body.firstName != null && String(body.firstName).trim() !== ''
+          ? String(body.firstName).trim()
+          : undefined;
+      const lastName =
+        body.lastName != null && String(body.lastName).trim() !== ''
+          ? String(body.lastName).trim()
+          : undefined;
       const { user, data } = await this.authService.signInWithApple({
         identityToken: authToken,
         rawNonce: nonce,
+        firstName,
+        lastName,
       });
       const { password: _pw, ...safeUser } = user;
       const userData = {

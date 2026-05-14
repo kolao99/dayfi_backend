@@ -6,9 +6,17 @@ const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
  * Validates a Google OAuth **access token** (as sent by the Flutter client via
  * GoogleSignInAuthentication.accessToken) by calling Google's userinfo API.
  */
+export type GoogleUserinfo = {
+  sub: string;
+  email?: string;
+  given_name?: string;
+  family_name?: string;
+  name?: string;
+};
+
 export async function verifyGoogleAccessToken(
   accessToken: string
-): Promise<{ sub: string; email?: string }> {
+): Promise<GoogleUserinfo> {
   const token = accessToken?.trim();
   if (!token) {
     throw new Error('Missing Google access token');
@@ -47,5 +55,10 @@ export async function verifyGoogleAccessToken(
   }
 
   const email = typeof data.email === 'string' ? data.email : undefined;
-  return { sub, email };
+  const given_name =
+    typeof data.given_name === 'string' ? data.given_name : undefined;
+  const family_name =
+    typeof data.family_name === 'string' ? data.family_name : undefined;
+  const name = typeof data.name === 'string' ? data.name : undefined;
+  return { sub, email, given_name, family_name, name };
 }

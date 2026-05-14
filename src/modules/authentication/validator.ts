@@ -55,6 +55,8 @@ class AuthValidator {
         authToken: Joi.string().min(10).required(),
         nonce: Joi.string().allow('').optional(),
         fcmToken: Joi.string().allow('').optional(),
+        firstName: Joi.string().trim().max(100).allow('').optional(),
+        lastName: Joi.string().trim().max(100).allow('').optional(),
       });
 
       this.validateRequestBody(req, res, next, schema, 'appleAuthValidator');

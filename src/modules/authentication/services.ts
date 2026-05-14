@@ -8,6 +8,11 @@ import Twilio from 'twilio';
 import HashText from '../../shared/services/hashing';
 import { verifyAppleIdentityToken } from './appleVerify';
 import { verifyGoogleAccessToken } from './googleVerify';
+import {
+  fallbackFirstNameFromEmail,
+  namesFromAppleClient,
+  namesFromGoogleUserinfo,
+} from './socialNames';
 
 const client = Twilio(config?.TWILIO_ACCOUNT_SID, config?.TWILIO_AUTH_TOKEN);
 
@@ -343,6 +348,8 @@ class AuthService {
   signInWithApple = async (input: {
     identityToken: string;
     rawNonce?: string;
+    firstName?: string;
+    lastName?: string;
   }): Promise<{ user: any; data: any }> => {
     const { sub, email: emailFromApple } = await verifyAppleIdentityToken(
       input.identityToken,
@@ -367,10 +374,15 @@ class AuthService {
         `apple_${sub.replace(/[^a-zA-Z0-9._-]/g, '_')}@private.dayfi.app`;
       const randomPass = Crypto.randomBytes(24).toString('hex');
       const hashed = await HashText.getHash(randomPass);
+      const { firstName, lastName } = namesFromAppleClient(
+        input.firstName,
+        input.lastName,
+        email
+      );
       try {
         user = await this.dbService.singleTransaction<any>(
           'createAppleUser',
-          [email, hashed, 'Apple', 'User', '', appleRef],
+          [email, hashed, firstName, lastName, '', appleRef],
           enums.AUTH_QUERY
         );
       } catch (e: any) {
@@ -407,8 +419,10 @@ class AuthService {
   signInWithGoogle = async (input: {
     accessToken: string;
   }): Promise<{ user: any; data: any }> => {
-    const { sub, email: emailFromGoogle } = await verifyGoogleAccessToken(
-      input.accessToken
+    const profile = await verifyGoogleAccessToken(input.accessToken);
+    const { sub, email: emailFromGoogle } = profile;
+    const { firstName: gFirst, lastName: gLast } = namesFromGoogleUserinfo(
+      profile as Record<string, unknown>
     );
     const googleRef = `google:${sub}`;
     let user: any = await this.getAUser(googleRef);
@@ -429,10 +443,15 @@ class AuthService {
         `google_${sub.replace(/[^a-zA-Z0-9._-]/g, '_')}@private.dayfi.app`;
       const randomPass = Crypto.randomBytes(24).toString('hex');
       const hashed = await HashText.getHash(randomPass);
+      const firstName =
+        gFirst.trim() !== ''
+          ? gFirst
+          : fallbackFirstNameFromEmail(email.toLowerCase());
+      const lastName = gLast.trim();
       try {
         user = await this.dbService.singleTransaction<any>(
           'createAppleUser',
-          [email, hashed, 'Google', 'User', '', googleRef],
+          [email, hashed, firstName, lastName, '', googleRef],
           enums.AUTH_QUERY
         );
       } catch (e: any) {
