@@ -19,6 +19,12 @@ Router.post(
 );
 
 Router.post(
+  '/google-auth',
+  authValidator.googleAuthValidator,
+  authController.googleAuth
+);
+
+Router.post(
   '/signup',
   authValidator.createUserValidator,
   authMiddleware.getUser('validate'),
