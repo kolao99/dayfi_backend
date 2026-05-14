@@ -15,7 +15,7 @@
     "dev:listen": "lsof -nP -iTCP:${DAYFI_PORT:-3000} -sTCP:LISTEN || true",
     "lint": "eslint \"{src,apps,libs}/**/*.ts\" --fix",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "prepare": "husky install",
+    "prepare": "node scripts/npm-prepare-husky.cjs",
     "migrations": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate",
     "migrate:down": "node -r dotenv/config scripts/wait-for-postgres.cjs && node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate down --config database.json",
     "migrate-test:up": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate up --config database.json -e test",
