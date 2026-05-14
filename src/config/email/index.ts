@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { sendViaResend } from './resendSend';
 
 export type SendVerificationEmailOptions = {
   /**
@@ -8,6 +9,14 @@ export type SendVerificationEmailOptions = {
    */
   throwOnFailure?: boolean;
 };
+
+function resendSettings() {
+  const apiKey = process.env.DAYFI_RESEND_API_KEY?.trim();
+  const from =
+    process.env.DAYFI_RESEND_FROM?.trim() ||
+    'Dayfi <onboarding@resend.dev>';
+  return { apiKey, from };
+}
 
 function smtpSettings() {
   const host =
@@ -34,7 +43,7 @@ function createTransporter() {
 
   if (!user || !pass) {
     throw new Error(
-      'Email is not configured: set DAYFI_SMTP_USER and DAYFI_SMTP_PASS (see .env.example).'
+      'Email is not configured: set DAYFI_RESEND_API_KEY (recommended) or DAYFI_SMTP_USER and DAYFI_SMTP_PASS (see .env.example).'
     );
   }
 
@@ -50,6 +59,46 @@ function createTransporter() {
   });
 }
 
+async function sendWithSmtp(
+  userEmail: string,
+  subject: string,
+  text: string,
+  html: string
+): Promise<void> {
+  const { from } = smtpSettings();
+  const transporter = createTransporter();
+  const info = await transporter.sendMail({
+    from,
+    to: userEmail,
+    subject,
+    text,
+    html,
+  });
+  console.log('Email sent (SMTP): ' + info.messageId);
+}
+
+async function sendWithResend(
+  userEmail: string,
+  subject: string,
+  text: string,
+  html: string
+): Promise<void> {
+  const { apiKey, from } = resendSettings();
+  if (!apiKey) {
+    throw new Error(
+      'DAYFI_RESEND_API_KEY is missing. Add it in Railway or .env, or use SMTP vars instead.'
+    );
+  }
+  const { id } = await sendViaResend(apiKey, {
+    from,
+    to: userEmail,
+    subject,
+    text,
+    html,
+  });
+  console.log('Email sent (Resend): ' + id);
+}
+
 export async function sendVerificationEmail(
   userEmail: string,
   subject: string,
@@ -58,18 +107,14 @@ export async function sendVerificationEmail(
   options?: SendVerificationEmailOptions
 ) {
   const throwOnFailure = options?.throwOnFailure !== false;
-  const { from } = smtpSettings();
+  const useResend = Boolean(resendSettings().apiKey);
 
   try {
-    const transporter = createTransporter();
-    const info = await transporter.sendMail({
-      from,
-      to: userEmail,
-      subject,
-      text,
-      html,
-    });
-    console.log('Email sent: ' + info.messageId);
+    if (useResend) {
+      await sendWithResend(userEmail, subject, text, html);
+    } else {
+      await sendWithSmtp(userEmail, subject, text, html);
+    }
   } catch (error) {
     console.error('Error sending email:', error);
     if (throwOnFailure) {
