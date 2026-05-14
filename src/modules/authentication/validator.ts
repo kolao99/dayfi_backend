@@ -49,6 +49,17 @@ class AuthValidator {
       this.validateRequestBody(req, res, next, schema, 'loginValidator');
     };
 
+  appleAuthValidator: (req: Request, res: Response, next: NextFunction) => any =
+    async (req, res, next) => {
+      const schema = Joi.object({
+        authToken: Joi.string().min(10).required(),
+        nonce: Joi.string().allow('').optional(),
+        fcmToken: Joi.string().allow('').optional(),
+      });
+
+      this.validateRequestBody(req, res, next, schema, 'appleAuthValidator');
+    };
+
   logoutValidator: (req: Request, res: Response, next: NextFunction) => any =
     async (req, res, next) => {
       const schema = Joi.object({

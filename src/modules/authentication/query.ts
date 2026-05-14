@@ -2,6 +2,8 @@ type AuthQueries = {
   getUserWithProfile: string;
   getUserByPhoneNumber: string;
   createUser: string;
+  createAppleUser: string;
+  setAppleRefreshToken: string;
   updateProfile: string;
   updateUserOTP: string;
   updateUserPassword: string;
@@ -44,6 +46,19 @@ export const authQueries: AuthQueries = {
     INSERT INTO users (email, password, first_name, last_name, middle_name, user_type)
     VALUES ($1, $2, $3, $4, $5, 'user')
     RETURNING user_id, email, created_at, updated_at;
+`,
+
+  createAppleUser: `
+    INSERT INTO users (email, password, first_name, last_name, middle_name, user_type, refresh_token, status)
+    VALUES (LOWER(TRIM($1)), $2, $3, $4, COALESCE(NULLIF(TRIM($5), ''), ''), 'user', $6, 'active'::account_status)
+    RETURNING *;
+`,
+
+  setAppleRefreshToken: `
+    UPDATE users
+    SET refresh_token = $1, updated_at = NOW()
+    WHERE user_id = $2
+    RETURNING *;
 `,
 
   updateProfile: `

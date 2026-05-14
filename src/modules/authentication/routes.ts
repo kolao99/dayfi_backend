@@ -13,6 +13,12 @@ Router.post(
 );
 
 Router.post(
+  '/apple-auth',
+  authValidator.appleAuthValidator,
+  authController.appleAuth
+);
+
+Router.post(
   '/signup',
   authValidator.createUserValidator,
   authMiddleware.getUser('validate'),

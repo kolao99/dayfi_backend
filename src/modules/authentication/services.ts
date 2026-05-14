@@ -5,6 +5,8 @@ import Crypto from 'crypto';
 import axios from 'axios';
 import config from '../../config/env';
 import Twilio from 'twilio';
+import HashText from '../../shared/services/hashing';
+import { verifyAppleIdentityToken } from './appleVerify';
 
 const client = Twilio(config?.TWILIO_ACCOUNT_SID, config?.TWILIO_AUTH_TOKEN);
 
@@ -336,5 +338,69 @@ class AuthService {
       };
     }
   }
+
+  signInWithApple = async (input: {
+    identityToken: string;
+    rawNonce?: string;
+  }): Promise<{ user: any; data: any }> => {
+    const { sub, email: emailFromApple } = await verifyAppleIdentityToken(
+      input.identityToken,
+      input.rawNonce
+    );
+    const appleRef = `apple:${sub}`;
+    let user: any = await this.getAUser(appleRef);
+    if (!user && emailFromApple) {
+      const byEmail = await this.getAUser(emailFromApple.toLowerCase());
+      if (byEmail) {
+        await this.dbService.singleTransaction<any>(
+          'setAppleRefreshToken',
+          [appleRef, byEmail.user_id],
+          enums.AUTH_QUERY
+        );
+        user = await this.getAUser(appleRef);
+      }
+    }
+    if (!user) {
+      const email =
+        (emailFromApple && emailFromApple.toLowerCase().trim()) ||
+        `apple_${sub.replace(/[^a-zA-Z0-9._-]/g, '_')}@private.dayfi.app`;
+      const randomPass = Crypto.randomBytes(24).toString('hex');
+      const hashed = await HashText.getHash(randomPass);
+      try {
+        user = await this.dbService.singleTransaction<any>(
+          'createAppleUser',
+          [email, hashed, 'Apple', 'User', '', appleRef],
+          enums.AUTH_QUERY
+        );
+      } catch (e: any) {
+        if (e?.code === '23505') {
+          user = await this.getAUser(email.toLowerCase());
+          if (user?.user_id) {
+            await this.dbService.singleTransaction<any>(
+              'setAppleRefreshToken',
+              [appleRef, user.user_id],
+              enums.AUTH_QUERY
+            );
+            user = await this.getAUser(appleRef);
+          }
+        } else {
+          throw e;
+        }
+      }
+    }
+    if (!user?.user_id) {
+      throw new Error(
+        'Could not complete Sign in with Apple. Please try again.'
+      );
+    }
+    if (user.status === 'inactive') {
+      throw new Error(enums.USER_INACTIVE);
+    }
+    if (user.status === 'deactivated' || user.status === 'blacklisted') {
+      throw new Error(enums.USER_DEACTIVATED);
+    }
+    const data = await this.tokenService.generateAuthToken(user);
+    return { user, data };
+  };
 }
 export default AuthService;

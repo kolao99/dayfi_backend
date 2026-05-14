@@ -42,6 +42,48 @@ class AuthController {
     }
   };
 
+  appleAuth = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const body = (req as any).validatedBody ?? req.body;
+      const authToken = String(body.authToken ?? '');
+      const nonce =
+        body.nonce != null && String(body.nonce).length > 0
+          ? String(body.nonce)
+          : undefined;
+      const { user, data } = await this.authService.signInWithApple({
+        identityToken: authToken,
+        rawNonce: nonce,
+      });
+      const { password: _pw, ...safeUser } = user;
+      const userData = {
+        ...safeUser,
+        token: data.token,
+        expires: data.expires,
+      };
+      return success(res, enums.LOGIN_SUCCESSFUL, enums.HTTP_OK, userData);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      const lower = msg.toLowerCase();
+      if (
+        lower.includes('jwt') ||
+        lower.includes('token') ||
+        lower.includes('nonce') ||
+        lower.includes('apple') ||
+        lower.includes('expired') ||
+        lower.includes('signature')
+      ) {
+        return errorResponse(res, msg, enums.HTTP_UNAUTHORIZED);
+      }
+      if (
+        msg === enums.USER_INACTIVE ||
+        msg === enums.USER_DEACTIVATED
+      ) {
+        return errorResponse(res, msg, enums.HTTP_UNAUTHORIZED);
+      }
+      return errorResponse(res, msg, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
   validateEmail = async (req: Request, res: Response): Promise<any> => {
     try {
       const email = String(req.body.email).toLowerCase();
