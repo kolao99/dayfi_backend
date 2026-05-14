@@ -37,7 +37,8 @@ function lanIPv4Addresses(): string[] {
 
 async function main(app: Express): Promise<void> {
   await Env.validateEnv(envValidatorSchema);
-  if (Env.get<string>('NODE_ENV') === AppEnv.PRODUCTION) {
+  const onRailway = Boolean(process.env.RAILWAY_ENVIRONMENT);
+  if (Env.get<string>('NODE_ENV') === AppEnv.PRODUCTION || onRailway) {
     app.set('trust proxy', 1);
   }
   await db.connect();
@@ -57,7 +58,7 @@ async function main(app: Express): Promise<void> {
           `Port ${preferredPort} was in use; using ${port}. Set DAYFI_PORT=${port} in .env and your Flutter baseUrl to keep this port.`
         );
       }
-      if (NODE_ENV !== AppEnv.PRODUCTION) {
+      if (NODE_ENV !== AppEnv.PRODUCTION && !onRailway) {
         console.log(`Listening on http://0.0.0.0:${port} (simulator: http://127.0.0.1:${port})`);
         const lan = lanIPv4Addresses();
         if (lan.length) {
