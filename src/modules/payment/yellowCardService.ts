@@ -1,11 +1,41 @@
 import crypto from 'crypto';
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import config from '../../config/env';
+
+function normalizeBaseUrl(url: string): string {
+  return String(url ?? '').trim().replace(/\/+$/, '');
+}
+
+function yellowCardAxiosDetail(err: unknown): string {
+  if (!axios.isAxiosError(err)) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  const e = err as AxiosError<{ message?: string }>;
+  const status = e.response?.status;
+  const data = e.response?.data as unknown;
+  let body = '';
+  if (data != null && typeof data === 'object' && 'message' in data) {
+    body = String((data as { message?: string }).message ?? '');
+  } else if (typeof data === 'string') {
+    body = data;
+  } else if (data != null) {
+    try {
+      body = JSON.stringify(data);
+    } catch {
+      body = String(data);
+    }
+  }
+  const parts = [
+    status != null ? `HTTP ${status}` : null,
+    body || e.message || null,
+  ].filter(Boolean);
+  return parts.join(' — ') || 'Unknown error';
+}
 
 export class YellowCardService {
   private apiKey = config?.YELLOWCARD_API_KEY as string;
   private apiSecret = config?.YELLOWCARD_API_SECRET as string;
-  private baseUrl = config?.YELLOWCARD_BASE_URL as string;
+  private baseUrl = normalizeBaseUrl(config?.YELLOWCARD_BASE_URL as string);
 
   /** True when sandbox/production Yellow Card credentials are present. */
   isConfigured(): boolean {
@@ -49,7 +79,10 @@ export class YellowCardService {
       throw new Error('Yellow Card API key is not configured');
     }
 
-    console.log(path, method, body);
+    if (process.env.DAYFI_YELLOWCARD_DEBUG === 'true') {
+      console.log('[YellowCard]', method, path, body ? '(has body)' : '');
+    }
+
     const timestamp = new Date().toISOString();
     const signature = this.generateSignature(timestamp, path, method, body);
 
@@ -61,21 +94,27 @@ export class YellowCardService {
     };
   }
 
+  private url(path: string): string {
+    const p = path.startsWith('/') ? path : `/${path}`;
+    return `${this.baseUrl}${p}`;
+  }
+
   async fetchChannels(): Promise<any> {
     const path = '/business/channels';
     const method = 'GET';
     const headers = this.getHeaders(method, path);
 
     try {
-      const response = await axios.get(`${this.baseUrl}${path}`, { headers });
+      const response = await axios.get(this.url(path), {
+        headers,
+        timeout: 25_000,
+      });
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error fetching Yellow Card channels:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] fetchChannels:', detail);
       throw new Error(
-        'Unable to fetch Yellow Card channels at this time. Please try again.'
+        `Unable to fetch Yellow Card channels: ${detail}`.slice(0, 2000)
       );
     }
   }
@@ -86,34 +125,41 @@ export class YellowCardService {
     const headers = this.getHeaders(method, path);
 
     try {
-      const response = await axios.get(`${this.baseUrl}${path}`, { headers });
+      const response = await axios.get(this.url(path), {
+        headers,
+        timeout: 25_000,
+      });
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error fetching Yellow Card networks:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] fetchNetworks:', detail);
       throw new Error(
-        'Unable to fetch Yellow Card networks at this time. Please try again.'
+        `Unable to fetch Yellow Card networks: ${detail}`.slice(0, 2000)
       );
     }
   }
 
+  /**
+   * HMAC path must match the request path exactly (including query string).
+   * Previously signed `/business/rates` while calling `/business/rates?currency=…`, which breaks auth.
+   */
   async fetchExchangeRates(currency: string): Promise<any> {
-    const path = `/business/rates?currency=${currency}`;
+    const safe = encodeURIComponent(String(currency ?? '').trim());
+    const path = `/business/rates?currency=${safe}`;
     const method = 'GET';
-    const headers = this.getHeaders(method, '/business/rates');
+    const headers = this.getHeaders(method, path);
 
     try {
-      const response = await axios.get(`${this.baseUrl}${path}`, { headers });
+      const response = await axios.get(this.url(path), {
+        headers,
+        timeout: 25_000,
+      });
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error fetching Yellow Card exchange rates:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] fetchExchangeRates:', detail);
       throw new Error(
-        'Unable to fetch Yellow Card exchange rates at this time. Please try again.'
+        `Unable to fetch Yellow Card exchange rates: ${detail}`.slice(0, 2000)
       );
     }
   }
@@ -125,18 +171,20 @@ export class YellowCardService {
     const headers = this.getHeaders(method, path, body);
 
     try {
-      const response = await axios.post(`${this.baseUrl}${path}`, payload, {
+      const response = await axios.post(this.url(path), payload, {
         headers,
+        timeout: 25_000,
       });
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error creating Yellow Card collection request:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] createCollectionRequest:', detail);
       throw new Error(
         error.response?.data?.message ||
-          'Unable to create Yellow Card collection request at this time. Please try again.'
+          `Unable to create Yellow Card collection request: ${detail}`.slice(
+            0,
+            2000
+          )
       );
     }
   }
@@ -148,18 +196,20 @@ export class YellowCardService {
     const headers = this.getHeaders(method, path, body);
 
     try {
-      const response = await axios.post(`${this.baseUrl}${path}`, payload, {
+      const response = await axios.post(this.url(path), payload, {
         headers,
+        timeout: 25_000,
       });
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error creating Yellow Card payment request:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] createPaymentRequest:', detail);
       throw new Error(
         error.response?.data?.message ||
-          'Unable to create Yellow Card payment request at this time. Please try again.'
+          `Unable to create Yellow Card payment request: ${detail}`.slice(
+            0,
+            2000
+          )
       );
     }
   }
@@ -175,18 +225,16 @@ export class YellowCardService {
 
     try {
       const response = await axios.post(
-        `${this.baseUrl}${path}`,
+        this.url(path),
         { accountNumber, networkId },
-        { headers }
+        { headers, timeout: 25_000 }
       );
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error resolving Yellow Card bank account:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] resolveBankDetailsYC:', detail);
       throw new Error(
-        'Unable to verify Yellow Card account details at this time. Please try again.'
+        `Unable to verify Yellow Card account details: ${detail}`.slice(0, 2000)
       );
     }
   }
@@ -199,19 +247,17 @@ export class YellowCardService {
 
     try {
       const response = await axios.post(
-        `${this.baseUrl}${path}`,
+        this.url(path),
         { url, state },
-        { headers }
+        { headers, timeout: 25_000 }
       );
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error creating Yellow Card webhook:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] createWebhook:', detail);
       throw new Error(
         error.response?.data?.message ||
-          'Unable to create Yellow Card webhook at this time. Please try again.'
+          `Unable to create Yellow Card webhook: ${detail}`.slice(0, 2000)
       );
     }
   }
@@ -222,16 +268,16 @@ export class YellowCardService {
     const headers = this.getHeaders(method, path);
 
     try {
-      const response = await axios.get(`${this.baseUrl}${path}`, { headers });
+      const response = await axios.get(this.url(path), {
+        headers,
+        timeout: 25_000,
+      });
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error fetching Yellow Card webhooks:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] fetchWebhooks:', detail);
       throw new Error(
-        error.response?.data?.message ||
-          'Unable to fetch Yellow Card webhooks at this time. Please try again.'
+        `Unable to fetch Yellow Card webhooks: ${detail}`.slice(0, 2000)
       );
     }
   }
@@ -249,19 +295,17 @@ export class YellowCardService {
 
     try {
       const response = await axios.put(
-        `${this.baseUrl}${path}`,
+        this.url(path),
         { active, url, state },
-        { headers }
+        { headers, timeout: 25_000 }
       );
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error updating Yellow Card webhook:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] updateWebhook:', detail);
       throw new Error(
         error.response?.data?.message ||
-          'Unable to update Yellow Card webhook at this time. Please try again.'
+          `Unable to update Yellow Card webhook: ${detail}`.slice(0, 2000)
       );
     }
   }
@@ -272,18 +316,17 @@ export class YellowCardService {
     const headers = this.getHeaders(method, path);
 
     try {
-      const response = await axios.delete(`${this.baseUrl}${path}`, {
+      const response = await axios.delete(this.url(path), {
         headers,
+        timeout: 25_000,
       });
       return response.data;
     } catch (error: any) {
-      console.error(
-        'Error removing Yellow Card webhook:',
-        error.response?.data || error.message
-      );
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] removeWebhook:', detail);
       throw new Error(
         error.response?.data?.message ||
-          'Unable to remove Yellow Card webhook at this time. Please try again.'
+          `Unable to remove Yellow Card webhook: ${detail}`.slice(0, 2000)
       );
     }
   }
