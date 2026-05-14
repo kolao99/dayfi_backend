@@ -1,0 +1,25 @@
+# Requires Docker Desktop (or Docker daemon) running: `npm run db:up`
+# Host port 5433 avoids another Postgres already bound to 5432 (Homebrew / Postgres.app). Match DAYFI_DATABASE_URL.
+# Init SQL runs only on first start (empty volume). After PG upgrades, `docker compose down -v` then db:up.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - '5433:5432'
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: dayfi
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d dayfi']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    volumes:
+      - dayfi_pg_data:/var/lib/postgresql/data
+      - ./docker/initdb/01-public-create.sql:/docker-entrypoint-initdb.d/01-public-create.sql
+
+volumes:
+  dayfi_pg_data:

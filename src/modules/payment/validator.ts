@@ -1,0 +1,414 @@
+import Joi, { Schema } from 'joi';
+import { Request, Response, NextFunction } from 'express';
+import enums from '../../shared/lib/enums';
+import { errorResponse } from '../../shared/lib/api-response';
+
+class PaymentValidator {
+  private validateRequestBody(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    schema: Schema,
+    validatorName: string
+  ): any {
+    console.log(
+      `Validating request body in PaymentValidator::${validatorName}`
+    );
+    const { body } = req;
+    const { error, value } = schema.validate(body);
+
+    if (error) {
+      console.error(`Validation error in PaymentValidator::${validatorName}`);
+      return this.handleError(
+        res,
+        error.details[0].message.replace(/"/g, ''),
+        enums.HTTP_UNPROCESSABLE_ENTITY
+      );
+    }
+
+    console.log(`Validation successful in PaymentValidator::${validatorName}`);
+    req.validatedBody = value;
+    next();
+  }
+
+  private validateRequestQuery(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    schema: Joi.ObjectSchema,
+    validatorName: string
+  ): any {
+    console.log(
+      `Validating request query in PaymentValidator::${validatorName}`
+    );
+
+    const { error, value } = schema.validate(req.query, { abortEarly: false });
+
+    if (error) {
+      console.error(`Validation error in PaymentValidator::${validatorName}`);
+      return this.handleError(
+        res,
+        error.details.map((d) => d.message).join(', '),
+        enums.HTTP_UNPROCESSABLE_ENTITY
+      );
+    }
+
+    console.log(`Validation successful in PaymentValidator::${validatorName}`);
+    req.validatedQuery = value;
+    next();
+  }
+
+  resolveBankAccount = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      accountNumber: Joi.string().pattern(/^\d+$/).required(),
+      bankCode: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'resolveBankAccount');
+  };
+
+  chargeUserCard = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      cardNumber: Joi.string().pattern(/^\d+$/).required(),
+      cvv: Joi.string().pattern(/^\d+$/).required(),
+      expiryMonth: Joi.string().required(),
+      expiryYear: Joi.string().required(),
+      amount: Joi.number().positive().required(),
+      email: Joi.string().email().required(),
+      firstName: Joi.string().required(),
+      lastName: Joi.string().required(),
+      IP: Joi.string().required(),
+      redirectUrl: Joi.string().uri().optional(),
+      meta: Joi.any().optional(),
+      suggestedAuth: Joi.string().required(),
+      pin: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'chargeUserCard');
+  };
+
+  verifyCardCharge = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      transactionReference: Joi.string().required(),
+      otp: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'verifyCardCharge');
+  };
+
+  verifyPayment = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      transactionReference: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'verifyPayment');
+  };
+
+  chargeUserWithToken = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      token: Joi.string().required(),
+      amount: Joi.number().positive().required(),
+      email: Joi.string().email().required(),
+      firstname: Joi.string().required(),
+      lastname: Joi.string().required(),
+      IP: Joi.string().required(),
+      narration: Joi.string().optional(),
+      meta: Joi.any().optional(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'chargeUserWithToken');
+  };
+
+  transferToVirtualAccount = (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().required().messages({
+        'number.base': 'Amount must be a number',
+        'number.positive': 'Amount must be a positive number',
+        'any.required': 'Amount is required',
+      }),
+      dayfiId: Joi.string().trim().required().messages({
+        'string.base': 'Dayfi ID must be a string',
+        'any.required': 'Dayfi ID is required',
+      }),
+      pin: Joi.string().required(),
+    });
+
+    this.validateRequestBody(
+      req,
+      res,
+      next,
+      schema,
+      'transferToVirtualAccount'
+    );
+  };
+
+  bankTransfer = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().required().messages({
+        'number.base': 'Amount must be a number',
+        'number.positive': 'Amount must be a positive number',
+        'any.required': 'Amount is required',
+      }),
+      accountNumber: Joi.string().pattern(/^\d+$/).required(),
+      bankCode: Joi.string().required(),
+      bankName: Joi.string().required(),
+      accountName: Joi.string().required(),
+      fee: Joi.number().positive().required(),
+      pin: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'bankTransfer');
+  };
+
+  addDayfiId = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      dayfiId: Joi.string().trim().required().messages({
+        'string.base': 'Dayfi ID must be a string',
+        'any.required': 'Dayfi ID is required',
+      }),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'addDayfiId');
+  };
+
+  createWallet: (req: Request, res: Response, next: NextFunction) => any =
+    async (req, res, next) => {
+      const schema = Joi.object({
+        currency: Joi.string().required().valid('CAD', 'USD', 'GBP', 'EUR'),
+      });
+
+      this.validateRequestBody(req, res, next, schema, 'createWalletValidator');
+    };
+
+  createExchangeRate: (req: Request, res: Response, next: NextFunction) => any =
+    async (req, res, next) => {
+      const schema = Joi.object({
+        baseCurrency: Joi.string()
+          .trim()
+          .uppercase()
+          .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
+          .required(),
+        targetCurrency: Joi.string()
+          .trim()
+          .uppercase()
+          .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
+          .invalid(Joi.ref('base_currency'))
+          .required(),
+        rate: Joi.number().positive().required(),
+        source: Joi.string().trim().optional().default('manual'),
+      });
+
+      this.validateRequestBody(
+        req,
+        res,
+        next,
+        schema,
+        'createExchangeRateValidator'
+      );
+    };
+
+  getExchangeRate: (req: Request, res: Response, next: NextFunction) => any =
+    async (req, res, next) => {
+      const schema = Joi.object({
+        baseCurrency: Joi.string()
+          .trim()
+          .uppercase()
+          .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
+          .required(),
+        targetCurrency: Joi.string()
+          .trim()
+          .uppercase()
+          .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
+          .invalid(Joi.ref('baseCurrency'))
+          .required(),
+      });
+
+      const { error, value } = schema.validate(req.query);
+
+      if (error) {
+        return this.handleError(
+          res,
+          error.details[0].message.replace(/"/g, ''),
+          enums.HTTP_UNPROCESSABLE_ENTITY
+        );
+      }
+
+      req.validatedBody = value;
+      next();
+    };
+
+  swapCurrency: (req: Request, res: Response, next: NextFunction) => any =
+    async (req, res, next) => {
+      const schema = Joi.object({
+        fromCurrency: Joi.string()
+          .trim()
+          .uppercase()
+          .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
+          .required(),
+        toCurrency: Joi.string()
+          .trim()
+          .uppercase()
+          .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
+          .invalid(Joi.ref('from_currency'))
+          .required(),
+        amount: Joi.number().positive().required(),
+      });
+
+      this.validateRequestBody(req, res, next, schema, 'swapCurrencyValidator');
+    };
+
+  fetchWalletTransactions = (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+    const schema = Joi.object({
+      status: Joi.string().valid(
+        'pending-collection',
+        'success-collection',
+        'failed-collection',
+        'pending-payment',
+        'success-payment',
+        'failed-payment'
+      ),
+      startDate: Joi.date().iso(),
+      endDate: Joi.date().iso(),
+      search: Joi.string().min(1).max(255),
+      page: Joi.number().integer().min(1).default(1),
+      limit: Joi.number().integer().min(1).max(100).default(10),
+      sortOrder: Joi.string().valid('asc', 'desc').default('desc'),
+    });
+
+    const { error, value } = schema.validate(req.query);
+
+    if (error) {
+      return this.handleError(
+        res,
+        error.details[0].message.replace(/"/g, ''),
+        enums.HTTP_UNPROCESSABLE_ENTITY
+      );
+    }
+
+    req.validatedBody = value;
+    next();
+  };
+
+  fetchBeneficiaries = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      page: Joi.number().integer().min(1).default(1),
+      limit: Joi.number().integer().min(1).max(100).default(10),
+    });
+
+    const { error, value } = schema.validate(req.query);
+
+    if (error) {
+      return this.handleError(
+        res,
+        error.details[0].message.replace(/"/g, ''),
+        enums.HTTP_UNPROCESSABLE_ENTITY
+      );
+    }
+
+    req.validatedBody = value;
+    next();
+  };
+
+  fetchExchangeRates = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      currency: Joi.string().required(),
+    });
+
+    this.validateRequestQuery(req, res, next, schema, 'fetchExchangeRates');
+  };
+
+  createCollectionRequest = (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().required(),
+      currency: Joi.string().required(),
+      channelId: Joi.string().required(),
+      channelName: Joi.string().required(),
+      country: Joi.string().required(),
+      reason: Joi.string().optional(),
+      metadata: Joi.object().optional(),
+      recipient: Joi.object({
+        name: Joi.string().required(),
+        country: Joi.string().required(),
+        phone: Joi.string().required(),
+        address: Joi.string().required(),
+        dob: Joi.string().required(),
+        email: Joi.string().email().required(),
+        idNumber: Joi.string().required(),
+        idType: Joi.string().required(),
+      }).required(),
+      source: Joi.object({
+        accountNumber: Joi.string().required(),
+        accountType: Joi.string().required(),
+        networkId: Joi.string().required(),
+      }).required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'createCollectionRequest');
+  };
+
+  createPaymentRequest = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().required(),
+      collectionSequenceId: Joi.string().required(),
+      currency: Joi.string().required(),
+      channelId: Joi.string().required(),
+      country: Joi.string().required(),
+      reason: Joi.string().required(),
+      accountNumber: Joi.string().required(),
+      accountType: Joi.string().required(),
+      networkCountry: Joi.string().required(),
+      networkId: Joi.string().required(),
+      accountName: Joi.string().optional(),
+      metadata: Joi.object().optional(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'createPaymentRequest');
+  };
+
+  resolveBankDetailsYC = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      accountNumber: Joi.string().required(),
+      networkId: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'resolveBankDetailsYC');
+  };
+
+  createWebhook = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      url: Joi.string().uri().required(),
+      state: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'createWebhook');
+  };
+
+  updateWebhook = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      id: Joi.string().uuid().required(),
+      active: Joi.boolean().required(),
+      url: Joi.string().uri().required(),
+      state: Joi.string().required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'updateWebhook');
+  };
+
+  private handleError(res: Response, message: string, statusCode: number) {
+    errorResponse(res, message, statusCode);
+  }
+}
+
+export const paymentValidator = new PaymentValidator();

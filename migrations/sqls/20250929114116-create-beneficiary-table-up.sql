@@ -1,0 +1,21 @@
+CREATE TABLE beneficiaries (
+           id SERIAL PRIMARY KEY,
+           user_id VARCHAR(100) NOT NULL,
+           type VARCHAR(20) NOT NULL CHECK (type IN ('fiat', 'crypto')),
+           country VARCHAR(10) NOT NULL,
+           currency VARCHAR(10) NOT NULL,
+           account_number VARCHAR(30),
+           account_name VARCHAR(100),
+           bank_name VARCHAR(100),
+           bank_code VARCHAR(20),
+           wallet_address VARCHAR(255),
+           network VARCHAR(50),
+           asset VARCHAR(20),
+           dob DATE,
+           id_number VARCHAR(50),
+           id_type VARCHAR(20),
+           address TEXT,
+           phone VARCHAR(20),
+           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

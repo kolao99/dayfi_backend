@@ -1,0 +1,9 @@
+{
+	"development": {
+		"ENV": "DAYFI_DATABASE_URL"
+	},
+	"production": {
+		"ENV": "DAYFI_DATABASE_URL"
+	},
+	"sql-file" : true
+}
