@@ -13,6 +13,8 @@ import {
 import { sumBalancesToUsd } from './fxService';
 import {
   enqueueCryptoWalletProvision,
+  provisionCryptoWalletsForUser,
+  buildReceiveCryptoPayload,
   getCryptoWalletProvisionJob,
 } from './cryptoWalletProvision';
 import { getPayoutQuote } from './payoutQuoteService';
@@ -1098,38 +1100,47 @@ class PaymentController {
     }
   };
 
-  /** Receive flow: USDC Wallet (Stellar). */
+  /** Receive flow: USDC/EURC on Stellar + Ethereum (auto-provisions if missing). */
   getReceiveCrypto = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;
-      await this.paymentService.ensureUsdWallet(user?.user_id);
-      const row = await db.oneOrNone<{
+      const userId = user?.user_id as string;
+      await this.paymentService.ensureUserLedgerWallets(userId);
+
+      let row = await db.oneOrNone<{
         stellar_deposit_address: string | null;
         ethereum_deposit_address: string | null;
       }>(
         `SELECT stellar_deposit_address, ethereum_deposit_address
          FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
-        [user?.user_id]
+        [userId]
       );
-      if (!row?.stellar_deposit_address) {
-        return errorResponse(
-          res,
-          'Crypto wallet not provisioned. Call POST /payments/wallet-provision/start first.',
-          enums.HTTP_BAD_REQUEST
+
+      if (!row?.stellar_deposit_address || !row?.ethereum_deposit_address) {
+        await provisionCryptoWalletsForUser(userId);
+        row = await db.oneOrNone<{
+          stellar_deposit_address: string | null;
+          ethereum_deposit_address: string | null;
+        }>(
+          `SELECT stellar_deposit_address, ethereum_deposit_address
+           FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
+          [userId]
         );
       }
+
+      if (!row?.stellar_deposit_address || !row?.ethereum_deposit_address) {
+        return errorResponse(
+          res,
+          'Crypto wallet provisioning failed. Retry in a moment.',
+          enums.HTTP_SERVICE_UNAVAILABLE
+        );
+      }
+
       return success(
         res,
         enums.FETCHED_SUCCESSFULLY('Crypto receive details'),
         enums.HTTP_OK,
-        {
-          method: 'crypto',
-          network: 'stellar',
-          assets: ['USDC', 'EURC'],
-          stellarAddress: row.stellar_deposit_address,
-          ethereumAddress: row.ethereum_deposit_address,
-          creditsTo: PRIMARY_CURRENCY,
-        }
+        buildReceiveCryptoPayload(row)
       );
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);

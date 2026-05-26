@@ -6,6 +6,7 @@ import { success, errorResponse } from '../../shared/lib/api-response';
 import HashText from '../../shared/services/hashing';
 import Helper from '../../shared/utils/helper';
 import { sendVerificationEmail } from '../../config/email';
+import { bootstrapWalletsOnAuth } from '../payment/authWalletBootstrap';
 
 class AuthController {
   private readonly authService: AuthService;
@@ -25,6 +26,7 @@ class AuthController {
       const { data } = await this.authService.login(user);
       let userData;
       if (user) {
+        bootstrapWalletsOnAuth(user.user_id);
         userData = {
           ...user,
           token: data.token,
@@ -65,6 +67,7 @@ class AuthController {
         lastName,
       });
       const { password: _pw, ...safeUser } = user;
+      bootstrapWalletsOnAuth(user.user_id);
       const userData = {
         ...safeUser,
         token: data.token,
@@ -102,6 +105,7 @@ class AuthController {
         accessToken: authToken,
       });
       const { password: _pw, ...safeUser } = user;
+      bootstrapWalletsOnAuth(user.user_id);
       const userData = {
         ...safeUser,
         token: data.token,
@@ -510,6 +514,8 @@ class AuthController {
           { throwOnFailure: false }
         );
       }
+
+      bootstrapWalletsOnAuth(data.user_id);
 
       return success(
         res,

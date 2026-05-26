@@ -1,11 +1,16 @@
 /**
- * Async crypto wallet provisioning (Stellar + EVM) for stablecoin receive.
- * Mirrors dayfi.wallet patterns: BIP39 mnemonic, testnet friendbot / optional master funding, USDC trustline.
+ * Crypto wallet provisioning (Stellar + EVM) for USDC/EURC receive on testnet/mainnet.
+ * @see dayfi.wallet walletService.js
  */
 import crypto from 'node:crypto';
 import { db } from '../../config/database';
 import StellarSdk from '@stellar/stellar-sdk';
 import { ethers } from 'ethers';
+import {
+  buildReceiveTrustlineAssets,
+  isStellarTestnet,
+  resolveEthTokenContracts,
+} from '../../config/stellarIssuers';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const StellarHDWallet = require('stellar-hd-wallet') as {
@@ -19,6 +24,7 @@ const StellarHDWallet = require('stellar-hd-wallet') as {
 };
 
 const ALGORITHM = 'aes-256-gcm';
+const DEV_ENCRYPTION_KEY_HEX = 'a'.repeat(64);
 
 type JobStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
@@ -27,40 +33,38 @@ type JobRecord = {
   status: JobStatus;
   current_step: string;
   error: string | null;
-  /** Plain mnemonic until delivered once in GET status, then cleared. */
   mnemonicPending: string | null;
   recoveryDelivered: boolean;
 };
 
 const jobs = new Map<string, JobRecord>();
-
-const isTestnet = () =>
-  (process.env.STELLAR_NETWORK || 'testnet').toLowerCase() !== 'mainnet';
+const provisionLocks = new Map<string, Promise<void>>();
 
 const horizonUrl = () =>
   process.env.STELLAR_HORIZON_URL ||
-  (isTestnet()
+  (isStellarTestnet()
     ? 'https://horizon-testnet.stellar.org'
     : 'https://horizon.stellar.org');
 
 const networkPassphrase = () =>
-  isTestnet() ? StellarSdk.Networks.TESTNET : StellarSdk.Networks.PUBLIC;
-
-const usdcIssuer = () =>
-  process.env.STELLAR_USDC_ISSUER ||
-  process.env.USDC_ISSUER ||
-  (isTestnet()
-    ? 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
-    : 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN');
+  isStellarTestnet() ? StellarSdk.Networks.TESTNET : StellarSdk.Networks.PUBLIC;
 
 function getEncryptionKey(): Buffer {
   const keyHex = (process.env.WALLET_ENCRYPTION_KEY || '').trim();
-  if (!keyHex || keyHex.length !== 64 || !/^[0-9a-fA-F]+$/.test(keyHex)) {
+  const nodeEnv = (process.env.DAYFI_NODE_ENV || process.env.NODE_ENV || '')
+    .toLowerCase();
+  const effective =
+    keyHex && keyHex.length === 64 && /^[0-9a-fA-F]+$/.test(keyHex)
+      ? keyHex
+      : nodeEnv === 'production'
+        ? ''
+        : DEV_ENCRYPTION_KEY_HEX;
+  if (!effective) {
     throw new Error(
       'WALLET_ENCRYPTION_KEY must be set to 64 hex characters (32 bytes) for crypto wallet storage'
     );
   }
-  return Buffer.from(keyHex, 'hex');
+  return Buffer.from(effective, 'hex');
 }
 
 function encryptSecret(plain: string): string {
@@ -115,7 +119,6 @@ async function loadWalletRow(userId: string): Promise<{
   );
 }
 
-/** Stellar / EVM deposit addresses live on the unified USD wallet row. */
 async function ensureUsdWalletRow(userId: string): Promise<void> {
   const row = await loadWalletRow(userId);
   if (row) return;
@@ -177,7 +180,9 @@ async function fundWithFriendbot(publicKey: string): Promise<void> {
 
 async function fundFromMasterIfConfigured(userPublicKey: string): Promise<boolean> {
   const masterPublicKey = process.env.MASTER_WALLET_PUBLIC_KEY?.trim();
-  const masterSecretEnc = process.env.MASTER_WALLET_SECRET_KEY?.trim();
+  const masterSecretEnc =
+    process.env.MASTER_ENCRYPTED_SECRET_KEY?.trim() ||
+    process.env.MASTER_WALLET_SECRET_KEY?.trim();
   const fundingAmount = process.env.STELLAR_FUNDING_AMOUNT_XLM || '5';
   if (!masterPublicKey || !masterSecretEnc) return false;
 
@@ -189,8 +194,9 @@ async function fundFromMasterIfConfigured(userPublicKey: string): Promise<boolea
   let destExists = true;
   try {
     await server.loadAccount(userPublicKey);
-  } catch (err: any) {
-    if (err?.response?.status === 404) destExists = false;
+  } catch (err: unknown) {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 404) destExists = false;
     else throw err;
   }
 
@@ -223,38 +229,133 @@ async function fundFromMasterIfConfigured(userPublicKey: string): Promise<boolea
   return true;
 }
 
-async function addUsdcTrustline(stellarSecret: string): Promise<void> {
+async function fundStellarAccount(publicKey: string): Promise<void> {
+  if (isStellarTestnet()) {
+    const fundedByMaster = await fundFromMasterIfConfigured(publicKey);
+    if (!fundedByMaster) {
+      await fundWithFriendbot(publicKey);
+    }
+    return;
+  }
+  const ok = await fundFromMasterIfConfigured(publicKey);
+  if (!ok) {
+    throw new Error(
+      'Mainnet requires MASTER_WALLET_PUBLIC_KEY and MASTER_WALLET_SECRET_KEY to fund new Stellar accounts'
+    );
+  }
+}
+
+async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
   const server = new StellarSdk.Horizon.Server(horizonUrl());
   const keypair = StellarSdk.Keypair.fromSecret(stellarSecret);
   const publicKey = keypair.publicKey();
-  const usdc = new StellarSdk.Asset('USDC', usdcIssuer());
-  const account = await server.loadAccount(publicKey);
-  const nativeBalance = parseFloat(
-    String(
-      (account.balances as { asset_type?: string; balance?: string }[]).find(
-        (b) => b.asset_type === 'native'
-      )?.balance || '0'
-    )
-  );
-  if (nativeBalance < 0.5) {
-    throw new Error(
-      `Insufficient XLM (${nativeBalance}) on ${publicKey} to pay trustline fees`
+  const assets = buildReceiveTrustlineAssets();
+
+  for (const asset of assets) {
+    const account = await server.loadAccount(publicKey);
+    const already = (account.balances as { asset_code?: string; asset_issuer?: string }[]).some(
+      (b) =>
+        b.asset_code === asset.getCode() &&
+        b.asset_issuer === asset.getIssuer()
     );
+    if (already) continue;
+
+    const nativeBalance = parseFloat(
+      String(
+        (account.balances as { asset_type?: string; balance?: string }[]).find(
+          (b) => b.asset_type === 'native'
+        )?.balance || '0'
+      )
+    );
+    if (nativeBalance < 0.5) {
+      throw new Error(
+        `Insufficient XLM (${nativeBalance}) on ${publicKey} to pay trustline fees`
+      );
+    }
+
+    const tx = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: networkPassphrase(),
+    })
+      .addOperation(
+        StellarSdk.Operation.changeTrust({
+          asset,
+          limit: '10000000',
+        })
+      )
+      .setTimeout(60)
+      .build();
+    tx.sign(keypair);
+    await server.submitTransaction(tx);
+    await new Promise((r) => setTimeout(r, 800));
   }
-  const tx = new StellarSdk.TransactionBuilder(account, {
-    fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
-  })
-    .addOperation(
-      StellarSdk.Operation.changeTrust({
-        asset: usdc,
-        limit: '10000000',
-      })
-    )
-    .setTimeout(60)
-    .build();
-  tx.sign(keypair);
-  await server.submitTransaction(tx);
+}
+
+/** Idempotent: create Stellar + ETH wallets, fund testnet, add USDC/EURC trustlines. */
+export async function provisionCryptoWalletsForUser(userId: string): Promise<{
+  stellarAddress: string;
+  ethereumAddress: string;
+}> {
+  const uid = String(userId || '').trim();
+  if (!uid) throw new Error('Invalid user id');
+
+  const existing = provisionLocks.get(uid);
+  if (existing) {
+    await existing;
+    const row = await loadWalletRow(uid);
+    if (row?.stellar_deposit_address && row?.ethereum_deposit_address) {
+      return {
+        stellarAddress: row.stellar_deposit_address,
+        ethereumAddress: row.ethereum_deposit_address,
+      };
+    }
+  }
+
+  const work = (async () => {
+    await ensureUsdWalletRow(uid);
+    const row = await loadWalletRow(uid);
+    if (row?.stellar_deposit_address && row?.ethereum_deposit_address) {
+      return;
+    }
+
+    const mnemonic = StellarHDWallet.generateMnemonic({ entropyBits: 128 });
+    const hd = StellarHDWallet.fromMnemonic(mnemonic);
+    const stellarKp = hd.getKeypair(0);
+    const stellarPublic = stellarKp.publicKey();
+    const stellarSecret = stellarKp.secret();
+
+    const ethWallet = ethers.Wallet.createRandom();
+    const ethAddress = ethWallet.address;
+    const ethSecret = ethWallet.privateKey;
+
+    await fundStellarAccount(stellarPublic);
+    await addReceiveTrustlines(stellarSecret);
+
+    await persistCryptoWallet({
+      userId: uid,
+      stellarPublic,
+      stellarSecretEnc: encryptSecret(stellarSecret),
+      ethAddress,
+      ethSecretEnc: encryptSecret(ethSecret),
+      mnemonicEnc: encryptSecret(mnemonic),
+    });
+  })();
+
+  provisionLocks.set(uid, work);
+  try {
+    await work;
+  } finally {
+    provisionLocks.delete(uid);
+  }
+
+  const row = await loadWalletRow(uid);
+  if (!row?.stellar_deposit_address || !row?.ethereum_deposit_address) {
+    throw new Error('Crypto wallet provisioning did not persist addresses');
+  }
+  return {
+    stellarAddress: row.stellar_deposit_address,
+    ethereumAddress: row.ethereum_deposit_address,
+  };
 }
 
 function setJob(jobId: string, patch: Partial<JobRecord>) {
@@ -264,57 +365,25 @@ function setJob(jobId: string, patch: Partial<JobRecord>) {
 }
 
 async function runJob(jobId: string, userId: string): Promise<void> {
-  setJob(jobId, { status: 'processing', current_step: 'stellar_wallet', error: null });
+  const steps = [
+    'stellar_wallet',
+    'ethereum_wallet',
+    'fund_stellar',
+    'trustlines',
+    'finalize',
+  ] as const;
 
   try {
-    const mnemonic = StellarHDWallet.generateMnemonic({ entropyBits: 128 });
-    const hd = StellarHDWallet.fromMnemonic(mnemonic);
-    const stellarKp = hd.getKeypair(0);
-    const stellarPublic = stellarKp.publicKey();
-    const stellarSecret = stellarKp.secret();
-
-    setJob(jobId, { current_step: 'ethereum_wallet' });
-    const ethWallet = ethers.Wallet.createRandom();
-    const ethAddress = ethWallet.address;
-    const ethSecret = ethWallet.privateKey;
-
-    setJob(jobId, { current_step: 'fund_stellar' });
-
-    if (isTestnet()) {
-      const fundedByMaster = await fundFromMasterIfConfigured(stellarPublic);
-      if (!fundedByMaster) {
-        await fundWithFriendbot(stellarPublic);
-      }
-    } else {
-      const ok = await fundFromMasterIfConfigured(stellarPublic);
-      if (!ok) {
-        throw new Error(
-          'Mainnet requires MASTER_WALLET_PUBLIC_KEY and MASTER_WALLET_SECRET_KEY to fund new Stellar accounts'
-        );
-      }
-    }
-
-    setJob(jobId, { current_step: 'trustlines' });
-    await addUsdcTrustline(stellarSecret);
-
-    setJob(jobId, { current_step: 'finalize' });
-    await persistCryptoWallet({
-      userId,
-      stellarPublic,
-      stellarSecretEnc: encryptSecret(stellarSecret),
-      ethAddress,
-      ethSecretEnc: encryptSecret(ethSecret),
-      mnemonicEnc: encryptSecret(mnemonic),
-    });
-
+    setJob(jobId, { status: 'processing', current_step: steps[0], error: null });
+    await provisionCryptoWalletsForUser(userId);
     setJob(jobId, {
       status: 'completed',
       current_step: 'finalize',
-      mnemonicPending: mnemonic,
-      recoveryDelivered: false,
+      mnemonicPending: null,
+      recoveryDelivered: true,
     });
-  } catch (e: any) {
-    const msg = e?.message || String(e);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
     setJob(jobId, {
       status: 'failed',
       error: msg,
@@ -330,12 +399,13 @@ export async function enqueueCryptoWalletProvision(
   if (!uid) {
     throw new Error('Invalid user session');
   }
-  await ensureUsdWalletRow(uid);
+
   const row = await loadWalletRow(uid);
   if (!row) {
-    throw new Error('No wallet record found for user');
+    await ensureUsdWalletRow(uid);
   }
-  if (row.stellar_deposit_address && row.ethereum_deposit_address) {
+  const after = await loadWalletRow(uid);
+  if (after?.stellar_deposit_address && after?.ethereum_deposit_address) {
     const jobId = crypto.randomUUID();
     jobs.set(jobId, {
       userId: uid,
@@ -368,9 +438,12 @@ export function getCryptoWalletProvisionJob(
   const job = jobs.get(jobId);
   if (!job || job.userId !== userId) return null;
 
+  const ethTokens = resolveEthTokenContracts();
   const base: Record<string, unknown> = {
     status: job.status,
     current_step: job.current_step,
+    stellarNetwork: isStellarTestnet() ? 'testnet' : 'mainnet',
+    ethereumNetwork: ethTokens.network,
   };
   if (job.error) base.error = job.error;
 
@@ -387,4 +460,31 @@ export function getCryptoWalletProvisionJob(
   }
 
   return base;
+}
+
+export function buildReceiveCryptoPayload(row: {
+  stellar_deposit_address: string | null;
+  ethereum_deposit_address: string | null;
+}) {
+  const ethTokens = resolveEthTokenContracts();
+  return {
+    method: 'crypto',
+    network: 'stellar',
+    assets: ['USDC', 'EURC'],
+    stellarAddress: row.stellar_deposit_address,
+    ethereumAddress: row.ethereum_deposit_address,
+    stellarNetwork: isStellarTestnet() ? 'testnet' : 'mainnet',
+    ethereumNetwork: ethTokens.network,
+    stellarAssets: [
+      { code: 'USDC', network: 'stellar' },
+      { code: 'EURC', network: 'stellar' },
+    ],
+    ethereumTokens: {
+      USDC: ethTokens.usdc,
+      EURC: ethTokens.eurc,
+    },
+    /** No standard GBP stablecoin on Ethereum testnet/mainnet (unlike USDC/EURC). */
+    gbpCryptoSupported: false,
+    creditsTo: 'USD',
+  };
 }
