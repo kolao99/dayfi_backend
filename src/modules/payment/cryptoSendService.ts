@@ -179,6 +179,65 @@ export async function sendEthereumToken(params: {
   return { hash: receipt.hash, from: wallet.address, to };
 }
 
+export async function getCryptoBalances(userId: string): Promise<{
+  stellar: Record<string, string>;
+  ethereum: Record<string, string>;
+}> {
+  const row = await loadCryptoRow(userId);
+  const stellar: Record<string, string> = { USDC: '0', EURC: '0', XLM: '0' };
+  const ethereum: Record<string, string> = { USDC: '0', EURC: '0', ETH: '0' };
+
+  if (!row?.stellar_deposit_address) {
+    return { stellar, ethereum };
+  }
+
+  try {
+    const server = new StellarSdk.Horizon.Server(horizonUrl());
+    const account = await server.loadAccount(row.stellar_deposit_address);
+    for (const b of account.balances as {
+      asset_type?: string;
+      asset_code?: string;
+      balance?: string;
+    }[]) {
+      if (b.asset_type === 'native') stellar.XLM = b.balance ?? '0';
+      else if (b.asset_code === 'USDC') stellar.USDC = b.balance ?? '0';
+      else if (b.asset_code === 'EURC') stellar.EURC = b.balance ?? '0';
+    }
+  } catch {
+    /* account not funded yet */
+  }
+
+  if (row.ethereum_deposit_address) {
+    try {
+      const provider = new ethers.JsonRpcProvider(resolveEthRpc());
+      const ethBal = await provider.getBalance(row.ethereum_deposit_address);
+      ethereum.ETH = ethers.formatEther(ethBal);
+      const contracts = resolveEthTokenContracts();
+      const erc20 = [
+        ['USDC', contracts.usdc],
+        ['EURC', contracts.eurc],
+      ] as const;
+      for (const [code, tokenAddress] of erc20) {
+        const token = new ethers.Contract(
+          tokenAddress,
+          [
+            'function balanceOf(address) view returns (uint256)',
+            'function decimals() view returns (uint8)',
+          ],
+          provider
+        );
+        const bal = await token.balanceOf(row.ethereum_deposit_address);
+        const dec = await token.decimals();
+        ethereum[code] = ethers.formatUnits(bal, dec);
+      }
+    } catch {
+      /* rpc or contract read failed */
+    }
+  }
+
+  return { stellar, ethereum };
+}
+
 export async function routeCryptoSend(params: {
   userId: string;
   network: string;

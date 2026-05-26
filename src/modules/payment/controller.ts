@@ -18,6 +18,7 @@ import {
   getCryptoWalletProvisionJob,
 } from './cryptoWalletProvision';
 import {
+  getCryptoBalances,
   getCryptoSendConfig,
   routeCryptoSend,
 } from './cryptoSendService';
@@ -1105,6 +1106,22 @@ class PaymentController {
   };
 
   /** Receive flow: USDC/EURC on Stellar + Ethereum (auto-provisions if missing). */
+  getCryptoBalances = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      await provisionCryptoWalletsForUser(userId);
+      const balances = await getCryptoBalances(userId);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Crypto balances'),
+        enums.HTTP_OK,
+        balances
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
   getCryptoSendConfig = async (_req: Request, res: Response): Promise<any> => {
     return success(
       res,

@@ -226,6 +226,13 @@ Router.get(
   paymentController.getCryptoSendConfig
 );
 
+Router.get(
+  '/crypto/balances',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getCryptoBalances
+);
+
 Router.post(
   '/crypto/send',
   authMiddleware.getAuthToken,
