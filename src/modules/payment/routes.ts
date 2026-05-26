@@ -220,6 +220,22 @@ Router.get(
 );
 
 Router.get(
+  '/crypto/send-config',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getCryptoSendConfig
+);
+
+Router.post(
+  '/crypto/send',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.sendCrypto,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentController.sendCrypto
+);
+
+Router.get(
   '/send/quote',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,

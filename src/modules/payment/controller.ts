@@ -17,6 +17,10 @@ import {
   buildReceiveCryptoPayload,
   getCryptoWalletProvisionJob,
 } from './cryptoWalletProvision';
+import {
+  getCryptoSendConfig,
+  routeCryptoSend,
+} from './cryptoSendService';
 import { getPayoutQuote } from './payoutQuoteService';
 import {
   acceptInvestmentRisk,
@@ -1101,6 +1105,42 @@ class PaymentController {
   };
 
   /** Receive flow: USDC/EURC on Stellar + Ethereum (auto-provisions if missing). */
+  getCryptoSendConfig = async (_req: Request, res: Response): Promise<any> => {
+    return success(
+      res,
+      enums.FETCHED_SUCCESSFULLY('Crypto send config'),
+      enums.HTTP_OK,
+      getCryptoSendConfig()
+    );
+  };
+
+  sendCrypto = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const { to, amount, asset, network, memo } = req.body;
+
+      await provisionCryptoWalletsForUser(userId);
+
+      const result = await routeCryptoSend({
+        userId,
+        to: String(to),
+        amount: String(amount),
+        asset: String(asset),
+        network: String(network),
+        memo: memo ? String(memo) : undefined,
+      });
+
+      return success(
+        res,
+        'Crypto transfer submitted',
+        enums.HTTP_OK,
+        result
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
   getReceiveCrypto = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;

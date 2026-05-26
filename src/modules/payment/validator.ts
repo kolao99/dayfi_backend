@@ -431,6 +431,20 @@ class PaymentValidator {
     this.validateRequestBody(req, res, next, schema, 'createPaymentRequest');
   };
 
+  sendCrypto = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      to: Joi.string().trim().required(),
+      amount: Joi.string()
+        .pattern(/^\d+(\.\d+)?$/)
+        .required(),
+      asset: Joi.string().trim().uppercase().valid('USDC', 'EURC').required(),
+      network: Joi.string().trim().lowercase().valid('stellar', 'ethereum', 'eth').required(),
+      memo: Joi.string().max(28).optional(),
+      pin: Joi.string().required(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'sendCrypto');
+  };
+
   resolveBankDetailsYC = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       accountNumber: Joi.string().required(),

@@ -24,6 +24,7 @@
     "migrate-test:reset": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate reset --config database.json -e test",
     "yc:smoke": "ts-node -r dotenv/config scripts/yellowcard-smoke.ts",
     "grey:smoke": "ts-node -r dotenv/config scripts/grey-smoke.ts",
+    "db:clear-users": "ts-node -r dotenv/config scripts/clear-test-users.ts",
     "seed:create": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate create update-transaction-table --config database.json",
     "seed:down": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate down:seed --config database.json",
     "seed:reset": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate reset:seed --config database.json",
