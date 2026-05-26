@@ -3,6 +3,7 @@ import { errorResponse } from '../../shared/lib/api-response';
 import PaymentsService from './services';
 import enums from '../../shared/lib/enums';
 import HashText from '../../shared/services/hashing';
+import { DISPLAY_CURRENCIES, PRIMARY_CURRENCY } from './walletModel';
 
 class PaymentMiddleware {
   private readonly paymentsService: PaymentsService;
@@ -10,6 +11,14 @@ class PaymentMiddleware {
   constructor() {
     this.paymentsService = new PaymentsService();
   }
+
+  /** Sets default spend currency when the client omits `spendCurrency`. */
+  withSpendCurrency =
+    (defaultCurrency: string) =>
+    (req: Request, _res: Response, next: NextFunction): void => {
+      (req as any).spendCurrencyDefault = defaultCurrency;
+      next();
+    };
 
   checkWalletExists = async (
     req: Request,
@@ -74,6 +83,10 @@ class PaymentMiddleware {
     }
   };
 
+  /**
+   * Loads the wallet used for balance checks.
+   * Default: unified USD. Legacy Nigeria bank transfer: `spendCurrency: NGN`.
+   */
   checkWalletExistsByUserId = async (
     req: Request,
     res: Response,
@@ -81,8 +94,32 @@ class PaymentMiddleware {
   ): Promise<any> => {
     try {
       const userId: string = req.user?.user_id;
+      const spendCurrency = String(
+        req.body?.debitCurrency ??
+          req.body?.spendCurrency ??
+          req.body?.fromCurrency ??
+          req.query?.spendCurrency ??
+          (req as any).spendCurrencyDefault ??
+          PRIMARY_CURRENCY
+      )
+        .trim()
+        .toUpperCase();
 
-      const wallet = await this.paymentsService.getWalletByUserId(userId);
+      await this.paymentsService.ensureUserLedgerWallets(userId);
+
+      const allowed = DISPLAY_CURRENCIES as readonly string[];
+      const currency = allowed.includes(spendCurrency)
+        ? spendCurrency
+        : PRIMARY_CURRENCY;
+
+      let wallet = await this.paymentsService.getWalletByCurrency(
+        userId,
+        currency
+      );
+
+      if (!wallet) {
+        wallet = await this.paymentsService.getWalletByUserId(userId);
+      }
 
       if (!wallet) {
         console.log(
@@ -92,6 +129,8 @@ class PaymentMiddleware {
       }
 
       (req as any).wallet = wallet;
+      (req as any).spendCurrency = currency;
+      (req as any).debitCurrency = currency;
       return next();
     } catch (error) {
       next(error);
@@ -161,15 +200,23 @@ class PaymentMiddleware {
         }
 
         if (type === 'pin') {
+          if (!user?.transaction_pin) {
+            return errorResponse(
+              res,
+              'Set a transaction PIN before making transfers',
+              enums.HTTP_BAD_REQUEST
+            );
+          }
+
           let verifyHash;
 
           if (pin != null) {
             verifyHash = await HashText.verifyHash(
               pin,
-              String(user?.transaction_pin)
+              String(user.transaction_pin)
             );
           } else {
-            verifyHash = encryptedPin === user?.transaction_pin;
+            verifyHash = encryptedPin === user.transaction_pin;
           }
           if (!verifyHash) {
             console.log(

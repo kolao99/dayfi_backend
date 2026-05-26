@@ -1,16 +1,29 @@
+import crypto from 'node:crypto';
 import {
   fetchBanks,
   resolveBankDetails,
   chargeCard,
   initiateTransfer,
-  createVirtualAccount,
   chargeCardWithToken,
   verifyCharge,
   verifyPayment,
 } from './flutterwaveService';
+import { db } from '../../config/database';
 import DBService, { queries } from '../../shared/services/db.service';
 import enums from '../../shared/lib/enums';
 import config from '../../config/env';
+import {
+  DISPLAY_CURRENCIES,
+  LOCAL_SPEND_CURRENCY,
+  PRIMARY_CURRENCY,
+  WALLET_PROVIDER,
+  formatLedgerBalances,
+  formatPrdWalletDetails,
+} from './walletModel';
+import { creditUsdInflow, creditWalletInflow } from './inflowService';
+import { sumBalancesToUsd } from './fxService';
+import { transferByDayfiTag } from './p2pService';
+import { createVirtualAccount } from './flutterwaveService';
 
 type TransactionCountResult = { total: string | number };
 
@@ -57,108 +70,367 @@ class PaymentService {
     return response.data;
   }
 
+  private async createWalletRow(
+    userId: string,
+    currency: string,
+    provider: string
+  ): Promise<Wallet> {
+    const reference = `dayfi-${currency.toLowerCase()}-${userId}-${Date.now()}`;
+    const row = await this.dbService.singleTransaction<Wallet>(
+      'createOtherWallet',
+      [userId, reference, currency, provider],
+      enums.PAYMENT_QUERY
+    );
+    if (!row) {
+      throw new Error(`Failed to create ${currency} wallet`);
+    }
+    return row;
+  }
+
+  /** Unified USD balance — all inflows credit this wallet. */
+  async ensureUsdWallet(userId: string): Promise<Wallet> {
+    const existing = await this.dbService.singleTransaction<Wallet>(
+      'getUserWalletByCurrency',
+      [userId, PRIMARY_CURRENCY],
+      enums.PAYMENT_QUERY
+    );
+    if (existing) return existing;
+    return this.createWalletRow(
+      userId,
+      PRIMARY_CURRENCY,
+      WALLET_PROVIDER.PLATFORM
+    );
+  }
+
+  /** Optional NGN balance for local spend (tap-to-pay, etc.). */
+  async ensureNgnWallet(userId: string): Promise<Wallet> {
+    const existing = await this.dbService.singleTransaction<Wallet>(
+      'getUserWalletByCurrency',
+      [userId, LOCAL_SPEND_CURRENCY],
+      enums.PAYMENT_QUERY
+    );
+    if (existing) return existing;
+    return this.createWalletRow(
+      userId,
+      LOCAL_SPEND_CURRENCY,
+      WALLET_PROVIDER.PLATFORM
+    );
+  }
+
+  async ensureWalletForCurrency(
+    userId: string,
+    currency: string
+  ): Promise<Wallet> {
+    const c = String(currency).toUpperCase();
+    if (c === PRIMARY_CURRENCY) return this.ensureUsdWallet(userId);
+    if (c === LOCAL_SPEND_CURRENCY) return this.ensureNgnWallet(userId);
+    const existing = await this.dbService.singleTransaction<Wallet>(
+      'getUserWalletByCurrency',
+      [userId, c],
+      enums.PAYMENT_QUERY
+    );
+    if (existing) return existing;
+    return this.createWalletRow(userId, c, WALLET_PROVIDER.PLATFORM);
+  }
+
+  /**
+   * PRD V1: USD, GBP, EUR, NGN ledger wallets.
+   */
+  async ensureUserLedgerWallets(userId: string): Promise<Record<string, Wallet>> {
+    const entries = await Promise.all(
+      DISPLAY_CURRENCIES.map(async (currency) => {
+        const wallet = await this.ensureWalletForCurrency(userId, currency);
+        return [currency, wallet] as const;
+      })
+    );
+    return Object.fromEntries(entries);
+  }
+
+  async getWalletByCurrency(
+    userId: string,
+    currency: string
+  ): Promise<Wallet | null> {
+    return this.dbService.singleTransaction<Wallet>(
+      'getUserWalletByCurrency',
+      [userId, String(currency).toUpperCase()],
+      enums.PAYMENT_QUERY
+    );
+  }
+
+  async sumWalletBalancesUsd(userId: string): Promise<number> {
+    const wallets = await this.getWalletsByUserId(userId);
+    return sumBalancesToUsd(
+      wallets.map((w: Wallet) => ({
+        currency: w.currency,
+        balance: Number(w.balance ?? 0),
+      }))
+    );
+  }
+
+  formatPrdWalletResponse(wallets: Wallet[]) {
+    return formatPrdWalletDetails(
+      wallets as any,
+      0
+    );
+  }
+
+  /**
+   * Credit inbound funds to the wallet matching [targetCurrency] (PRD).
+   */
+  async creditWalletInflow(
+    userId: string,
+    amount: number,
+    fromCurrency: string,
+    targetCurrency: string,
+    source: 'grey' | 'stellar' | 'yellowcard' | 'flutterwave' | 'manual',
+    externalReference: string
+  ) {
+    const target = String(targetCurrency).toUpperCase();
+    await this.ensureWalletForCurrency(userId, target);
+    const wallet = await this.getWalletByCurrency(userId, target);
+    if (!wallet) {
+      throw new Error(`Wallet not found for ${target}`);
+    }
+    return creditWalletInflow({
+      userId,
+      walletId: wallet.wallet_id,
+      targetCurrency: target,
+      amount,
+      fromCurrency,
+      source,
+      externalReference,
+    });
+  }
+
+  /** @deprecated Use [ensureUserLedgerWallets] or [ensureUsdWallet]. */
+  async ensurePrimaryWallet(userId: string): Promise<Wallet> {
+    const { usd } = await this.ensureUserLedgerWallets(userId);
+    return usd;
+  }
+
+  async getUsdWallet(userId: string): Promise<Wallet | null> {
+    return this.dbService.singleTransaction<Wallet>(
+      'getUsdWalletByUserId',
+      [userId],
+      enums.PAYMENT_QUERY
+    );
+  }
+
+  async getNgnWallet(userId: string): Promise<Wallet | null> {
+    return this.dbService.singleTransaction<Wallet>(
+      'getUserWalletByCurrency',
+      [userId, LOCAL_SPEND_CURRENCY],
+      enums.PAYMENT_QUERY
+    );
+  }
+
+  getLedgerBalances(wallets: Wallet[]) {
+    return formatLedgerBalances(wallets);
+  }
+
+  /**
+   * Credits USD after an inflow (Grey, Stellar, Yellow Card collection, etc.).
+   */
+  async creditUnifiedUsdInflow(
+    userId: string,
+    amount: number,
+    fromCurrency: string,
+    source: 'grey' | 'stellar' | 'yellowcard' | 'manual',
+    externalReference?: string
+  ): Promise<{
+    usdAmount: number;
+    rate: number | null;
+    walletId: string;
+    duplicate?: boolean;
+  }> {
+    if (!externalReference) {
+      throw new Error('externalReference is required for idempotent inflows');
+    }
+    const usdWallet = await this.ensureUsdWallet(userId);
+    const { usdAmount, rate, duplicate } = await creditUsdInflow({
+      userId,
+      usdWalletId: usdWallet.wallet_id,
+      amount,
+      fromCurrency,
+      source,
+      externalReference,
+    });
+    return { usdAmount, rate, walletId: usdWallet.wallet_id, duplicate };
+  }
+
+  /**
+   * Yellow Card / external collection completed — convert if needed and credit USD.
+   */
+  async completeCollectionInflow(
+    sequenceId: string,
+    payload: {
+      amount?: number;
+      currency?: string;
+      usdAmount?: number;
+    } = {}
+  ): Promise<void> {
+    const tx = await this.dbService.singleTransaction<{
+      id: string;
+      user_id: string;
+      send_amount: string | number;
+      status: string;
+    }>('getWalletTransactionById', [sequenceId], enums.PAYMENT_QUERY);
+
+    if (!tx?.user_id) {
+      throw new Error(`Collection transaction not found: ${sequenceId}`);
+    }
+    if (String(tx.status).startsWith('success-collection')) {
+      return;
+    }
+
+    const fromCurrency = (
+      payload.currency ?? PRIMARY_CURRENCY
+    ).toUpperCase();
+    const rawAmount =
+      payload.usdAmount ??
+      payload.amount ??
+      Number(tx.send_amount ?? 0);
+
+    await this.creditWalletInflow(
+      tx.user_id,
+      rawAmount,
+      fromCurrency,
+      fromCurrency,
+      'yellowcard',
+      sequenceId
+    );
+
+    await this.updateTransactionStatus(sequenceId, 'success-collection');
+  }
+
+  /** @deprecated Name kept for callers; ensures ledger wallets (Grey accounts provisioned separately). */
   async createCustomerAndVirtualAccount(
     userId: string,
     email: string,
     bvn: string,
-    userName: string
+    _userName: string
   ): Promise<any> {
+    const wallets = await this.ensureUserLedgerWallets(userId);
     try {
-      const accountResponse = await createVirtualAccount(email, bvn);
-      const accountData = accountResponse.data.data;
-
-      const walletRecord = await this.dbService.singleTransaction(
-        'createWallet',
-        [
-          userId,
-          accountData.flw_reference,
-          userName,
-          accountData.accountnumber,
-          accountData.bankcode || 0,
-          accountData.bankname,
-          accountData.currency || 'NGN',
-        ],
-        enums.PAYMENT_QUERY
-      );
-
-      return {
-        success: true,
-        wallet: walletRecord,
-      };
-    } catch (error: any) {
-      console.error(
-        'Error creating customer and virtual account:',
-        error.message
-      );
-      throw new Error('Unable to create customer and virtual account');
+      await this.ensureNgnVirtualAccount(userId, email, bvn);
+    } catch (e) {
+      console.warn('NGN VA provisioning skipped:', (e as Error).message);
     }
+    return {
+      success: true,
+      wallet: wallets.USD,
+      wallets,
+    };
   }
 
+  /** Flutterwave permanent NGN virtual account (PRD fiat inflow). */
+  async ensureNgnVirtualAccount(
+    userId: string,
+    email: string,
+    bvn: string
+  ): Promise<Wallet & { account_number?: string; bank_name?: string }> {
+    const existing = await db.oneOrNone<{
+      wallet_id: string;
+      account_number: string | null;
+      bank_name: string | null;
+    }>(
+      `SELECT wallet_id, account_number, bank_name FROM wallets
+       WHERE user_id = $1 AND currency = 'NGN' LIMIT 1`,
+      [userId]
+    );
+    if (existing?.account_number) {
+      const w = await this.getWalletByCurrency(userId, LOCAL_SPEND_CURRENCY);
+      return { ...w!, account_number: existing.account_number, bank_name: existing.bank_name ?? undefined };
+    }
+    const ngn = await this.ensureNgnWallet(userId);
+
+    const response = await createVirtualAccount(email, bvn);
+    const data = response?.data?.data ?? response?.data;
+    const accountNumber = String(data?.account_number ?? data?.accountNumber ?? '');
+    const bankName = String(data?.bank_name ?? data?.bankName ?? 'Bank');
+    if (!accountNumber) {
+      throw new Error('Flutterwave did not return a virtual account number');
+    }
+
+    await db.none(
+      `UPDATE wallets SET account_number = $1, bank_name = $2, provider = $3, updated_at = CURRENT_TIMESTAMP
+       WHERE wallet_id = $4`,
+      [accountNumber, bankName, WALLET_PROVIDER.FLUTTERWAVE, ngn.wallet_id]
+    );
+
+    const updated = await this.getWalletByCurrency(userId, LOCAL_SPEND_CURRENCY);
+    return updated!;
+  }
+
+  /** Instant transfer to another user's Dayfi tag in any of the 4 currencies. */
+  async transferP2p(
+    senderUserId: string,
+    senderWalletId: string,
+    recipientDayfiId: string,
+    amount: number,
+    currency: string
+  ): Promise<{
+    success: boolean;
+    reference: string;
+    newBalance: number;
+    message: string;
+  }> {
+    const result = await transferByDayfiTag({
+      senderUserId,
+      senderWalletId,
+      recipientDayfiId,
+      amount,
+      currency: String(currency).toUpperCase(),
+    });
+    return {
+      success: true,
+      reference: result.reference,
+      newBalance: result.newBalance,
+      message: 'Transfer completed successfully',
+    };
+  }
+
+  /** @deprecated Use [transferP2p] */
+  async transferP2pUsd(
+    senderUserId: string,
+    senderWalletId: string,
+    recipientDayfiId: string,
+    amountUsd: number
+  ) {
+    return this.transferP2p(
+      senderUserId,
+      senderWalletId,
+      recipientDayfiId,
+      amountUsd,
+      PRIMARY_CURRENCY
+    );
+  }
+
+  /** @deprecated Use [transferP2pUsd]. Kept for route name compatibility. */
   async transferToVirtualAccount(
     amount: number,
-    name: string,
-    accountNumber: string,
-    bankCode: string,
-    bankName: string,
+    _name: string,
+    _accountNumber: string,
+    _bankCode: string,
+    _bankName: string,
     userId: string,
     walletId: string,
-    balance: number,
-    recipient: string
+    _balance: number,
+    _recipientWalletId: string,
+    recipientDayfiId: string
   ): Promise<any> {
-    try {
-      const reference = `tx-ref-${Date.now()}`;
-      const narration = 'Transfer to virtual account';
-      const meta = {
-        FirstName: name.split(' ')[0],
-        LastName: name.split(' ')[1] || '',
-      };
-
-      const response = await initiateTransfer(
-        bankCode,
-        accountNumber,
-        amount,
-        narration,
-        'NGN',
-        reference,
-        name,
-        meta
-      );
-
-      await this.dbService.singleTransaction(
-        'createWalletTransaction',
-        [
-          userId,
-          walletId,
-          recipient,
-          accountNumber,
-          bankCode,
-          bankName,
-          amount,
-          balance,
-          0,
-          'wallet_to_wallet',
-          'pending',
-          reference,
-          `Sending money via wallet`,
-          {},
-          userId,
-        ],
-        enums.PAYMENT_QUERY
-      );
-
-      return {
-        success: true,
-        transferCode: reference,
-        response: response,
-        message: 'Transfer initiated successfully',
-      };
-    } catch (error: any) {
-      console.error(
-        'Error transferring to virtual account:',
-        error?.response?.data || error.message
-      );
-      throw new Error('Unable to transfer funds at this time');
-    }
+    const wallet = await this.dbService.singleTransaction<Wallet>(
+      'getUserWalletByCurrency',
+      [userId, PRIMARY_CURRENCY],
+      enums.PAYMENT_QUERY
+    );
+    return this.transferP2p(
+      userId,
+      walletId,
+      recipientDayfiId,
+      amount,
+      wallet?.currency ?? PRIMARY_CURRENCY
+    );
   }
 
   async bankTransfer(
@@ -170,64 +442,76 @@ class PaymentService {
     fee: string,
     userId: string,
     walletId: string,
-    balance: number
+    spendCurrency: string
   ): Promise<any> {
-    try {
-      const reference = `tx-ref-${Date.now()}` + '_PMCKDU_1';
-      const narration = 'Bank Transfer';
-      const meta = {
-        FirstName: accountName.split(' ')[0],
-        LastName: accountName.split(' ')[1] || '',
-      };
+    const reference = `bank-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    const currency = String(spendCurrency || 'NGN').toUpperCase();
 
-      const response = await initiateTransfer(
-        bankCode,
-        accountNumber,
-        amount,
-        narration,
-        'NGN',
-        reference,
-        accountName,
-        meta
+    if (currency === PRIMARY_CURRENCY) {
+      throw new Error(
+        'USD bank payouts use Grey (configure DAYFI_GREY_*). Use Yellow Card for African corridors or spendCurrency NGN for Nigeria.'
       );
-
-      console.log(response);
-
-      await this.dbService.singleTransaction(
-        'createWalletTransaction',
-        [
-          userId,
-          walletId,
-          null,
-          accountNumber,
-          bankCode,
-          bankName,
-          amount,
-          balance,
-          fee,
-          'wallet_to_bank',
-          'pending',
-          reference,
-          `Sending money via wallet`,
-          {},
-          userId,
-        ],
-        enums.PAYMENT_QUERY
-      );
-
-      return {
-        success: true,
-        transferCode: reference,
-        response: response,
-        message: 'Transfer initiated successfully',
-      };
-    } catch (error: any) {
-      console.error(
-        'Error transferring to virtual account:',
-        error?.response?.data || error.message
-      );
-      throw new Error('Unable to transfer funds at this time');
     }
+
+    const feeNum = Number(fee) || 0;
+    const totalDebit = amount + feeNum;
+
+    await db.tx(async (t) => {
+      const wallet = await t.oneOrNone<{ balance: string; currency: string }>(
+        `SELECT balance, currency FROM wallets WHERE wallet_id = $1 AND user_id = $2 FOR UPDATE`,
+        [walletId, userId]
+      );
+      if (!wallet || wallet.currency !== LOCAL_SPEND_CURRENCY) {
+        throw new Error('NGN wallet required for local bank transfer');
+      }
+      if (Number(wallet.balance) < totalDebit) {
+        throw new Error('Insufficient NGN balance');
+      }
+      await t.none(
+        `UPDATE wallets SET balance = balance - $1, updated_at = CURRENT_TIMESTAMP WHERE wallet_id = $2`,
+        [totalDebit, walletId]
+      );
+    });
+
+    const narration = 'Bank Transfer';
+    const meta = {
+      FirstName: accountName.split(' ')[0],
+      LastName: accountName.split(' ')[1] || '',
+    };
+
+    const response = await initiateTransfer(
+      bankCode,
+      accountNumber,
+      amount,
+      narration,
+      LOCAL_SPEND_CURRENCY,
+      reference,
+      accountName,
+      meta
+    );
+
+    await this.dbService.singleTransaction(
+      'createWalletTransaction',
+      [
+        reference,
+        'pending-payment',
+        `bank:${bankName}`,
+        amount,
+        'bank',
+        null,
+        null,
+        userId,
+        null,
+      ],
+      enums.PAYMENT_QUERY
+    );
+
+    return {
+      success: true,
+      transferCode: reference,
+      response,
+      message: 'Transfer initiated successfully',
+    };
   }
 
   async verifyTransfer({
@@ -525,8 +809,11 @@ class PaymentService {
     );
   }
 
-  async getWalletByUserId(userId: string): Promise<any> {
-    return await this.dbService.singleTransaction(
+  /** Primary spending wallet (unified USD). */
+  async getWalletByUserId(userId: string): Promise<Wallet | null> {
+    const usd = await this.getUsdWallet(userId);
+    if (usd) return usd;
+    return this.dbService.singleTransaction<Wallet>(
       'getWalletByUserId',
       [userId],
       enums.PAYMENT_QUERY
@@ -614,10 +901,17 @@ class PaymentService {
   }
 
   async createWallet(userId: string, currency: string): Promise<Wallet | null> {
+    const normalized = currency.toUpperCase();
+    if (normalized === PRIMARY_CURRENCY) {
+      return this.ensureUsdWallet(userId);
+    }
+    if (normalized === LOCAL_SPEND_CURRENCY) {
+      return this.ensureNgnWallet(userId);
+    }
     const reference = `wallet-ref-${Date.now()}`;
-    return this.dbService.singleTransaction<any>(
+    return this.dbService.singleTransaction<Wallet>(
       'createOtherWallet',
-      [userId, reference, currency, 'dummy'],
+      [userId, reference, normalized, WALLET_PROVIDER.PLATFORM],
       enums.PAYMENT_QUERY
     );
   }
@@ -658,6 +952,9 @@ class PaymentService {
     if (fromCurrency === toCurrency) {
       throw new Error('Cannot swap the same currency');
     }
+
+    await this.ensureWalletForCurrency(userId, fromCurrency);
+    await this.ensureWalletForCurrency(userId, toCurrency);
 
     const fromWallet = await this.dbService.singleTransaction<any>(
       'getUserWalletByCurrency',
@@ -843,6 +1140,14 @@ class PaymentService {
     id: string,
     status: string
   ): Promise<any> {
+    const tx = await this.dbService.singleTransaction<{ status: string }>(
+      'getWalletTransactionById',
+      [id],
+      enums.PAYMENT_QUERY
+    );
+    if (tx && String(tx.status) === status) {
+      return tx;
+    }
     return this.dbService.singleTransaction<any>(
       'updateWalletTransactionPayment',
       [id, status],

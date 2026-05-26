@@ -6,7 +6,9 @@ type PaymentQueries = {
   updateWalletTransactionStatus: string;
   getWalletByDayfiId: string;
   getWalletByUserId: string;
+  getUsdWalletByUserId: string;
   getWalletsByUserId: string;
+  getWalletTransactionById: string;
   updateTransactionStatusToProcessing: string;
   getWalletTransactionByReference: string;
   creditWalletBalance: string;
@@ -53,6 +55,7 @@ export const paymentQueries: PaymentQueries = {
     UPDATE wallets
     SET dayfi_id = $1, updated_at = CURRENT_TIMESTAMP
     WHERE user_id = $2
+      AND currency = 'USD'
     RETURNING *;
   `,
 
@@ -114,11 +117,24 @@ export const paymentQueries: PaymentQueries = {
   `,
 
   getWalletByUserId: `
-    SELECT * FROM wallets WHERE user_id = $1 LIMIT 1;
+    SELECT * FROM wallets
+    WHERE user_id = $1
+    ORDER BY CASE currency WHEN 'USD' THEN 0 WHEN 'NGN' THEN 1 ELSE 2 END, created_at ASC
+    LIMIT 1;
+  `,
+
+  getUsdWalletByUserId: `
+    SELECT * FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1;
   `,
 
   getWalletsByUserId: `
-    SELECT * FROM wallets WHERE user_id = $1;
+    SELECT * FROM wallets
+    WHERE user_id = $1
+    ORDER BY CASE currency WHEN 'USD' THEN 0 WHEN 'NGN' THEN 1 ELSE 2 END, created_at ASC;
+  `,
+
+  getWalletTransactionById: `
+    SELECT * FROM wallet_transactions WHERE id = $1 LIMIT 1;
   `,
 
   getWalletTransactionByReference: `

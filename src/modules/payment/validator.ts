@@ -135,6 +135,16 @@ class PaymentValidator {
         'any.required': 'Dayfi ID is required',
       }),
       pin: Joi.string().required(),
+      debitCurrency: Joi.string()
+        .trim()
+        .uppercase()
+        .valid('NGN', 'USD', 'EUR', 'GBP')
+        .optional(),
+      spendCurrency: Joi.string()
+        .trim()
+        .uppercase()
+        .valid('NGN', 'USD', 'EUR', 'GBP')
+        .optional(),
     });
 
     this.validateRequestBody(
@@ -157,8 +167,19 @@ class PaymentValidator {
       bankCode: Joi.string().required(),
       bankName: Joi.string().required(),
       accountName: Joi.string().required(),
-      fee: Joi.number().positive().required(),
+      fee: Joi.number().min(0).required(),
       pin: Joi.string().required(),
+      /** USD = unified balance (default). NGN = legacy Flutterwave local payout. */
+      spendCurrency: Joi.string()
+        .trim()
+        .uppercase()
+        .valid('USD', 'NGN', 'EUR', 'GBP')
+        .default('NGN'),
+      debitCurrency: Joi.string()
+        .trim()
+        .uppercase()
+        .valid('USD', 'NGN', 'EUR', 'GBP')
+        .optional(),
     });
 
     this.validateRequestBody(req, res, next, schema, 'bankTransfer');
@@ -196,7 +217,7 @@ class PaymentValidator {
           .trim()
           .uppercase()
           .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
-          .invalid(Joi.ref('base_currency'))
+          .invalid(Joi.ref('baseCurrency'))
           .required(),
         rate: Joi.number().positive().required(),
         source: Joi.string().trim().optional().default('manual'),
@@ -237,9 +258,36 @@ class PaymentValidator {
         );
       }
 
-      req.validatedBody = value;
+      req.validatedQuery = value;
       next();
     };
+
+  getPayoutQuote = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amountUsd: Joi.number().positive().required(),
+      targetCurrency: Joi.string().trim().uppercase().min(3).max(4).required(),
+      feeUsd: Joi.number().min(0).optional(),
+    });
+    this.validateRequestQuery(req, res, next, schema, 'getPayoutQuote');
+  };
+
+  investmentDeposit = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().required(),
+      pin: Joi.string().required(),
+      idempotencyKey: Joi.string().max(255).optional(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'investmentDeposit');
+  };
+
+  investmentWithdraw = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().required(),
+      pin: Joi.string().required(),
+      idempotencyKey: Joi.string().max(255).optional(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'investmentWithdraw');
+  };
 
   swapCurrency: (req: Request, res: Response, next: NextFunction) => any =
     async (req, res, next) => {
@@ -253,9 +301,15 @@ class PaymentValidator {
           .trim()
           .uppercase()
           .valid('NGN', 'USD', 'EUR', 'GBP', 'CAD')
-          .invalid(Joi.ref('from_currency'))
+          .invalid(Joi.ref('fromCurrency'))
           .required(),
         amount: Joi.number().positive().required(),
+        pin: Joi.string().required(),
+        spendCurrency: Joi.string()
+          .trim()
+          .uppercase()
+          .valid('NGN', 'USD', 'EUR', 'GBP')
+          .optional(),
       });
 
       this.validateRequestBody(req, res, next, schema, 'swapCurrencyValidator');

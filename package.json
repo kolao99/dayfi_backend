@@ -22,6 +22,8 @@
     "migrate-test:down": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate down -c 100 --config database.json -e test",
     "migrate:reset": "node -r dotenv/config scripts/wait-for-postgres.cjs && node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate reset --config database.json",
     "migrate-test:reset": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate reset --config database.json -e test",
+    "yc:smoke": "ts-node -r dotenv/config scripts/yellowcard-smoke.ts",
+    "grey:smoke": "ts-node -r dotenv/config scripts/grey-smoke.ts",
     "seed:create": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate create update-transaction-table --config database.json",
     "seed:down": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate down:seed --config database.json",
     "seed:reset": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate reset:seed --config database.json",

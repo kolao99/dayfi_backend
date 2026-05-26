@@ -1,0 +1,819 @@
+openapi: 3.0.3
+info:
+  title: Dayfi API
+  version: 1.0.0
+  description: |
+    Dayfi backend API — unified **USD** ledger with optional **NGN** local spend.
+
+    - Human-readable reference: [API.md](./API.md)
+    - Architecture: [PAYMENTS_ARCHITECTURE.md](./PAYMENTS_ARCHITECTURE.md)
+
+    **Base path:** `/api/v1`
+
+servers:
+  - url: http://127.0.0.1:3000/api/v1
+    description: Local development
+  - url: https://api.dayfi.co/api/v1
+    description: Production (example)
+
+tags:
+  - name: Ledger
+    description: USD primary balance + NGN local spend
+  - name: Inflows
+    description: Receive money (Grey, Stellar, Yellow Card)
+  - name: Outflows
+    description: Send and payout from USD
+  - name: FX
+    description: Internal swaps and exchange rates
+  - name: Yellow Card
+    description: Secondary Africa / stablecoin rail
+  - name: Webhooks
+    description: Provider callbacks (no JWT)
+  - name: Legacy
+    description: Flutterwave / card flows
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ApiSuccess:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+        code:
+          type: integer
+        data:
+          nullable: true
+    ApiError:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        code:
+          type: integer
+        message:
+          type: string
+
+    LedgerBalances:
+      type: object
+      description: Canonical balance view for mobile
+      properties:
+        primary:
+          $ref: '#/components/schemas/BalanceSlot'
+        localSpend:
+          $ref: '#/components/schemas/BalanceSlot'
+        wallets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Wallet'
+
+    BalanceSlot:
+      type: object
+      properties:
+        currency:
+          type: string
+          example: USD
+        balance:
+          type: number
+          format: double
+        walletId:
+          type: string
+          nullable: true
+
+    Wallet:
+      type: object
+      properties:
+        wallet_id:
+          type: string
+        user_id:
+          type: string
+        balance:
+          type: number
+        currency:
+          type: string
+        provider:
+          type: string
+        dayfi_id:
+          type: string
+          nullable: true
+        stellar_deposit_address:
+          type: string
+          nullable: true
+        ethereum_deposit_address:
+          type: string
+          nullable: true
+
+    PaymentCapabilities:
+      type: object
+      properties:
+        primaryCurrency:
+          type: string
+          example: USD
+        stablecoinTopup:
+          type: boolean
+        yellowCardReady:
+          type: boolean
+        greyReady:
+          type: boolean
+        stellarDeposits:
+          type: boolean
+        localSpendNgn:
+          type: boolean
+        tapToPay:
+          type: boolean
+          description: Planned — not yet available
+        virtualNairaCard:
+          type: boolean
+          description: Planned — not yet available
+        investmentPocket:
+          type: boolean
+        receiveUsBank:
+          type: boolean
+        receiveCrypto:
+          type: boolean
+
+    PayoutQuote:
+      type: object
+      properties:
+        sendAmountUsd:
+          type: number
+        targetCurrency:
+          type: string
+        exchangeRate:
+          type: number
+        beneficiaryReceives:
+          type: number
+        feeUsd:
+          type: number
+        estimatedMinutes:
+          type: integer
+          example: 30
+
+    InvestmentSummary:
+      type: object
+      properties:
+        balance:
+          type: number
+        totalDeposited:
+          type: number
+        riskAccepted:
+          type: boolean
+        apyDisplayPercent:
+          type: number
+          example: 20
+        currency:
+          type: string
+          example: USD
+
+    InvestmentAmountRequest:
+      type: object
+      required: [amount, pin]
+      properties:
+        amount:
+          type: number
+        pin:
+          type: string
+        idempotencyKey:
+          type: string
+
+    SwapRequest:
+      type: object
+      required: [fromCurrency, toCurrency, amount]
+      properties:
+        fromCurrency:
+          type: string
+          enum: [USD, NGN, EUR, GBP, CAD]
+        toCurrency:
+          type: string
+          enum: [USD, NGN, EUR, GBP, CAD]
+        amount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+      example:
+        fromCurrency: USD
+        toCurrency: NGN
+        amount: 100
+
+    ExchangeRateUpsert:
+      type: object
+      required: [baseCurrency, targetCurrency, rate]
+      properties:
+        baseCurrency:
+          type: string
+          enum: [USD, NGN, EUR, GBP, CAD]
+        targetCurrency:
+          type: string
+          enum: [USD, NGN, EUR, GBP, CAD]
+        rate:
+          type: number
+          exclusiveMinimum: true
+        source:
+          type: string
+          default: manual
+
+    BankTransferRequest:
+      type: object
+      required:
+        - amount
+        - accountNumber
+        - bankCode
+        - bankName
+        - accountName
+        - fee
+        - pin
+      properties:
+        amount:
+          type: number
+        accountNumber:
+          type: string
+        bankCode:
+          type: string
+        bankName:
+          type: string
+        accountName:
+          type: string
+        fee:
+          type: number
+        pin:
+          type: string
+        spendCurrency:
+          type: string
+          enum: [USD, NGN]
+          default: NGN
+          description: |
+            NGN — legacy Flutterwave payout from NGN wallet.
+            USD — requires Grey (400 if not configured).
+
+    WalletTransferRequest:
+      type: object
+      required: [dayfiId, amount, pin]
+      properties:
+        dayfiId:
+          type: string
+        amount:
+          type: number
+        pin:
+          type: string
+        spendCurrency:
+          type: string
+          enum: [USD, NGN]
+          default: USD
+
+    YellowCardCollectionRequest:
+      type: object
+      required:
+        - amount
+        - currency
+        - channelId
+        - channelName
+        - country
+        - recipient
+        - source
+      properties:
+        amount:
+          type: number
+        currency:
+          type: string
+        channelId:
+          type: string
+        channelName:
+          type: string
+        country:
+          type: string
+        reason:
+          type: string
+        recipient:
+          type: object
+          required: [name, country, phone, address, dob, email, idNumber, idType]
+        source:
+          type: object
+          required: [accountNumber, accountType, networkId]
+
+    GreyWebhookPayload:
+      type: object
+      description: Normalized fields (provider shape may vary)
+      properties:
+        userId:
+          type: string
+        customerReference:
+          type: string
+        amount:
+          type: number
+        receivedAmount:
+          type: number
+        currency:
+          type: string
+        reference:
+          type: string
+        transactionReference:
+          type: string
+
+    YellowCardWebhookPayload:
+      type: object
+      required: [event, sequenceId]
+      properties:
+        event:
+          type: string
+          enum:
+            - COLLECTION.COMPLETE
+            - COLLECTION.FAILED
+            - PAYMENT.COMPLETE
+            - PAYMENT.FAILED
+        sequenceId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+        localAmount:
+          type: number
+        currency:
+          type: string
+        usdAmount:
+          type: number
+          description: If set, skips FX and credits this USD amount
+
+security:
+  - bearerAuth: []
+
+paths:
+  /payments/wallet-details:
+    get:
+      tags: [Ledger]
+      summary: Get USD + NGN balances
+      description: |
+        Ensures ledger wallets exist. Use `data.primary` for the main USD balance.
+      operationId: getWalletDetails
+      responses:
+        '200':
+          description: Ledger balances
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LedgerBalances'
+
+  /payments/capabilities:
+    get:
+      tags: [Ledger]
+      summary: Payment feature flags
+      operationId: getPaymentCapabilities
+      responses:
+        '200':
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PaymentCapabilities'
+
+  /payments/wallets/swap:
+    post:
+      tags: [FX]
+      summary: Swap between ledger wallets (e.g. USD → NGN)
+      operationId: swapCurrency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwapRequest'
+      responses:
+        '200':
+          description: Swap completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+        '400':
+          description: Insufficient balance or missing rate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /payments/exchange-rate:
+    get:
+      tags: [FX]
+      summary: Get platform FX rate
+      operationId: getExchangeRate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: baseCurrency
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [USD, NGN, EUR, GBP, CAD]
+        - name: targetCurrency
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [USD, NGN, EUR, GBP, CAD]
+      responses:
+        '200':
+          description: Rate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+    post:
+      tags: [FX]
+      summary: Upsert platform FX rate (ops)
+      operationId: createExchangeRate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExchangeRateUpsert'
+      responses:
+        '200':
+          description: Rate saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/wallet-provision/start:
+    post:
+      tags: [Inflows]
+      summary: Start Stellar/EVM deposit address provisioning
+      description: |
+        Addresses attach to the **USD** wallet. Poll status until completed.
+      operationId: startWalletProvision
+      responses:
+        '200':
+          description: Job started or already complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/wallet-provision/status/{jobId}:
+    get:
+      tags: [Inflows]
+      summary: Poll crypto wallet provisioning
+      operationId: getWalletProvisionStatus
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job status (may include one-time recovery_phrase)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/crypto-channels:
+    get:
+      tags: [Inflows]
+      summary: Stablecoin channels (Yellow Card)
+      operationId: fetchCryptoChannels
+      responses:
+        '200':
+          description: Channel list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/create-collections:
+    post:
+      tags: [Inflows, Yellow Card]
+      summary: Create Yellow Card collection
+      description: |
+        On `COLLECTION.COMPLETE` webhook, funds credit **USD** after FX.
+      operationId: createCollectionRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/YellowCardCollectionRequest'
+      responses:
+        '201':
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/create-payment-request:
+    post:
+      tags: [Outflows, Yellow Card]
+      summary: Create Yellow Card payout
+      operationId: createPaymentRequest
+      responses:
+        '201':
+          description: Payment request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/receive/options:
+    get:
+      tags: [Inflows]
+      summary: Receive method chooser (US Bank vs Crypto)
+      operationId: getReceiveOptions
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/receive/us-bank:
+    get:
+      tags: [Inflows]
+      summary: US Bank receive details (Grey VA)
+      description: |
+        Journey 1 — Receive via ACH/SWIFT/Fedwire. Creates VA row if missing.
+        Webhook credits USD on deposit.
+      operationId: getReceiveUsBank
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/receive/crypto:
+    get:
+      tags: [Inflows]
+      summary: USDC Wallet receive details (Stellar)
+      description: |
+        Journey 2 — Stellar address on USD wallet. Provision first via wallet-provision.
+      operationId: getReceiveCrypto
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+        '400':
+          description: Crypto not provisioned
+
+  /payments/send/quote:
+    get:
+      tags: [Outflows]
+      summary: Payout quote (rate, fees, beneficiary amount)
+      description: |
+        Journey 3 — Use before send confirmation. Configure USD→target via exchange-rate.
+      operationId: getPayoutQuote
+      parameters:
+        - name: amountUsd
+          in: query
+          required: true
+          schema:
+            type: number
+        - name: targetCurrency
+          in: query
+          required: true
+          schema:
+            type: string
+            example: GHS
+        - name: feeUsd
+          in: query
+          schema:
+            type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PayoutQuote'
+
+  /payments/investment:
+    get:
+      tags: [Ledger]
+      summary: Investment pocket summary
+      operationId: getInvestment
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/InvestmentSummary'
+
+  /payments/investment/accept-risk:
+    post:
+      tags: [Ledger]
+      summary: Accept investment risk disclosure
+      operationId: acceptInvestmentRisk
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/investment/deposit:
+    post:
+      tags: [Ledger]
+      summary: Deposit USD into investment pocket
+      operationId: depositInvestment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvestmentAmountRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/investment/withdraw:
+    post:
+      tags: [Ledger]
+      summary: Withdraw USD from investment pocket
+      operationId: withdrawInvestment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvestmentAmountRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/initiate-wallet-transfer:
+    post:
+      tags: [Outflows]
+      summary: Instant USD transfer to another Dayfi tag
+      description: |
+        Internal ledger P2P — debits sender USD, credits recipient USD immediately.
+      operationId: initiateWalletTransfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WalletTransferRequest'
+      responses:
+        '200':
+          description: Transfer initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/bank-transfer:
+    post:
+      tags: [Outflows, Legacy]
+      summary: Nigeria bank transfer (Flutterwave)
+      description: |
+        Default `spendCurrency` is NGN. USD requires Grey configuration.
+      operationId: bankTransfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankTransferRequest'
+      responses:
+        '200':
+          description: Transfer initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+        '400':
+          description: Grey required for USD spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /payments/grey/webhook:
+    post:
+      tags: [Webhooks, Inflows]
+      summary: Grey collection webhook
+      description: |
+        **Partial** — credits USD after FX. Signature verification when configured.
+        Planned — virtual account provisioning endpoints.
+      security: []
+      operationId: greyWebhook
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GreyWebhookPayload'
+      responses:
+        '200':
+          description: Received
+        '401':
+          description: Invalid signature
+
+  /payments/yc-webhook:
+    post:
+      tags: [Webhooks, Inflows]
+      summary: Yellow Card webhook
+      security: []
+      operationId: yellowCardWebhook
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/YellowCardWebhookPayload'
+      responses:
+        '200':
+          description: Received
+
+  /payments/channels:
+    get:
+      tags: [Yellow Card]
+      summary: List Yellow Card channels
+      operationId: fetchChannels
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/networks:
+    get:
+      tags: [Yellow Card]
+      summary: List Yellow Card networks
+      operationId: fetchNetworks
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  /payments/rates:
+    get:
+      tags: [Yellow Card]
+      summary: Yellow Card exchange rates
+      operationId: fetchYellowCardRates
+      parameters:
+        - name: currency
+          in: query
+          required: true
+          schema:
+            type: string
+            example: NGN
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSuccess'
+
+  # Planned — document for contract stability
+  /payments/grey/virtual-accounts:
+    get:
+      tags: [Inflows]
+      summary: List user Grey virtual accounts (planned)
+      description: |
+        **Not implemented.** Will return permanent VA details for USD, EUR, GBP, NGN.
+      operationId: listGreyVirtualAccountsPlanned
+      x-implementation-status: planned
+      responses:
+        '501':
+          description: Not implemented

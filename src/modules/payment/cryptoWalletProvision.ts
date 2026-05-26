@@ -108,22 +108,21 @@ async function loadWalletRow(userId: string): Promise<{
 } | null> {
   return db.oneOrNone(
     `SELECT wallet_id, stellar_deposit_address, ethereum_deposit_address
-     FROM wallets WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1`,
+     FROM wallets
+     WHERE user_id = $1 AND currency = 'USD'
+     ORDER BY created_at ASC LIMIT 1`,
     [userId]
   );
 }
 
-/**
- * NGN wallet rows are normally created at signup / verification; some accounts
- * may not have one yet. Provisioning needs a row to attach on-chain addresses.
- */
-async function ensurePrimaryWallet(userId: string): Promise<void> {
+/** Stellar / EVM deposit addresses live on the unified USD wallet row. */
+async function ensureUsdWalletRow(userId: string): Promise<void> {
   const row = await loadWalletRow(userId);
   if (row) return;
-  const reference = `wallet-ref-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
+  const reference = `wallet-ref-usd-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
   await db.none(
     `INSERT INTO wallets (user_id, balance, wallet_reference, currency, provider, created_at, updated_at)
-     VALUES ($1, 0.00, $2, 'NGN', 'dummy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+     VALUES ($1, 0.00, $2, 'USD', 'platform', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
     [userId, reference]
   );
 }
@@ -145,7 +144,7 @@ async function persistCryptoWallet(params: {
        crypto_mnemonic_encrypted = $5,
        updated_at = CURRENT_TIMESTAMP
      WHERE wallet_id = (
-       SELECT wallet_id FROM wallets WHERE user_id = $6 ORDER BY created_at ASC LIMIT 1
+       SELECT wallet_id FROM wallets WHERE user_id = $6 AND currency = 'USD' LIMIT 1
      )`,
     [
       params.stellarPublic,
@@ -331,7 +330,7 @@ export async function enqueueCryptoWalletProvision(
   if (!uid) {
     throw new Error('Invalid user session');
   }
-  await ensurePrimaryWallet(uid);
+  await ensureUsdWalletRow(uid);
   const row = await loadWalletRow(uid);
   if (!row) {
     throw new Error('No wallet record found for user');

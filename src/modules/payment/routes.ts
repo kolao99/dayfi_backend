@@ -38,7 +38,7 @@ Router.post(
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
   paymentValidator.addDayfiId,
-  paymentMiddleware.checkWalletExistsByUserId,
+  // No checkWalletExistsByUserId: handler ensures a primary wallet exists before updating dayfi_id.
   paymentController.addDayfiId
 );
 
@@ -87,6 +87,13 @@ Router.get(
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
   paymentController.getWalletDetails
+);
+
+Router.get(
+  '/wallets/balances',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getWalletBalances
 );
 
 Router.get(
@@ -167,8 +174,20 @@ Router.post(
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
   paymentValidator.swapCurrency,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentMiddleware.checkSufficientBalance,
   paymentController.swapCurrency
 );
+
+Router.post(
+  '/wallets/add/fiat/ngn',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.provisionNgnFiatAccount
+);
+
+Router.post('/webhooks/flutterwave', paymentController.flutterwaveWebhook);
 
 Router.post('/webhook', paymentController.processWebhookData);
 
@@ -177,6 +196,69 @@ Router.get(
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
   paymentController.getPaymentCapabilities
+);
+
+Router.get(
+  '/receive/options',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getReceiveOptions
+);
+
+Router.get(
+  '/receive/us-bank',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getReceiveUsBank
+);
+
+Router.get(
+  '/receive/crypto',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getReceiveCrypto
+);
+
+Router.get(
+  '/send/quote',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.getPayoutQuote,
+  paymentController.getPayoutQuoteHandler
+);
+
+Router.get(
+  '/investment',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getInvestment
+);
+
+Router.post(
+  '/investment/accept-risk',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.acceptInvestmentRiskHandler
+);
+
+Router.post(
+  '/investment/deposit',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.investmentDeposit,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentController.depositInvestment
+);
+
+Router.post(
+  '/investment/withdraw',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.investmentWithdraw,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentController.withdrawInvestment
 );
 
 Router.get(
@@ -263,5 +345,17 @@ Router.delete(
 );
 
 Router.post('/yc-webhook', paymentController.webhook);
+
+Router.post('/grey/webhook', paymentController.greyWebhook);
+
+Router.get(
+  '/grey/accounts',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getGreyAccounts
+);
+
+/** @deprecated — forwards to Grey webhook */
+Router.post('/fincra/webhook', paymentController.greyWebhook);
 
 export const paymentRouter = Router;

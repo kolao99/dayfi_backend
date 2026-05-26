@@ -200,21 +200,17 @@ class AuthController {
       await this.authService.updateUserProfile(updatedProfileData);
       if (profileData.dateOfBirth || profileData.gender) {
         await this.authService.updateUserLevel('level-1', user?.user_id);
-        // const wallets = await this.paymentService.getWalletsByUserId(
-        //   user?.user_id
-        // );
-        //   if (wallets.length < 1) {
-        //     await this.paymentService.createCustomerAndVirtualAccount(
-        //       user?.user_id,
-        //       user?.email,
-        //       profileData?.bvn,
-        //       user?.first_name + ' ' + user?.last_name
-        //     );
-        //   }
       }
 
       if (profileData.idType || profileData.idNumber) {
         await this.authService.updateUserLevel('level-2', user?.user_id);
+      }
+
+      const walletList = await this.paymentService.getWalletsByUserId(
+        user?.user_id
+      );
+      if (!walletList?.length) {
+        await this.paymentService.ensurePrimaryWallet(user?.user_id);
       }
 
       const profile = await this.authService.getUserById(user?.user_id);
@@ -260,23 +256,13 @@ class AuthController {
 
       await this.authService.updateUserLevel('level-1', user?.user_id);
 
-      const wallets = await this.paymentService.getWalletsByUserId(
-        user?.user_id
-      );
-      if (wallets.length < 1) {
-        await this.paymentService.createCustomerAndVirtualAccount(
-          user?.user_id,
-          user?.email,
-          user?.bvn,
-          `${user?.first_name} ${user?.last_name}`
-        );
-      }
+      await this.paymentService.ensurePrimaryWallet(user?.user_id);
 
       const profile = await this.authService.getUserById(user?.user_id);
 
       return success(
         res,
-        'Phone number verified successfully. Level 1 activated and wallet created.',
+        'Phone number verified successfully. Level 1 activated; USD and NGN wallets ready.',
         enums.HTTP_OK,
         profile
       );

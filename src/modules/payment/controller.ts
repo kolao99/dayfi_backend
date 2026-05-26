@@ -3,19 +3,36 @@ import PaymentService from './services';
 import { errorResponse, success } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
 import YellowCardService from './yellowCardService';
+import GreyService from './greyService';
 import config from '../../config/env';
+import {
+  PRIMARY_CURRENCY,
+  formatGreyAccountsList,
+  formatPrdWalletDetails,
+} from './walletModel';
+import { sumBalancesToUsd } from './fxService';
 import {
   enqueueCryptoWalletProvision,
   getCryptoWalletProvisionJob,
 } from './cryptoWalletProvision';
+import { getPayoutQuote } from './payoutQuoteService';
+import {
+  acceptInvestmentRisk,
+  depositToInvestment,
+  getInvestmentSummary,
+  withdrawFromInvestment,
+} from './investmentService';
+import { db } from '../../config/database';
 
 class PaymentController {
   private readonly paymentService: PaymentService;
   private readonly yellowCardService: YellowCardService;
+  private readonly greyService: GreyService;
 
   constructor() {
     this.paymentService = new PaymentService();
     this.yellowCardService = new YellowCardService();
+    this.greyService = new GreyService();
   }
 
   fetchBanks = async (_req: Request, res: Response): Promise<any> => {
@@ -57,7 +74,11 @@ class PaymentController {
     try {
       const chargePayload = req.body;
       const { user } = req;
+      await this.paymentService.ensureUsdWallet(user?.user_id);
       const wallet = await this.paymentService.getWalletByUserId(user?.user_id);
+      if (!wallet) {
+        return errorResponse(res, 'Wallet not found', enums.HTTP_NOT_FOUND);
+      }
 
       const response = await this.paymentService.chargeUserCard({
         ...chargePayload,
@@ -140,19 +161,33 @@ class PaymentController {
     }
   };
 
+  /** PRD alias: GET /payments/wallets/balances */
+  getWalletBalances = async (req: Request, res: Response): Promise<any> =>
+    this.getWalletDetails(req, res);
+
   getWalletDetails = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;
+
+      await this.paymentService.ensureUserLedgerWallets(user?.user_id);
 
       const wallets = await this.paymentService.getWalletsByUserId(
         user?.user_id
       );
 
+      const totalUsd = await sumBalancesToUsd(
+        wallets.map((w: any) => ({
+          currency: w.currency,
+          balance: Number(w.balance ?? 0),
+        }))
+      );
+      const data = formatPrdWalletDetails(wallets as any, totalUsd);
+
       return success(
         res,
         enums.FETCHED_SUCCESSFULLY('Wallets details'),
         enums.HTTP_OK,
-        wallets
+        data
       );
     } catch (err) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
@@ -164,7 +199,20 @@ class PaymentController {
       const { dayfiId } = req.body;
       const user = req.user;
 
-      await this.paymentService.addDayfiId(dayfiId, user?.user_id);
+      await this.paymentService.ensurePrimaryWallet(user?.user_id);
+
+      const wallet = await this.paymentService.addDayfiId(
+        dayfiId,
+        user?.user_id
+      );
+
+      if (!wallet) {
+        return errorResponse(
+          res,
+          'No wallet found for this account. Complete profile onboarding so a wallet can be created before setting a Dayfi Tag.',
+          enums.HTTP_BAD_REQUEST
+        );
+      }
 
       return success(res, 'Dayfi Id added successfully', enums.HTTP_OK, user);
     } catch (err) {
@@ -200,28 +248,28 @@ class PaymentController {
       const { amount, dayfiId } = req.body;
       const user = req.user;
       const wallet = (req as any).wallet;
-      const accountDetails = await this.paymentService.getWalletByDayfiId(
-        dayfiId
-      );
+      const recipient = await this.paymentService.getWalletByDayfiId(dayfiId);
+      if (!recipient) {
+        return errorResponse(res, 'Recipient Dayfi tag not found', enums.HTTP_NOT_FOUND);
+      }
 
-      const resolvedAccount =
-        await this.paymentService.transferToVirtualAccount(
-          amount,
-          accountDetails.account_name,
-          accountDetails.account_number,
-          accountDetails.bank_code,
-          accountDetails.bank_name,
-          user?.user_id,
-          wallet.wallet_id,
-          wallet.balance,
-          accountDetails.wallet_id
-        );
+      const currency = String(
+        (req as any).debitCurrency ?? wallet.currency ?? PRIMARY_CURRENCY
+      ).toUpperCase();
+
+      const result = await this.paymentService.transferP2p(
+        user?.user_id,
+        wallet.wallet_id,
+        dayfiId,
+        amount,
+        currency
+      );
 
       return success(
         res,
-        'Bank transfer initiated successfully',
+        'Transfer completed successfully',
         enums.HTTP_OK,
-        resolvedAccount
+        result
       );
     } catch (err) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
@@ -230,11 +278,29 @@ class PaymentController {
 
   bankTransfer = async (req: Request, res: Response): Promise<any> => {
     try {
-      const { amount, bankCode, accountNumber, accountName, bankName, fee } =
-        req.body;
+      const {
+        amount,
+        bankCode,
+        accountNumber,
+        accountName,
+        bankName,
+        fee,
+        spendCurrency = 'NGN',
+      } = req.body;
       const user = req.user;
       const wallet = (req as any).wallet;
-      console.log(wallet);
+
+      if (
+        String(spendCurrency).toUpperCase() === PRIMARY_CURRENCY &&
+        !this.greyService.isConfigured()
+      ) {
+        return errorResponse(
+          res,
+          'USD bank payouts require Grey. Use spendCurrency NGN for legacy Nigeria transfers, or configure DAYFI_GREY_*.',
+          enums.HTTP_BAD_REQUEST
+        );
+      }
+
       const resolvedAccount = await this.paymentService.bankTransfer(
         amount,
         accountName,
@@ -244,7 +310,7 @@ class PaymentController {
         fee,
         user?.user_id,
         wallet.wallet_id,
-        wallet.balance
+        spendCurrency
       );
 
       return success(
@@ -413,7 +479,8 @@ class PaymentController {
 
   getExchangeRate = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { baseCurrency, targetCurrency } = req.query;
+      const { baseCurrency, targetCurrency } =
+        (req as any).validatedQuery ?? req.query;
 
       const rate = await this.paymentService.getExchangeRate(
         String(baseCurrency),
@@ -501,14 +568,25 @@ class PaymentController {
   getPaymentCapabilities = async (_req: Request, res: Response): Promise<any> => {
     try {
       const yellowCardReady = this.yellowCardService.isConfigured();
+      const greyReady = this.greyService.isConfigured();
       const stablecoinTopup =
         Boolean(
           (config as { STABLECOIN_TOPUP_ENABLED?: boolean }).STABLECOIN_TOPUP_ENABLED
         ) && yellowCardReady;
 
       return success(res, enums.FETCHED_SUCCESSFULLY('Payment capabilities'), enums.HTTP_OK, {
+        primaryCurrency: PRIMARY_CURRENCY,
         stablecoinTopup,
         yellowCardReady,
+        greyReady,
+        fincraReady: false,
+        stellarDeposits: Boolean(process.env.WALLET_ENCRYPTION_KEY),
+        investmentPocket: true,
+        receiveUsBank: true,
+        receiveCrypto: true,
+        localSpendNgn: true,
+        tapToPay: false,
+        virtualNairaCard: false,
       });
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
@@ -838,18 +916,386 @@ class PaymentController {
     }
   };
 
+  /** Receive flow: US Bank Account (Grey USD account). */
+  getReceiveUsBank = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      await this.paymentService.ensureUserLedgerWallets(user?.user_id);
+      const accountName =
+        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() || 'Dayfi User';
+      const usdVa = await this.greyService.ensureVirtualAccount({
+        userId: user?.user_id,
+        currency: 'USD',
+        accountName,
+      });
+      const allAccounts = await this.greyService.listVirtualAccounts(
+        user?.user_id
+      );
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('US bank receive details'),
+        enums.HTTP_OK,
+        {
+          method: 'us_bank',
+          provider: 'grey',
+          currency: 'USD',
+          virtualAccount: usdVa,
+          accounts: allAccounts,
+          rails: ['ACH', 'SWIFT', 'Fedwire'],
+          creditsTo: PRIMARY_CURRENCY,
+          kybNote:
+            'Complete KYB in Grey dashboard to activate account numbers for deposits.',
+        }
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  /** Grey Accounts tab: USD, GBP, EUR, NGN (matches Grey sandbox UI). */
+  getGreyAccounts = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      await this.paymentService.ensureUserLedgerWallets(user?.user_id);
+      const accountName =
+        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() || 'Dayfi User';
+      const currencies: Array<'USD' | 'EUR' | 'GBP' | 'NGN'> = [
+        'USD',
+        'GBP',
+        'EUR',
+        'NGN',
+      ];
+      const accountsRaw = await Promise.all(
+        currencies.map((currency) =>
+          this.greyService.ensureVirtualAccount({
+            userId: user?.user_id,
+            currency,
+            accountName,
+          })
+        )
+      );
+      const wallets = await this.paymentService.getWalletsByUserId(user?.user_id);
+      const accounts = formatGreyAccountsList(accountsRaw, wallets as any);
+      const totalUsd = await sumBalancesToUsd(
+        wallets.map((w: any) => ({
+          currency: w.currency,
+          balance: Number(w.balance ?? 0),
+        }))
+      );
+
+      let providerSnapshot: unknown = null;
+      if (this.greyService.isConfigured()) {
+        try {
+          providerSnapshot = await this.greyService.fetchProviderAccounts();
+        } catch {
+          /* KYB pending or path mismatch — stored rows still returned */
+        }
+      }
+
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Grey accounts'),
+        enums.HTTP_OK,
+        {
+          provider: 'grey',
+          totalAvailableBalance: {
+            currency: PRIMARY_CURRENCY,
+            amount: totalUsd,
+            formatted: formatPrdWalletDetails(wallets as any, totalUsd)
+              .totalAvailableBalance.formatted,
+          },
+          operatingAccounts: accounts,
+          accounts,
+          providerSnapshot,
+          inflowPolicy: {
+            USD: 'Credits USD wallet',
+            EUR: 'Credits EUR wallet',
+            GBP: 'Credits GBP wallet',
+            NGN: 'Credits NGN wallet (Flutterwave)',
+          },
+        }
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  /** PRD: POST /wallets/add/fiat/ngn — Flutterwave VA on NGN wallet */
+  provisionNgnFiatAccount = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      const email = user?.email;
+      const bvn = user?.bvn ?? req.body?.bvn;
+      if (!email || !bvn) {
+        return errorResponse(
+          res,
+          'Email and BVN are required to create an NGN virtual account',
+          enums.HTTP_BAD_REQUEST
+        );
+      }
+      const wallet = await this.paymentService.ensureNgnVirtualAccount(
+        user.user_id,
+        email,
+        String(bvn)
+      );
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('NGN virtual account'),
+        enums.HTTP_OK,
+        {
+          currency: 'NGN',
+          accountNumber: (wallet as any).account_number,
+          bankName: (wallet as any).bank_name,
+          provider: 'flutterwave',
+        }
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  /** Flutterwave collection webhook → credit NGN wallet */
+  flutterwaveWebhook = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const data =
+        body.data && typeof body.data === 'object'
+          ? (body.data as Record<string, unknown>)
+          : body;
+      const amount = Number(data.amount ?? body.amount);
+      const reference = String(
+        data.tx_ref ?? data.flw_ref ?? data.id ?? body.tx_ref ?? ''
+      );
+      const email = String(data.email ?? body.email ?? '');
+      if (!reference || !Number.isFinite(amount) || amount <= 0) {
+        return errorResponse(res, 'Invalid webhook payload', enums.HTTP_BAD_REQUEST);
+      }
+
+      const wallet = await db.oneOrNone<{ user_id: string }>(
+        `SELECT w.user_id FROM wallets w
+         JOIN users u ON u.user_id = w.user_id
+         WHERE w.currency = 'NGN' AND (u.email = $1 OR w.account_number = $2)
+         LIMIT 1`,
+        [email, String(data.account_number ?? '')]
+      );
+      if (!wallet?.user_id) {
+        return errorResponse(res, 'User not found for deposit', enums.HTTP_NOT_FOUND);
+      }
+
+      const result = await this.paymentService.creditWalletInflow(
+        wallet.user_id,
+        amount,
+        'NGN',
+        'NGN',
+        'flutterwave',
+        reference
+      );
+
+      return res.status(200).json({ received: true, duplicate: result.duplicate });
+    } catch (err: any) {
+      console.error('Flutterwave webhook error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  };
+
+  /** Receive flow: USDC Wallet (Stellar). */
+  getReceiveCrypto = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      await this.paymentService.ensureUsdWallet(user?.user_id);
+      const row = await db.oneOrNone<{
+        stellar_deposit_address: string | null;
+        ethereum_deposit_address: string | null;
+      }>(
+        `SELECT stellar_deposit_address, ethereum_deposit_address
+         FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
+        [user?.user_id]
+      );
+      if (!row?.stellar_deposit_address) {
+        return errorResponse(
+          res,
+          'Crypto wallet not provisioned. Call POST /payments/wallet-provision/start first.',
+          enums.HTTP_BAD_REQUEST
+        );
+      }
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Crypto receive details'),
+        enums.HTTP_OK,
+        {
+          method: 'crypto',
+          network: 'stellar',
+          assets: ['USDC', 'EURC'],
+          stellarAddress: row.stellar_deposit_address,
+          ethereumAddress: row.ethereum_deposit_address,
+          creditsTo: PRIMARY_CURRENCY,
+        }
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  getReceiveOptions = async (_req: Request, res: Response): Promise<any> => {
+    return success(
+      res,
+      enums.FETCHED_SUCCESSFULLY('Receive options'),
+      enums.HTTP_OK,
+      {
+        options: [
+          { id: 'us_bank', label: 'US Bank Account', path: '/payments/receive/us-bank' },
+          { id: 'crypto', label: 'USDC Wallet', path: '/payments/receive/crypto' },
+        ],
+      }
+    );
+  };
+
+  getPayoutQuoteHandler = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const { amountUsd, targetCurrency, feeUsd } = req.query;
+      const quote = await getPayoutQuote({
+        amountUsd: Number(amountUsd),
+        targetCurrency: String(targetCurrency),
+        feeUsd: feeUsd != null ? Number(feeUsd) : undefined,
+      });
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Payout quote'),
+        enums.HTTP_OK,
+        quote
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  getInvestment = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const summary = await getInvestmentSummary(req.user?.user_id);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Investment pocket'),
+        enums.HTTP_OK,
+        summary
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  acceptInvestmentRiskHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      await acceptInvestmentRisk(req.user?.user_id);
+      return success(
+        res,
+        'Risk disclosure accepted',
+        enums.HTTP_OK,
+        { accepted: true }
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  depositInvestment = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const { amount, idempotencyKey } = req.body;
+      const usd = await this.paymentService.ensureUsdWallet(req.user?.user_id);
+      const result = await depositToInvestment({
+        userId: req.user?.user_id,
+        usdWalletId: usd.wallet_id,
+        amount: Number(amount),
+        idempotencyKey,
+      });
+      return success(
+        res,
+        'Funds invested successfully',
+        enums.HTTP_OK,
+        result
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  withdrawInvestment = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const { amount, idempotencyKey } = req.body;
+      const usd = await this.paymentService.ensureUsdWallet(req.user?.user_id);
+      const result = await withdrawFromInvestment({
+        userId: req.user?.user_id,
+        usdWalletId: usd.wallet_id,
+        amount: Number(amount),
+        idempotencyKey,
+      });
+      return success(
+        res,
+        'Withdrawal successful',
+        enums.HTTP_OK,
+        result
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  greyWebhook = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const signature = (req.headers['x-grey-signature'] ??
+        req.headers['x-webhook-signature']) as string | undefined;
+      const raw = JSON.stringify(req.body);
+      if (
+        this.greyService.isConfigured() &&
+        !this.greyService.verifyWebhookSignature(raw, signature)
+      ) {
+        return errorResponse(res, 'Invalid webhook signature', enums.HTTP_UNAUTHORIZED);
+      }
+
+      const parsed = this.greyService.parseCollectionWebhook(
+        req.body as Record<string, unknown>
+      );
+      if (!parsed) {
+        return errorResponse(res, 'Invalid webhook payload', enums.HTTP_BAD_REQUEST);
+      }
+
+      const target = String(parsed.currency).toUpperCase();
+      const result = await this.paymentService.creditWalletInflow(
+        parsed.userId,
+        parsed.amount,
+        parsed.currency,
+        target,
+        'grey',
+        parsed.reference
+      );
+
+      return res.status(200).json({ received: true, duplicate: result.duplicate });
+    } catch (err: any) {
+      console.error('Grey webhook error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  };
+
+  /** @deprecated Use POST /payments/grey/webhook */
+  fincraWebhook = async (req: Request, res: Response): Promise<any> =>
+    this.greyWebhook(req, res);
+
   webhook = async (req: Request, res: Response): Promise<any> => {
     try {
-      const { event, sequenceId } = req.body;
+      const { event, sequenceId, amount, currency, usdAmount, localAmount } =
+        req.body;
 
       console.log('Incoming Webhook:', req.body);
 
       switch (event) {
         case 'COLLECTION.COMPLETE':
-          await this.paymentService.updateTransactionStatus(
-            sequenceId,
-            'success-collection'
-          );
+          await this.paymentService.completeCollectionInflow(sequenceId, {
+            amount: Number(amount ?? localAmount),
+            currency: currency as string | undefined,
+            usdAmount: usdAmount != null ? Number(usdAmount) : undefined,
+          });
           break;
 
         case 'COLLECTION.FAILED':
