@@ -20,6 +20,8 @@ export type RecordWalletActivityParams = {
   beneficiaryName?: string;
   accountNumber?: string;
   bankName?: string;
+  /** Defaults to now; backfill should pass ledger_movements.created_at */
+  timestamp?: Date;
 };
 
 function activityKind(
@@ -34,6 +36,17 @@ function defaultStatus(
 ): string {
   if (status) return status;
   return direction === 'credit' ? 'success-collection' : 'success-payment';
+}
+
+/** Stable wallet_transactions.id for a ledger movement (must match SQL migration backfill). */
+export function buildWalletActivityTxId(
+  externalReference?: string | null,
+  fallbackId?: string
+): string {
+  const raw = String(externalReference ?? fallbackId ?? '').trim();
+  if (!raw) return '';
+  const normalized = raw.replace(/:/g, '-').replace(/[^a-zA-Z0-9_-]/g, '');
+  return `wt-${normalized.slice(0, 80)}`;
 }
 
 function channelForSource(
@@ -56,8 +69,12 @@ export async function recordWalletActivity(
   params: RecordWalletActivityParams
 ): Promise<{ recorded: boolean }> {
   const userId = String(params.userId || '').trim();
-  const id = String(params.id || '').trim();
+  const id =
+    String(params.id || '').trim() ||
+    buildWalletActivityTxId(params.externalReference);
   if (!userId || !id) return { recorded: false };
+
+  const extRef = params.externalReference?.trim() || null;
 
   const amount = Number(params.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { recorded: false };
@@ -82,6 +99,18 @@ export async function recordWalletActivity(
   );
   if (existing) return { recorded: false };
 
+  if (extRef) {
+    const existingByRef = await db.oneOrNone<{ id: string }>(
+      `SELECT id FROM wallet_transactions
+       WHERE user_id = $1 AND external_reference = $2
+       LIMIT 1`,
+      [userId, extRef]
+    );
+    if (existingByRef) return { recorded: false };
+  }
+
+  const recordedAt = params.timestamp ?? new Date();
+
   let beneficiaryId: string | null = null;
   const beneficiaryName =
     params.beneficiaryName?.trim() ||
@@ -103,7 +132,7 @@ export async function recordWalletActivity(
          id, user_id, beneficiary_id, status, reason,
          receive_amount, receive_channel, receive_network,
          ledger_currency, activity_kind, external_reference, timestamp
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         id,
         userId,
@@ -115,7 +144,8 @@ export async function recordWalletActivity(
         network,
         currency,
         kind,
-        params.externalReference ?? null,
+        extRef,
+        recordedAt,
       ]
     );
   } else {
@@ -124,7 +154,7 @@ export async function recordWalletActivity(
          id, user_id, beneficiary_id, status, reason,
          send_amount, send_channel, send_network,
          ledger_currency, activity_kind, external_reference, timestamp
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         id,
         userId,
@@ -136,7 +166,8 @@ export async function recordWalletActivity(
         network,
         currency,
         kind,
-        params.externalReference ?? null,
+        extRef,
+        recordedAt,
       ]
     );
   }
@@ -171,9 +202,7 @@ export async function backfillWalletActivitiesFromLedger(
   for (const row of rows) {
     const meta = row.metadata ?? {};
     const assetCode = String(meta.assetCode ?? row.currency).toUpperCase();
-    const txId = row.external_reference
-      ? `wt-${String(row.external_reference).replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 80)}`
-      : `wt-${row.id}`;
+    const txId = buildWalletActivityTxId(row.external_reference, row.id);
 
     const result = await recordWalletActivity({
       userId: row.user_id,
@@ -198,6 +227,8 @@ export async function backfillWalletActivitiesFromLedger(
         row.direction === 'credit'
           ? `${assetCode} deposit via ${row.source}`
           : `${row.currency} sent via ${row.source}`,
+      beneficiaryName: row.direction === 'credit' ? 'Wallet Top Up' : 'Recipient',
+      timestamp: row.created_at,
     });
     if (result.recorded) inserted += 1;
   }

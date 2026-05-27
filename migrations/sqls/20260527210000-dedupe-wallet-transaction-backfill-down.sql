@@ -1,0 +1,1 @@
+-- Data cleanup migration; no safe automatic rollback.

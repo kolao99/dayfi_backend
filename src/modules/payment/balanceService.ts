@@ -2,7 +2,10 @@ import crypto from 'node:crypto';
 import { db } from '../../config/database';
 import { PRIMARY_CURRENCY } from './walletModel';
 import { convertAmountToUsd } from './fxService';
-import { recordWalletActivity } from './walletActivityService';
+import {
+  buildWalletActivityTxId,
+  recordWalletActivity,
+} from './walletActivityService';
 
 export { convertAmountToUsd } from './fxService';
 
@@ -272,9 +275,10 @@ export async function creditWalletBalance(params: {
   if (params.source !== 'yellowcard') {
     const meta = params.metadata ?? {};
     const assetCode = String(meta.assetCode ?? currency).toUpperCase();
-    const txId = params.externalReference
-      ? `wt-${String(params.externalReference).replace(/:/g, '-')}`
-      : `wt-${movementId}`;
+    const txId = buildWalletActivityTxId(
+      params.externalReference,
+      movementId
+    );
     try {
       await recordWalletActivity({
         userId: params.userId,
