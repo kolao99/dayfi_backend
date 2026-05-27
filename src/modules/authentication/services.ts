@@ -118,6 +118,14 @@ class AuthService {
     );
   }
 
+  async saveUserBvn(userId: string, bvn: string): Promise<any> {
+    return this.dbService.singleTransaction(
+      'updateUserBvn',
+      [bvn, userId],
+      enums.AUTH_QUERY
+    );
+  }
+
   async updateUserProfile(profileData: {
     gender: string;
     dateOfBirth: string;

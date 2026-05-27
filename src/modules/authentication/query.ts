@@ -14,6 +14,7 @@ type AuthQueries = {
   updateUserLevel: string;
   changeUserPassword: string;
   updateUserTransactionPin: string;
+  updateUserBvn: string;
 };
 
 export const authQueries: AuthQueries = {
@@ -135,5 +136,11 @@ export const authQueries: AuthQueries = {
         SET
           transaction_pin = $2
         WHERE user_id = $1
+        RETURNING *`,
+
+  updateUserBvn: `
+        UPDATE users
+        SET bvn = $1, updated_at = NOW()
+        WHERE user_id = $2
         RETURNING *`,
 };

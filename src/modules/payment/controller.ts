@@ -1140,12 +1140,18 @@ class PaymentController {
   provisionNgnFiatAccount = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;
-      const email = user?.email;
-      const bvn = user?.bvn ?? req.body?.bvn;
+      const profile = await db.oneOrNone<{ email: string; bvn: string | null }>(
+        `SELECT email, bvn FROM users WHERE user_id = $1 LIMIT 1`,
+        [user.user_id]
+      );
+      const email = profile?.email ?? user?.email;
+      const bvn = String(
+        profile?.bvn ?? (user as { bvn?: string })?.bvn ?? req.body?.bvn ?? ''
+      ).trim();
       if (!email || !bvn) {
         return errorResponse(
           res,
-          'Email and BVN are required to create an NGN virtual account',
+          'Complete BVN and NIN verification to receive NGN by bank transfer',
           enums.HTTP_BAD_REQUEST
         );
       }

@@ -208,6 +208,7 @@ class AuthController {
 
       if (profileData.idType || profileData.idNumber) {
         await this.authService.updateUserLevel('level-2', user?.user_id);
+        await this.tryProvisionNgnVirtualAccount(user?.user_id);
       }
 
       const walletList = await this.paymentService.getWalletsByUserId(
@@ -229,6 +230,25 @@ class AuthController {
     } catch (err) {
       console.error(`Error while updating user profile: ${err.message}`);
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  private tryProvisionNgnVirtualAccount = async (
+    userId: string | undefined
+  ): Promise<void> => {
+    if (!userId) return;
+    try {
+      const profile = await this.authService.getUserById(userId);
+      const bvn = String(profile?.bvn ?? '').trim();
+      const email = String(profile?.email ?? '').trim();
+      if (!bvn || !email) return;
+      await this.paymentService.ensureNgnVirtualAccount(userId, email, bvn);
+    } catch (err: unknown) {
+      console.warn(
+        `[tryProvisionNgnVirtualAccount] skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
     }
   };
 
@@ -470,8 +490,11 @@ class AuthController {
         user?.last_name
       );
 
+      await this.authService.saveUserBvn(user.user_id, String(bvn).trim());
+      await this.tryProvisionNgnVirtualAccount(user.user_id);
+
       console.log(
-        `Info: BVN verified successfully. :::AuthController::resendOtp in auth.controller.js`
+        `Info: BVN verified successfully. :::AuthController::verifyBvn`
       );
 
       return success(res, 'BVN verified successfully', enums.HTTP_OK, response);

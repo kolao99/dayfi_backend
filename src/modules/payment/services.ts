@@ -375,7 +375,20 @@ class PaymentService {
     }
     const ngn = await this.ensureNgnWallet(userId);
 
-    const response = await createVirtualAccount(email, bvn);
+    const userRow = await db.oneOrNone<{
+      first_name: string;
+      last_name: string;
+      phone_number: string | null;
+    }>(
+      `SELECT first_name, last_name, phone_number FROM users WHERE user_id = $1`,
+      [userId]
+    );
+
+    const response = await createVirtualAccount(email, bvn, {
+      firstname: userRow?.first_name,
+      lastname: userRow?.last_name,
+      phonenumber: userRow?.phone_number ?? undefined,
+    });
     const root = response?.data as Record<string, unknown> | undefined;
     const data = (root?.data ?? root) as Record<string, unknown> | undefined;
     const accountNumber = String(
