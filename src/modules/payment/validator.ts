@@ -475,6 +475,30 @@ class PaymentValidator {
     this.validateRequestBody(req, res, next, schema, 'updateWebhook');
   };
 
+  validateBill = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      categoryCode: Joi.string().required(),
+      billerCode: Joi.string().required(),
+      itemCode: Joi.string().required(),
+      customerId: Joi.string().required(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'validateBill');
+  };
+
+  payBill = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      categoryCode: Joi.string().required(),
+      billerCode: Joi.string().required(),
+      itemCode: Joi.string().required(),
+      customerId: Joi.string().required(),
+      amount: Joi.number().positive().required(),
+      billerName: Joi.string().optional(),
+      itemName: Joi.string().optional(),
+      spendCurrency: Joi.string().valid('NGN').default('NGN'),
+    });
+    this.validateRequestBody(req, res, next, schema, 'payBill');
+  };
+
   private handleError(res: Response, message: string, statusCode: number) {
     errorResponse(res, message, statusCode);
   }

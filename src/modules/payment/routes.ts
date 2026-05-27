@@ -1,5 +1,6 @@
 import express from 'express';
 import { paymentController } from './controller';
+import { billsController } from './billsController';
 import { paymentValidator } from './validator';
 import { authMiddleware } from '../authentication/middleware';
 import { paymentMiddleware } from './middleware';
@@ -394,5 +395,53 @@ Router.get(
 
 /** @deprecated — forwards to Grey webhook */
 Router.post('/fincra/webhook', paymentController.greyWebhook);
+
+Router.get(
+  '/bills/categories',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  billsController.getCategories
+);
+
+Router.get(
+  '/bills/categories/:category/billers',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  billsController.getBillers
+);
+
+Router.get(
+  '/bills/billers/:billerCode/items',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  billsController.getItems
+);
+
+Router.post(
+  '/bills/validate',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.validateBill,
+  billsController.validateBill
+);
+
+Router.post(
+  '/bills/pay',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.payBill,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.withSpendCurrency('NGN'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentMiddleware.checkSufficientBalance,
+  billsController.payBill
+);
+
+Router.get(
+  '/bills/status/:reference',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  billsController.getStatus
+);
 
 export const paymentRouter = Router;

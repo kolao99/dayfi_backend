@@ -19,7 +19,8 @@ export type LedgerSource =
   | 'bank_out'
   | 'investment'
   | 'manual'
-  | 'card';
+  | 'card'
+  | 'bill_pay';
 
 export type CreditResult = {
   usdAmount: number;

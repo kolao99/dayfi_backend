@@ -254,3 +254,127 @@ export const initiateTransfer = async (
 
   return unwrapData<Record<string, unknown>>(root);
 };
+
+function assertFlutterwaveSuccess(payload: unknown, fallback: string): unknown {
+  const root = payload as Record<string, unknown>;
+  const status = String(root?.status ?? '').toLowerCase();
+  if (status !== 'success') {
+    throw new Error(String(root?.message ?? fallback));
+  }
+  return root?.data ?? root;
+}
+
+/** Top Nigerian bill categories exposed in the Dayfi app. */
+export const DAYFI_BILL_CATEGORY_CODES = [
+  'AIRTIME',
+  'MOBILEDATA',
+  'CABLEBILLS',
+  'INTSERVICE',
+  'UTILITYBILLS',
+] as const;
+
+export async function fetchBillCategories(): Promise<unknown[]> {
+  let response;
+  try {
+    response = await axios.get(`${baseUrl()}/v3/bill-categories`, {
+      headers: v3Headers(),
+    });
+  } catch {
+    response = await axios.get(`${baseUrl()}/v3/bills/categories`, {
+      headers: v3Headers(),
+    });
+  }
+  const data = assertFlutterwaveSuccess(
+    response.data,
+    'Failed to fetch bill categories'
+  );
+  const rows = Array.isArray(data) ? data : [];
+  return rows.filter((row) => {
+    const r = row as Record<string, unknown>;
+    const code = String(r.code ?? '').toUpperCase();
+    return (DAYFI_BILL_CATEGORY_CODES as readonly string[]).includes(code);
+  });
+}
+
+export async function fetchBillBillers(
+  categoryCode: string,
+  country = 'NG'
+): Promise<unknown[]> {
+  const category = String(categoryCode).toUpperCase();
+  const response = await axios.get(
+    `${baseUrl()}/v3/bills/${encodeURIComponent(category)}/billers`,
+    { headers: v3Headers(), params: { country } }
+  );
+  const data = assertFlutterwaveSuccess(
+    response.data,
+    'Failed to fetch billers'
+  );
+  return Array.isArray(data) ? data : [];
+}
+
+export async function fetchBillItems(billerCode: string): Promise<unknown[]> {
+  const response = await axios.get(
+    `${baseUrl()}/v3/billers/${encodeURIComponent(billerCode)}/items`,
+    { headers: v3Headers() }
+  );
+  const data = assertFlutterwaveSuccess(response.data, 'Failed to fetch bill items');
+  return Array.isArray(data) ? data : [];
+}
+
+export async function validateBillCustomer(params: {
+  billerCode: string;
+  itemCode: string;
+  customerId: string;
+}): Promise<Record<string, unknown>> {
+  const response = await axios.post(
+    `${baseUrl()}/v3/billers/${encodeURIComponent(params.billerCode)}/items/${encodeURIComponent(params.itemCode)}/validate`,
+    { customer: params.customerId },
+    { headers: v3Headers() }
+  );
+  const data = assertFlutterwaveSuccess(
+    response.data,
+    'Bill validation failed'
+  );
+  return (data ?? {}) as Record<string, unknown>;
+}
+
+export async function createBillPayment(params: {
+  billerCode: string;
+  itemCode: string;
+  customerId: string;
+  amount: number;
+  reference: string;
+  country?: string;
+  callbackUrl?: string;
+}): Promise<Record<string, unknown>> {
+  const response = await axios.post(
+    `${baseUrl()}/v3/billers/${encodeURIComponent(params.billerCode)}/items/${encodeURIComponent(params.itemCode)}/payment`,
+    {
+      country: params.country ?? 'NG',
+      customer_id: params.customerId,
+      amount: params.amount,
+      reference: params.reference,
+      ...(params.callbackUrl ? { callback_url: params.callbackUrl } : {}),
+    },
+    { headers: v3Headers() }
+  );
+  const data = assertFlutterwaveSuccess(
+    response.data,
+    'Bill payment failed'
+  );
+  return (data ?? {}) as Record<string, unknown>;
+}
+
+export async function fetchBillPaymentStatus(
+  reference: string
+): Promise<Record<string, unknown>> {
+  const response = await axios.get(
+    `${baseUrl()}/v3/bills/${encodeURIComponent(reference)}`,
+    { headers: v3Headers() }
+  );
+  const data = assertFlutterwaveSuccess(
+    response.data,
+    'Failed to fetch bill status'
+  );
+  return (data ?? {}) as Record<string, unknown>;
+}
