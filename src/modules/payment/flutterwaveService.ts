@@ -18,12 +18,29 @@ function secretKey(): string {
   return key;
 }
 
-function v3Headers(): Record<string, string> {
+export function flutterwaveBaseUrl(): string {
+  return baseUrl();
+}
+
+export function flutterwaveV3Headers(): Record<string, string> {
   return {
     Authorization: `Bearer ${secretKey()}`,
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };
+}
+
+/** Prod merchants often lack BVN lookup until Flutterwave enables it on the dashboard. */
+export function isFlutterwaveBvnServiceUnavailable(message: string): boolean {
+  const m = String(message || '').toLowerCase();
+  return (
+    m.includes('not enabled to use bvn') ||
+    (m.includes('bvn service') && m.includes('not enabled'))
+  );
+}
+
+function v3Headers(): Record<string, string> {
+  return flutterwaveV3Headers();
 }
 
 function unwrapData<T = Record<string, unknown>>(payload: unknown): T {

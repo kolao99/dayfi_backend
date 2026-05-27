@@ -13,6 +13,11 @@ import {
   namesFromAppleClient,
   namesFromGoogleUserinfo,
 } from './socialNames';
+import {
+  flutterwaveBaseUrl,
+  flutterwaveV3Headers,
+  isFlutterwaveBvnServiceUnavailable,
+} from '../payment/flutterwaveService';
 
 const client = Twilio(config?.TWILIO_ACCOUNT_SID, config?.TWILIO_AUTH_TOKEN);
 
@@ -268,49 +273,60 @@ class AuthService {
     bvn: string,
     firstname: string,
     lastname: string
-  ): Promise<any> {
+  ): Promise<{
+    verified: boolean;
+    verificationSkipped?: boolean;
+    data?: unknown;
+  }> {
+    const normalizedBvn = String(bvn || '').trim();
+    if (!/^\d{11}$/.test(normalizedBvn)) {
+      throw new Error('BVN must be exactly 11 digits');
+    }
+
     try {
+      const headers = flutterwaveV3Headers();
+      const apiBase = flutterwaveBaseUrl();
+
       const initiateResponse = await axios.post(
-        'https://api.flutterwave.com/v3/bvn/verifications',
+        `${apiBase}/v3/bvn/verifications`,
         {
-          bvn,
+          bvn: normalizedBvn,
           firstname,
           lastname,
-          redirect_url: 'https://example-url.com',
+          redirect_url: 'https://dayfi.com',
         },
-        {
-          headers: {
-            Authorization: `Bearer ${config?.FLUTTERWAVE_SECRET_KEY}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-        }
+        { headers }
       );
 
       const reference = initiateResponse?.data?.data?.reference;
 
       if (reference) {
         const statusResponse = await axios.get(
-          `https://api.flutterwave.com/v3/bvn/verifications/${reference}`,
-          {
-            headers: {
-              Authorization: `Bearer ${config?.FLUTTERWAVE_SECRET_KEY}`,
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
-            },
-          }
+          `${apiBase}/v3/bvn/verifications/${reference}`,
+          { headers }
         );
 
-        return statusResponse.data;
+        return { verified: true, data: statusResponse.data };
       }
 
-      return initiateResponse.data;
+      return { verified: true, data: initiateResponse.data };
     } catch (error: any) {
-      console.error(
-        'BVN Lookup Error:',
-        error?.response?.data || error.message
-      );
-      throw new Error(error?.response?.data?.message || 'BVN lookup failed');
+      const fwMessage =
+        error?.response?.data?.message ||
+        error?.response?.data?.data?.message ||
+        error.message ||
+        'BVN lookup failed';
+
+      console.error('BVN Lookup Error:', error?.response?.data || error.message);
+
+      if (isFlutterwaveBvnServiceUnavailable(fwMessage)) {
+        console.warn(
+          '[initiateBvnLookup] Flutterwave BVN API unavailable for merchant; storing BVN locally'
+        );
+        return { verified: false, verificationSkipped: true };
+      }
+
+      throw new Error(fwMessage);
     }
   }
 

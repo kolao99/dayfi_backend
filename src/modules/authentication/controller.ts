@@ -488,7 +488,7 @@ class AuthController {
         return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
       }
 
-      const response = await this.authService.initiateBvnLookup(
+      const result = await this.authService.initiateBvnLookup(
         bvn,
         user.first_name,
         user.last_name
@@ -497,13 +497,24 @@ class AuthController {
       await this.authService.saveUserBvn(user.user_id, String(bvn).trim());
       await this.tryProvisionNgnVirtualAccount(user.user_id);
 
-      console.log(
-        `Info: BVN verified successfully. :::AuthController::verifyBvn`
-      );
+      const message = result.verificationSkipped
+        ? 'BVN saved successfully'
+        : 'BVN verified successfully';
 
-      return success(res, 'BVN verified successfully', enums.HTTP_OK, response);
+      console.log(`Info: ${message}. :::AuthController::verifyBvn`);
+
+      return success(res, message, enums.HTTP_OK, {
+        verified: result.verified,
+        verificationSkipped: result.verificationSkipped ?? false,
+        flutterwave: result.data ?? null,
+      });
     } catch (err) {
-      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+      const msg = err instanceof Error ? err.message : String(err);
+      const status =
+        msg.includes('11 digits') || msg.toLowerCase().includes('bvn')
+          ? enums.HTTP_BAD_REQUEST
+          : enums.HTTP_INTERNAL_SERVER_ERROR;
+      return errorResponse(res, msg, status);
     }
   };
 
