@@ -22,6 +22,7 @@ import {
   getCryptoSendConfig,
   routeCryptoSend,
 } from './cryptoSendService';
+import { syncStellarInflowsToLedger } from './cryptoInflowSyncService';
 import { getPayoutQuote } from './payoutQuoteService';
 import {
   acceptInvestmentRisk,
@@ -175,11 +176,29 @@ class PaymentController {
   getWalletDetails = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;
+      const userId = user?.user_id as string;
 
-      await this.paymentService.ensureUserLedgerWallets(user?.user_id);
+      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
+        userId
+      );
+
+      // Keep app balances in sync with inbound Stellar testnet/mainnet deposits.
+      // Errors here should never block wallet details response.
+      try {
+        await syncStellarInflowsToLedger({
+          userId,
+          walletsByCurrency,
+        });
+      } catch (syncErr: unknown) {
+        console.warn(
+          `[getWalletDetails] stellar sync skipped for user=${userId}: ${
+            syncErr instanceof Error ? syncErr.message : String(syncErr)
+          }`
+        );
+      }
 
       const wallets = await this.paymentService.getWalletsByUserId(
-        user?.user_id
+        userId
       );
 
       const totalUsd = await sumBalancesToUsd(
@@ -1109,13 +1128,64 @@ class PaymentController {
   getCryptoBalances = async (req: Request, res: Response): Promise<any> => {
     try {
       const userId = req.user?.user_id as string;
+      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
+        userId
+      );
       await provisionCryptoWalletsForUser(userId);
+
+      try {
+        await syncStellarInflowsToLedger({
+          userId,
+          walletsByCurrency,
+        });
+      } catch (syncErr: unknown) {
+        console.warn(
+          `[getCryptoBalances] stellar sync skipped for user=${userId}: ${
+            syncErr instanceof Error ? syncErr.message : String(syncErr)
+          }`
+        );
+      }
+
       const balances = await getCryptoBalances(userId);
       return success(
         res,
         enums.FETCHED_SUCCESSFULLY('Crypto balances'),
         enums.HTTP_OK,
         balances
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  syncCryptoInflows = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
+        userId
+      );
+      await provisionCryptoWalletsForUser(userId);
+
+      const sync = await syncStellarInflowsToLedger({
+        userId,
+        walletsByCurrency,
+      });
+      const wallets = await this.paymentService.getWalletsByUserId(userId);
+      const totalUsd = await sumBalancesToUsd(
+        wallets.map((w: any) => ({
+          currency: w.currency,
+          balance: Number(w.balance ?? 0),
+        }))
+      );
+
+      return success(
+        res,
+        'Crypto inflows synced',
+        enums.HTTP_OK,
+        {
+          sync,
+          walletDetails: formatPrdWalletDetails(wallets as any, totalUsd),
+        }
       );
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
@@ -1162,7 +1232,9 @@ class PaymentController {
     try {
       const user = req.user;
       const userId = user?.user_id as string;
-      await this.paymentService.ensureUserLedgerWallets(userId);
+      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
+        userId
+      );
 
       let row = await db.oneOrNone<{
         stellar_deposit_address: string | null;
@@ -1190,6 +1262,19 @@ class PaymentController {
           res,
           'Crypto wallet provisioning failed. Retry in a moment.',
           enums.HTTP_SERVICE_UNAVAILABLE
+        );
+      }
+
+      try {
+        await syncStellarInflowsToLedger({
+          userId,
+          walletsByCurrency,
+        });
+      } catch (syncErr: unknown) {
+        console.warn(
+          `[getReceiveCrypto] stellar sync skipped for user=${userId}: ${
+            syncErr instanceof Error ? syncErr.message : String(syncErr)
+          }`
         );
       }
 

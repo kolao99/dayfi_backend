@@ -199,6 +199,7 @@ export const paymentQueries: PaymentQueries = {
             wt.receive_channel,
             wt.receive_network,
             wt.receive_amount,
+            wt.fees AS fees,
             wt.status,
             wt.reason,
             wt.timestamp,

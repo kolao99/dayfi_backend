@@ -234,6 +234,13 @@ Router.get(
 );
 
 Router.post(
+  '/crypto/sync-inflows',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.syncCryptoInflows
+);
+
+Router.post(
   '/crypto/send',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
