@@ -15,6 +15,9 @@ export async function convertAmountToUsd(
   if (from === PRIMARY_CURRENCY) {
     return { usdAmount: normalized, rate: 1 };
   }
+  if (normalized === 0) {
+    return { usdAmount: 0, rate: null };
+  }
 
   const row = await db.oneOrNone<{ rate: string | number }>(
     `SELECT rate FROM exchange_rates WHERE base_currency = $1 AND target_currency = $2`,
@@ -46,6 +49,9 @@ export async function convertAmountBetween(
   if (from === to) {
     return { amount: normalized, rate: 1 };
   }
+  if (normalized === 0) {
+    return { amount: 0, rate: null };
+  }
 
   const row = await db.oneOrNone<{ rate: string | number }>(
     `SELECT rate FROM exchange_rates WHERE base_currency = $1 AND target_currency = $2`,
@@ -58,6 +64,26 @@ export async function convertAmountBetween(
   return { amount: Number((normalized * rate).toFixed(2)), rate };
 }
 
+/** Idempotent default FX rows after DB reset (swap + home total). */
+export async function ensurePlatformExchangeRates(): Promise<void> {
+  const pairs: Array<[string, string, number]> = [
+    ['NGN', 'USD', 0.00065],
+    ['GBP', 'USD', 1.27],
+    ['EUR', 'USD', 1.08],
+    ['USD', 'NGN', 1540],
+    ['USD', 'GBP', 0.79],
+    ['USD', 'EUR', 0.93],
+  ];
+  for (const [base, target, rate] of pairs) {
+    await db.none(
+      `INSERT INTO exchange_rates (base_currency, target_currency, rate, source)
+       VALUES ($1, $2, $3, 'platform_default')
+       ON CONFLICT (base_currency, target_currency) DO NOTHING`,
+      [base, target, rate]
+    );
+  }
+}
+
 /** Sum all wallet balances into USD equivalent (PRD home total). */
 export async function sumBalancesToUsd(
   wallets: Array<{ currency: string; balance: number }>
@@ -66,6 +92,7 @@ export async function sumBalancesToUsd(
   for (const w of wallets) {
     const cur = String(w.currency).toUpperCase();
     const bal = Number(w.balance ?? 0);
+    if (!Number.isFinite(bal) || bal === 0) continue;
     if (cur === PRIMARY_CURRENCY) {
       total += bal;
     } else {

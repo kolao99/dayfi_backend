@@ -21,7 +21,7 @@ import {
   formatPrdWalletDetails,
 } from './walletModel';
 import { creditUsdInflow, creditWalletInflow } from './inflowService';
-import { sumBalancesToUsd } from './fxService';
+import { sumBalancesToUsd, ensurePlatformExchangeRates } from './fxService';
 import { transferByDayfiTag } from './p2pService';
 import { createVirtualAccount } from './flutterwaveService';
 
@@ -166,6 +166,7 @@ class PaymentService {
    * PRD V1: USD, GBP, EUR, NGN ledger wallets.
    */
   async ensureUserLedgerWallets(userId: string): Promise<Record<string, Wallet>> {
+    await ensurePlatformExchangeRates();
     const entries = await Promise.all(
       DISPLAY_CURRENCIES.map(async (currency) => {
         const wallet = await this.ensureWalletForCurrency(userId, currency);
