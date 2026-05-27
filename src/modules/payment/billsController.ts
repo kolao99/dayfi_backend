@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { success, errorResponse } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
 import { billsService } from './billsService';
+import { flutterwaveErrorMessage } from './flutterwaveService';
 
 class BillsController {
   getCategories = async (_req: Request, res: Response): Promise<any> => {
@@ -14,11 +15,7 @@ class BillsController {
         categories
       );
     } catch (err: unknown) {
-      return errorResponse(
-        res,
-        err instanceof Error ? err.message : String(err),
-        enums.HTTP_INTERNAL_SERVER_ERROR
-      );
+      return this.billError(res, err);
     }
   };
 
@@ -36,11 +33,7 @@ class BillsController {
         billers
       );
     } catch (err: unknown) {
-      return errorResponse(
-        res,
-        err instanceof Error ? err.message : String(err),
-        enums.HTTP_INTERNAL_SERVER_ERROR
-      );
+      return this.billError(res, err);
     }
   };
 
@@ -58,11 +51,7 @@ class BillsController {
         items
       );
     } catch (err: unknown) {
-      return errorResponse(
-        res,
-        err instanceof Error ? err.message : String(err),
-        enums.HTTP_INTERNAL_SERVER_ERROR
-      );
+      return this.billError(res, err);
     }
   };
 
@@ -77,11 +66,7 @@ class BillsController {
       });
       return success(res, 'Bill validated successfully', enums.HTTP_OK, data);
     } catch (err: unknown) {
-      return errorResponse(
-        res,
-        err instanceof Error ? err.message : String(err),
-        enums.HTTP_BAD_REQUEST
-      );
+      return this.billError(res, err, enums.HTTP_BAD_REQUEST);
     }
   };
 
@@ -104,11 +89,7 @@ class BillsController {
       });
       return success(res, 'Bill payment successful', enums.HTTP_OK, result);
     } catch (err: unknown) {
-      return errorResponse(
-        res,
-        err instanceof Error ? err.message : String(err),
-        enums.HTTP_BAD_REQUEST
-      );
+      return this.billError(res, err, enums.HTTP_BAD_REQUEST);
     }
   };
 
@@ -127,13 +108,26 @@ class BillsController {
         status
       );
     } catch (err: unknown) {
-      return errorResponse(
-        res,
-        err instanceof Error ? err.message : String(err),
-        enums.HTTP_BAD_REQUEST
-      );
+      return this.billError(res, err, enums.HTTP_BAD_REQUEST);
     }
   };
+
+  private billError(
+    res: Response,
+    err: unknown,
+    status = enums.HTTP_BAD_REQUEST
+  ): Response {
+    const msg = flutterwaveErrorMessage(err, 'Bill payment request failed');
+    const lower = msg.toLowerCase();
+    if (
+      lower.includes('not enabled') ||
+      lower.includes('not supported') ||
+      lower.includes('bill payment')
+    ) {
+      return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
+    }
+    return errorResponse(res, msg, status);
+  }
 }
 
 export const billsController = new BillsController();

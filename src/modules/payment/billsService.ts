@@ -160,11 +160,14 @@ export class BillsService {
       externalReference: String(fwResult.tx_ref ?? fwResult.reference ?? reference),
     });
 
+    const fwTxRef = String(fwResult.tx_ref ?? '').trim();
     let statusData: Record<string, unknown> | null = null;
-    try {
-      statusData = await fetchBillPaymentStatus(reference);
-    } catch {
-      statusData = null;
+    if (fwTxRef) {
+      try {
+        statusData = await fetchBillPaymentStatus(fwTxRef);
+      } catch {
+        statusData = null;
+      }
     }
 
     const updated = await db.one<{ balance: string }>(

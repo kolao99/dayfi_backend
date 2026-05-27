@@ -264,6 +264,49 @@ function assertFlutterwaveSuccess(payload: unknown, fallback: string): unknown {
   return root?.data ?? root;
 }
 
+/** Map axios/Flutterwave errors to a readable message (not "Request failed with status code 400"). */
+export function flutterwaveErrorMessage(err: unknown, fallback: string): string {
+  if (axios.isAxiosError(err)) {
+    const data = err.response?.data as Record<string, unknown> | undefined;
+    if (data?.message) return String(data.message);
+    if (typeof data === 'string') return data;
+  }
+  if (err instanceof Error && err.message && !err.message.startsWith('Request failed with status code')) {
+    return err.message;
+  }
+  if (err instanceof Error) return err.message;
+  return fallback;
+}
+
+async function flutterwaveGet<T = unknown>(
+  path: string,
+  params?: Record<string, string | number>
+): Promise<T> {
+  try {
+    const response = await axios.get(`${baseUrl()}${path}`, {
+      headers: v3Headers(),
+      params,
+    });
+    return assertFlutterwaveSuccess(response.data, `Flutterwave GET ${path} failed`) as T;
+  } catch (err) {
+    throw new Error(flutterwaveErrorMessage(err, `Flutterwave GET ${path} failed`));
+  }
+}
+
+async function flutterwavePost<T = unknown>(
+  path: string,
+  body: Record<string, unknown>
+): Promise<T> {
+  try {
+    const response = await axios.post(`${baseUrl()}${path}`, body, {
+      headers: v3Headers(),
+    });
+    return assertFlutterwaveSuccess(response.data, `Flutterwave POST ${path} failed`) as T;
+  } catch (err) {
+    throw new Error(flutterwaveErrorMessage(err, `Flutterwave POST ${path} failed`));
+  }
+}
+
 /** Top Nigerian bill categories exposed in the Dayfi app. */
 export const DAYFI_BILL_CATEGORY_CODES = [
   'AIRTIME',
@@ -273,71 +316,63 @@ export const DAYFI_BILL_CATEGORY_CODES = [
   'UTILITYBILLS',
 ] as const;
 
-export async function fetchBillCategories(): Promise<unknown[]> {
-  let response;
-  try {
-    response = await axios.get(`${baseUrl()}/v3/bill-categories`, {
-      headers: v3Headers(),
-    });
-  } catch {
-    response = await axios.get(`${baseUrl()}/v3/bills/categories`, {
-      headers: v3Headers(),
-    });
-  }
-  const data = assertFlutterwaveSuccess(
-    response.data,
-    'Failed to fetch bill categories'
+/** Flutterwave: GET /v3/top-bill-categories?country=NG (country is required). */
+export async function fetchBillCategories(country = 'NG'): Promise<unknown[]> {
+  const data = await flutterwaveGet<unknown[]>(
+    '/v3/top-bill-categories',
+    { country }
   );
   const rows = Array.isArray(data) ? data : [];
   return rows.filter((row) => {
     const r = row as Record<string, unknown>;
     const code = String(r.code ?? '').toUpperCase();
+    const rowCountry = String(r.country_code ?? country).toUpperCase();
+    if (rowCountry !== country.toUpperCase()) return false;
     return (DAYFI_BILL_CATEGORY_CODES as readonly string[]).includes(code);
   });
 }
 
+/** Flutterwave: GET /v3/bills/{category}/billers?country=NG */
 export async function fetchBillBillers(
   categoryCode: string,
   country = 'NG'
 ): Promise<unknown[]> {
   const category = String(categoryCode).toUpperCase();
-  const response = await axios.get(
-    `${baseUrl()}/v3/bills/${encodeURIComponent(category)}/billers`,
-    { headers: v3Headers(), params: { country } }
-  );
-  const data = assertFlutterwaveSuccess(
-    response.data,
-    'Failed to fetch billers'
+  const data = await flutterwaveGet<unknown[]>(
+    `/v3/bills/${encodeURIComponent(category)}/billers`,
+    { country }
   );
   return Array.isArray(data) ? data : [];
 }
 
+/** Flutterwave: GET /v3/billers/{biller_code}/items */
 export async function fetchBillItems(billerCode: string): Promise<unknown[]> {
-  const response = await axios.get(
-    `${baseUrl()}/v3/billers/${encodeURIComponent(billerCode)}/items`,
-    { headers: v3Headers() }
+  const data = await flutterwaveGet<unknown[]>(
+    `/v3/billers/${encodeURIComponent(billerCode)}/items`
   );
-  const data = assertFlutterwaveSuccess(response.data, 'Failed to fetch bill items');
   return Array.isArray(data) ? data : [];
 }
 
+/**
+ * Flutterwave: GET /v3/bill-items/{item_code}/validate?code={biller_code}&customer={id}
+ * (Not POST — validate is a GET with query params.)
+ */
 export async function validateBillCustomer(params: {
   billerCode: string;
   itemCode: string;
   customerId: string;
 }): Promise<Record<string, unknown>> {
-  const response = await axios.post(
-    `${baseUrl()}/v3/billers/${encodeURIComponent(params.billerCode)}/items/${encodeURIComponent(params.itemCode)}/validate`,
-    { customer: params.customerId },
-    { headers: v3Headers() }
+  const data = await flutterwaveGet<Record<string, unknown>>(
+    `/v3/bill-items/${encodeURIComponent(params.itemCode)}/validate`,
+    {
+      code: params.billerCode,
+      customer: params.customerId,
+    }
   );
-  const data = assertFlutterwaveSuccess(
-    response.data,
-    'Bill validation failed'
-  );
-  return (data ?? {}) as Record<string, unknown>;
+  return data ?? {};
 }
 
+/** Flutterwave: POST /v3/billers/{biller_code}/items/{item_code}/payment */
 export async function createBillPayment(params: {
   billerCode: string;
   itemCode: string;
@@ -347,34 +382,26 @@ export async function createBillPayment(params: {
   country?: string;
   callbackUrl?: string;
 }): Promise<Record<string, unknown>> {
-  const response = await axios.post(
-    `${baseUrl()}/v3/billers/${encodeURIComponent(params.billerCode)}/items/${encodeURIComponent(params.itemCode)}/payment`,
+  const data = await flutterwavePost<Record<string, unknown>>(
+    `/v3/billers/${encodeURIComponent(params.billerCode)}/items/${encodeURIComponent(params.itemCode)}/payment`,
     {
       country: params.country ?? 'NG',
       customer_id: params.customerId,
       amount: params.amount,
       reference: params.reference,
       ...(params.callbackUrl ? { callback_url: params.callbackUrl } : {}),
-    },
-    { headers: v3Headers() }
+    }
   );
-  const data = assertFlutterwaveSuccess(
-    response.data,
-    'Bill payment failed'
-  );
-  return (data ?? {}) as Record<string, unknown>;
+  return data ?? {};
 }
 
+/** Flutterwave: GET /v3/bills/{tx_ref}?verbose=1 — use Flutterwave tx_ref from payment response. */
 export async function fetchBillPaymentStatus(
   reference: string
 ): Promise<Record<string, unknown>> {
-  const response = await axios.get(
-    `${baseUrl()}/v3/bills/${encodeURIComponent(reference)}`,
-    { headers: v3Headers() }
+  const data = await flutterwaveGet<Record<string, unknown>>(
+    `/v3/bills/${encodeURIComponent(reference)}`,
+    { verbose: 1 }
   );
-  const data = assertFlutterwaveSuccess(
-    response.data,
-    'Failed to fetch bill status'
-  );
-  return (data ?? {}) as Record<string, unknown>;
+  return data ?? {};
 }
