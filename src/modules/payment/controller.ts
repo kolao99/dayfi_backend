@@ -1140,6 +1140,9 @@ class PaymentController {
   provisionNgnFiatAccount = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;
+      if (!user?.user_id) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
       const profile = await db.oneOrNone<{ email: string; bvn: string | null }>(
         `SELECT email, bvn FROM users WHERE user_id = $1 LIMIT 1`,
         [user.user_id]

@@ -484,10 +484,14 @@ class AuthController {
         user,
       } = req;
 
+      if (!user?.user_id) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+
       const response = await this.authService.initiateBvnLookup(
         bvn,
-        user?.first_name,
-        user?.last_name
+        user.first_name,
+        user.last_name
       );
 
       await this.authService.saveUserBvn(user.user_id, String(bvn).trim());
