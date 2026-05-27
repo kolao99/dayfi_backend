@@ -22,11 +22,11 @@ SELECT
   COALESCE(lm.metadata->>'assetCode', lm.currency) || ' deposit via ' || lm.source,
   lm.amount,
   CASE
-    WHEN lm.source = 'stellar' THEN 'crypto'::channel
-    WHEN lm.source = 'flutterwave' THEN 'bank'::channel
-    ELSE 'wallet'::channel
+    WHEN lm.source = 'stellar' THEN 'crypto'
+    WHEN lm.source = 'flutterwave' THEN 'bank'
+    ELSE 'wallet'
   END,
-  CASE WHEN lm.source = 'stellar' THEN 'stellar'::network ELSE NULL END,
+  CASE WHEN lm.source = 'stellar' THEN 'stellar' ELSE NULL END,
   lm.currency,
   'deposit',
   lm.external_reference,
