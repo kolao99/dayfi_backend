@@ -1,0 +1,25 @@
+import express from 'express';
+import { authMiddleware } from '../authentication/middleware';
+import { kycController } from './controller';
+
+const Router = express.Router();
+
+Router.get('/smile/config', kycController.smileConfig);
+
+Router.post('/smile/webhook', kycController.smileWebhook);
+
+Router.post(
+  '/smile/complete',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  kycController.completeSmileKyc
+);
+
+Router.post(
+  '/smile/verify-nin',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  kycController.verifyNinWithSmile
+);
+
+export const kycRouter = Router;

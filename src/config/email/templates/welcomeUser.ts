@@ -1,6 +1,5 @@
 export const welcomeUserEmail = (
   firstName: string,
-  
   userOtp: string
 ) => ` <!DOCTYPE html>
 <!DOCTYPE html>
