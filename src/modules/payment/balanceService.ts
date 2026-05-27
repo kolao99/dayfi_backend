@@ -276,10 +276,12 @@ export async function creditWalletBalance(params: {
   if (params.source !== 'yellowcard') {
     const meta = params.metadata ?? {};
     const assetCode = String(meta.assetCode ?? currency).toUpperCase();
-    const txId = buildWalletActivityTxId(
-      params.externalReference,
-      movementId
-    );
+    const activityTitle =
+      typeof meta.activityTitle === 'string' ? meta.activityTitle.trim() : '';
+    const txId =
+      params.source === 'swap' && params.externalReference
+        ? buildWalletActivityTxId(`swap-credit-${params.externalReference}`)
+        : buildWalletActivityTxId(params.externalReference, movementId);
     try {
       await recordWalletActivity({
         userId: params.userId,
@@ -289,17 +291,19 @@ export async function creditWalletBalance(params: {
         currency,
         source: params.source,
         title:
-          params.source === 'stellar'
+          activityTitle ||
+          (params.source === 'stellar'
             ? `${assetCode} deposit`
             : params.source === 'flutterwave'
               ? 'NGN bank deposit'
-              : `${currency} deposit`,
+              : `${currency} deposit`),
         reason:
-          params.source === 'stellar'
+          activityTitle ||
+          (params.source === 'stellar'
             ? `${assetCode} deposit via Stellar`
             : params.source === 'flutterwave'
               ? 'NGN virtual account deposit'
-              : `${currency} wallet credit`,
+              : `${currency} wallet credit`),
         externalReference: params.externalReference,
         channel:
           params.source === 'stellar'
@@ -408,6 +412,37 @@ export async function debitWalletBalance(params: {
     `SELECT balance FROM wallets WHERE wallet_id = $1`,
     [params.walletId]
   );
+
+  if (params.source === 'swap') {
+    const meta = params.metadata ?? {};
+    const activityTitle =
+      typeof meta.activityTitle === 'string' ? meta.activityTitle.trim() : '';
+    const convertLabel = activityTitle || `Convert ${currency}`;
+    const txId = buildWalletActivityTxId(
+      `swap-debit-${params.externalReference ?? movementId}`
+    );
+    try {
+      await recordWalletActivity({
+        userId: params.userId,
+        id: txId,
+        direction: 'debit',
+        amount,
+        currency,
+        source: 'swap',
+        title: convertLabel,
+        reason: convertLabel,
+        externalReference: params.externalReference,
+        channel: 'wallet',
+        beneficiaryName: 'Currency conversion',
+      });
+    } catch (err: unknown) {
+      console.warn(
+        `[debitWalletBalance] swap activity record skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
 
   return {
     walletId: params.walletId,

@@ -26,8 +26,12 @@ import { syncStellarInflowsToLedger } from './cryptoInflowSyncService';
 import { getPayoutQuote } from './payoutQuoteService';
 import {
   acceptInvestmentRisk,
+  claimInvestmentPosition,
   depositToInvestment,
+  getInvestmentPlans,
   getInvestmentSummary,
+  listInvestmentPositions,
+  quoteInvestment,
   withdrawFromInvestment,
 } from './investmentService';
 import { db } from '../../config/database';
@@ -1435,6 +1439,59 @@ class PaymentController {
     }
   };
 
+  getInvestmentPlansHandler = async (
+    _req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const data = await getInvestmentPlans();
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Investment plans'),
+        enums.HTTP_OK,
+        data
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  getInvestmentPositionsHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const positions = await listInvestmentPositions(req.user?.user_id);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Investment positions'),
+        enums.HTTP_OK,
+        { positions }
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  getInvestmentQuoteHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const amount = Number(req.query.amount);
+      const lockDays = Number(req.query.lockDays);
+      const quote = await quoteInvestment(amount, lockDays);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Investment quote'),
+        enums.HTTP_OK,
+        quote
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
   acceptInvestmentRiskHandler = async (
     req: Request,
     res: Response
@@ -1454,17 +1511,43 @@ class PaymentController {
 
   depositInvestment = async (req: Request, res: Response): Promise<any> => {
     try {
-      const { amount, idempotencyKey } = req.body;
+      const { amount, lockDays, idempotencyKey } = req.body;
       const usd = await this.paymentService.ensureUsdWallet(req.user?.user_id);
       const result = await depositToInvestment({
         userId: req.user?.user_id,
         usdWalletId: usd.wallet_id,
         amount: Number(amount),
+        lockDays: Number(lockDays),
         idempotencyKey,
       });
       return success(
         res,
         'Funds invested successfully',
+        enums.HTTP_OK,
+        result
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  claimInvestmentPositionHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const { idempotencyKey } = req.body;
+      const positionId = String(req.params.positionId || '');
+      const usd = await this.paymentService.ensureUsdWallet(req.user?.user_id);
+      const result = await claimInvestmentPosition({
+        userId: req.user?.user_id,
+        usdWalletId: usd.wallet_id,
+        positionId,
+        idempotencyKey,
+      });
+      return success(
+        res,
+        'Investment claimed successfully',
         enums.HTTP_OK,
         result
       );

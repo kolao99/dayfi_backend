@@ -56,6 +56,7 @@ async function main() {
 
   const tables = [
     'investment_movements',
+    'investment_positions',
     'investment_pockets',
     'ledger_movements',
     'p2p_transfers',

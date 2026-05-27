@@ -35,6 +35,51 @@ export async function convertAmountToUsd(
   };
 }
 
+async function fetchDirectRate(
+  base: string,
+  target: string
+): Promise<number | null> {
+  const row = await db.oneOrNone<{ rate: string | number }>(
+    `SELECT rate FROM exchange_rates WHERE base_currency = $1 AND target_currency = $2`,
+    [base, target]
+  );
+  if (!row?.rate) return null;
+  const rate = Number(row.rate);
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+/**
+ * Resolve FX for any pair: direct row, or cross via USD hub.
+ */
+export async function resolveExchangeRate(
+  fromCurrency: string,
+  toCurrency: string
+): Promise<number> {
+  const from = String(fromCurrency).trim().toUpperCase();
+  const to = String(toCurrency).trim().toUpperCase();
+  if (from === to) return 1;
+
+  const direct = await fetchDirectRate(from, to);
+  if (direct != null) return direct;
+
+  if (from === PRIMARY_CURRENCY) {
+    const usdTo = await fetchDirectRate(PRIMARY_CURRENCY, to);
+    if (usdTo != null) return usdTo;
+  }
+  if (to === PRIMARY_CURRENCY) {
+    const fromUsd = await fetchDirectRate(from, PRIMARY_CURRENCY);
+    if (fromUsd != null) return fromUsd;
+  }
+
+  const fromUsd = await fetchDirectRate(from, PRIMARY_CURRENCY);
+  const usdTo = await fetchDirectRate(PRIMARY_CURRENCY, to);
+  if (fromUsd != null && usdTo != null) {
+    return Number((fromUsd * usdTo).toFixed(8));
+  }
+
+  throw new Error(`No exchange rate from ${from} to ${to}`);
+}
+
 export async function convertAmountBetween(
   amount: number,
   fromCurrency: string,
@@ -53,14 +98,7 @@ export async function convertAmountBetween(
     return { amount: 0, rate: null };
   }
 
-  const row = await db.oneOrNone<{ rate: string | number }>(
-    `SELECT rate FROM exchange_rates WHERE base_currency = $1 AND target_currency = $2`,
-    [from, to]
-  );
-  if (!row?.rate) {
-    throw new Error(`No exchange rate configured from ${from} to ${to}`);
-  }
-  const rate = Number(row.rate);
+  const rate = await resolveExchangeRate(from, to);
   return { amount: Number((normalized * rate).toFixed(2)), rate };
 }
 

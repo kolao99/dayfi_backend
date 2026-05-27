@@ -272,6 +272,28 @@ Router.get(
   paymentController.getInvestment
 );
 
+Router.get(
+  '/investment/plans',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getInvestmentPlansHandler
+);
+
+Router.get(
+  '/investment/positions',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getInvestmentPositionsHandler
+);
+
+Router.get(
+  '/investment/quote',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.getInvestmentQuote,
+  paymentController.getInvestmentQuoteHandler
+);
+
 Router.post(
   '/investment/accept-risk',
   authMiddleware.getAuthToken,
@@ -297,6 +319,16 @@ Router.post(
   paymentMiddleware.validatePasswordOrPin('pin'),
   paymentMiddleware.checkWalletExistsByUserId,
   paymentController.withdrawInvestment
+);
+
+Router.post(
+  '/investment/positions/:positionId/claim',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.investmentClaim,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentController.claimInvestmentPositionHandler
 );
 
 Router.get(

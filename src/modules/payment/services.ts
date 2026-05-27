@@ -9,7 +9,7 @@ import {
   verifyPayment,
 } from './flutterwaveService';
 import { db } from '../../config/database';
-import DBService, { queries } from '../../shared/services/db.service';
+import DBService from '../../shared/services/db.service';
 import enums from '../../shared/lib/enums';
 import config from '../../config/env';
 import {
@@ -21,7 +21,19 @@ import {
   formatPrdWalletDetails,
 } from './walletModel';
 import { creditUsdInflow, creditWalletInflow } from './inflowService';
-import { sumBalancesToUsd, ensurePlatformExchangeRates } from './fxService';
+import {
+  sumBalancesToUsd,
+  ensurePlatformExchangeRates,
+  resolveExchangeRate,
+  convertAmountBetween,
+  convertAmountToUsd,
+} from './fxService';
+import {
+  debitWalletBalance,
+  creditWalletBalance,
+  buildIdempotencyKey,
+  newReference,
+} from './balanceService';
 import { transferByDayfiTag } from './p2pService';
 import { createVirtualAccount } from './flutterwaveService';
 import { recordWalletActivity, backfillWalletActivitiesFromLedger } from './walletActivityService';
@@ -993,17 +1005,7 @@ class PaymentService {
   }
 
   async getExchangeRate(base: string, target: string): Promise<number> {
-    const result = await this.dbService.singleTransaction<any>(
-      'fetchExchangeRate',
-      [base, target],
-      enums.PAYMENT_QUERY
-    );
-
-    if (!result?.rate) {
-      throw new Error(`No exchange rate from ${base} to ${target}`);
-    }
-
-    return Number(result.rate);
+    return resolveExchangeRate(base, target);
   }
 
   async swapCurrency(
@@ -1012,22 +1014,25 @@ class PaymentService {
     toCurrency: string,
     amount: number
   ): Promise<any> {
-    if (fromCurrency === toCurrency) {
+    const from = String(fromCurrency).trim().toUpperCase();
+    const to = String(toCurrency).trim().toUpperCase();
+
+    if (from === to) {
       throw new Error('Cannot swap the same currency');
     }
 
-    await this.ensureWalletForCurrency(userId, fromCurrency);
-    await this.ensureWalletForCurrency(userId, toCurrency);
+    await this.ensureWalletForCurrency(userId, from);
+    await this.ensureWalletForCurrency(userId, to);
 
     const fromWallet = await this.dbService.singleTransaction<any>(
       'getUserWalletByCurrency',
-      [userId, fromCurrency],
+      [userId, from],
       enums.PAYMENT_QUERY
     );
 
     const toWallet = await this.dbService.singleTransaction<any>(
       'getUserWalletByCurrency',
-      [userId, toCurrency],
+      [userId, to],
       enums.PAYMENT_QUERY
     );
 
@@ -1035,67 +1040,63 @@ class PaymentService {
       throw new Error('Wallet not found for one or both currencies');
     }
 
-    if (fromWallet.balance < amount) {
+    if (Number(fromWallet.balance) < amount) {
       throw new Error('Insufficient balance in source wallet');
     }
 
-    const exchangeRate = await this.dbService.singleTransaction<any>(
-      'fetchExchangeRate',
-      [fromCurrency, toCurrency],
-      enums.PAYMENT_QUERY
+    const rate = await resolveExchangeRate(from, to);
+    const { amount: convertedAmount } = await convertAmountBetween(
+      amount,
+      from,
+      to
     );
 
-    if (!exchangeRate?.rate) {
-      throw new Error(`No exchange rate from ${fromCurrency} to ${toCurrency}`);
-    }
+    const reference = newReference('swap');
+    const convertLabel = `Convert ${from} → ${to}`;
+    const swapMeta = {
+      activityTitle: convertLabel,
+      fromCurrency: from,
+      toCurrency: to,
+      rate,
+      convertedAmount,
+    };
 
-    const rate = Number(exchangeRate.rate);
-    const convertedAmount = Number((amount * rate).toFixed(2));
+    await debitWalletBalance({
+      userId,
+      walletId: fromWallet.wallet_id,
+      amount,
+      currency: from,
+      source: 'swap',
+      idempotencyKey: buildIdempotencyKey('swap-debit', reference),
+      externalReference: reference,
+      metadata: swapMeta,
+    });
 
-    await this.dbService.nestedTransaction([
-      {
-        query: queries[enums.PAYMENT_QUERY].debitWallet,
-        payload: [amount, fromWallet.wallet_id],
-      },
-      {
-        query: queries[enums.PAYMENT_QUERY].creditWallet,
-        payload: [convertedAmount, toWallet.wallet_id],
-      },
-      {
-        query: queries[enums.PAYMENT_QUERY].logSwap,
-        payload: [
-          userId,
-          fromWallet.wallet_id,
-          toWallet.wallet_id,
-          fromCurrency,
-          toCurrency,
-          amount,
-          rate,
-          convertedAmount,
-        ],
-      },
-    ]);
+    const { usdAmount } = await convertAmountToUsd(convertedAmount, to);
 
-    const reference = `tx-ref-${Date.now()}`;
+    await creditWalletBalance({
+      userId,
+      walletId: toWallet.wallet_id,
+      amount: convertedAmount,
+      currency: to,
+      usdEquivalent: usdAmount,
+      source: 'swap',
+      idempotencyKey: buildIdempotencyKey('swap-credit', reference),
+      externalReference: reference,
+      metadata: swapMeta,
+    });
 
     await this.dbService.singleTransaction(
-      'createWalletTransaction',
+      'logSwap',
       [
         userId,
         fromWallet.wallet_id,
         toWallet.wallet_id,
-        toWallet.account_number,
-        toWallet.bank_code,
-        toWallet.bank_name,
+        from,
+        to,
         amount,
-        fromWallet.balance,
-        null,
-        'wallet_to_wallet',
-        'success',
-        reference,
-        `Sending money via wallet`,
-        {},
-        userId,
+        rate,
+        convertedAmount,
       ],
       enums.PAYMENT_QUERY
     );
@@ -1105,6 +1106,7 @@ class PaymentService {
       message: 'Currency swapped successfully',
       rate,
       convertedAmount,
+      reference,
     };
   }
 

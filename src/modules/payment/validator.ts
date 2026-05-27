@@ -273,11 +273,28 @@ class PaymentValidator {
 
   investmentDeposit = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
-      amount: Joi.number().positive().required(),
+      amount: Joi.number().positive().min(1).required(),
+      lockDays: Joi.number().integer().valid(30, 90, 180, 365).required(),
       pin: Joi.string().required(),
       idempotencyKey: Joi.string().max(255).optional(),
     });
     this.validateRequestBody(req, res, next, schema, 'investmentDeposit');
+  };
+
+  getInvestmentQuote = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().min(1).required(),
+      lockDays: Joi.number().integer().valid(30, 90, 180, 365).required(),
+    });
+    this.validateRequestQuery(req, res, next, schema, 'getInvestmentQuote');
+  };
+
+  investmentClaim = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      pin: Joi.string().required(),
+      idempotencyKey: Joi.string().max(255).optional(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'investmentClaim');
   };
 
   investmentWithdraw = (req: Request, res: Response, next: NextFunction) => {
