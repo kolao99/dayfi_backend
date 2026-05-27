@@ -24,6 +24,7 @@ import { creditUsdInflow, creditWalletInflow } from './inflowService';
 import { sumBalancesToUsd, ensurePlatformExchangeRates } from './fxService';
 import { transferByDayfiTag } from './p2pService';
 import { createVirtualAccount } from './flutterwaveService';
+import { recordWalletActivity, backfillWalletActivitiesFromLedger } from './walletActivityService';
 
 type TransactionCountResult = { total: string | number };
 
@@ -526,21 +527,22 @@ class PaymentService {
       meta
     );
 
-    await this.dbService.singleTransaction(
-      'createWalletTransaction',
-      [
-        reference,
-        'pending-payment',
-        `bank:${bankName}`,
-        amount,
-        'bank',
-        null,
-        null,
-        userId,
-        null,
-      ],
-      enums.PAYMENT_QUERY
-    );
+    await recordWalletActivity({
+      userId,
+      id: reference,
+      direction: 'debit',
+      amount,
+      currency: LOCAL_SPEND_CURRENCY,
+      source: 'bank_out',
+      title: `Transfer to ${accountName}`,
+      reason: `Bank transfer to ${accountName} (${bankName})`,
+      channel: 'bank',
+      status: 'success-payment',
+      beneficiaryName: accountName,
+      accountNumber,
+      bankName,
+      externalReference: reference,
+    });
 
     return {
       success: true,
@@ -893,6 +895,18 @@ class PaymentService {
     offset: number,
     sortOrder: string | null
   ): Promise<any> {
+    if (offset === 0) {
+      try {
+        await backfillWalletActivitiesFromLedger(userId);
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] ledger backfill skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
+
     const getSortSuffix = () =>
       sortOrder?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 

@@ -69,10 +69,10 @@ export async function ensurePlatformExchangeRates(): Promise<void> {
   const pairs: Array<[string, string, number]> = [
     ['NGN', 'USD', 0.00065],
     ['GBP', 'USD', 1.27],
-    ['EUR', 'USD', 1.08],
+    ['EUR', 'USD', 1.1625],
     ['USD', 'NGN', 1540],
     ['USD', 'GBP', 0.79],
-    ['USD', 'EUR', 0.93],
+    ['USD', 'EUR', 0.860215],
   ];
   for (const [base, target, rate] of pairs) {
     await db.none(

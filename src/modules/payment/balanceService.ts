@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { db } from '../../config/database';
 import { PRIMARY_CURRENCY } from './walletModel';
 import { convertAmountToUsd } from './fxService';
+import { recordWalletActivity } from './walletActivityService';
 
 export { convertAmountToUsd } from './fxService';
 
@@ -267,6 +268,51 @@ export async function creditWalletBalance(params: {
     );
     return row.id;
   });
+
+  if (params.source !== 'yellowcard') {
+    const meta = params.metadata ?? {};
+    const assetCode = String(meta.assetCode ?? currency).toUpperCase();
+    const txId = params.externalReference
+      ? `wt-${String(params.externalReference).replace(/:/g, '-')}`
+      : `wt-${movementId}`;
+    try {
+      await recordWalletActivity({
+        userId: params.userId,
+        id: txId,
+        direction: 'credit',
+        amount,
+        currency,
+        source: params.source,
+        title:
+          params.source === 'stellar'
+            ? `${assetCode} deposit`
+            : params.source === 'flutterwave'
+              ? 'NGN bank deposit'
+              : `${currency} deposit`,
+        reason:
+          params.source === 'stellar'
+            ? `${assetCode} deposit via Stellar`
+            : params.source === 'flutterwave'
+              ? 'NGN virtual account deposit'
+              : `${currency} wallet credit`,
+        externalReference: params.externalReference,
+        channel:
+          params.source === 'stellar'
+            ? 'crypto'
+            : params.source === 'flutterwave'
+              ? 'bank'
+              : 'wallet',
+        network: params.source === 'stellar' ? 'stellar' : null,
+        beneficiaryName: 'Wallet Top Up',
+      });
+    } catch (err: unknown) {
+      console.warn(
+        `[creditWalletBalance] wallet activity record skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
 
   return {
     usdAmount: usdEq,
