@@ -12,6 +12,18 @@ export const INVESTMENT_PLAN_TIERS: InvestmentPlanTier[] = [
   { lockDays: 365, label: '365 days', maxApyPercent: 10 },
 ];
 
+/** Extra APY for longer locks (on top of treasury base yield). */
+export const LOCK_APY_BONUS: Record<number, number> = {
+  30: 0,
+  90: 0.5,
+  180: 1.0,
+  365: 1.5,
+};
+
+export function getLockApyBonus(lockDays: number): number {
+  return LOCK_APY_BONUS[lockDays] ?? 0;
+}
+
 export function findPlanByLockDays(lockDays: number): InvestmentPlanTier | undefined {
   return INVESTMENT_PLAN_TIERS.find((t) => t.lockDays === lockDays);
 }

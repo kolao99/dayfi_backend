@@ -2,6 +2,7 @@ import axios from 'axios';
 import { db } from '../../config/database';
 import {
   INVESTMENT_PLAN_TIERS,
+  getLockApyBonus,
   type InvestmentPlanTier,
 } from './investmentPlans';
 
@@ -62,11 +63,14 @@ export function getSubsidyApyPercent(): number {
 }
 
 export async function getEffectiveApyPercent(
-  tierMaxApy: number
+  tierMaxApy: number,
+  lockDays: number
 ): Promise<number> {
   const base = await getTreasuryBaseApyPercent();
-  const ceiling = base + getSubsidyApyPercent();
-  return Math.min(tierMaxApy, Math.round(ceiling * 1000) / 1000);
+  const lockBonus = getLockApyBonus(lockDays);
+  const subsidy = lockDays >= 365 ? getSubsidyApyPercent() : 0;
+  const effective = base + lockBonus + subsidy;
+  return Math.min(tierMaxApy, Math.round(effective * 1000) / 1000);
 }
 
 export async function getInvestmentPlansForApi(): Promise<
@@ -84,7 +88,10 @@ export async function getInvestmentPlansForApi(): Promise<
       lockDays: tier.lockDays,
       label: tier.label,
       maxApyPercent: tier.maxApyPercent,
-      apyPercent: await getEffectiveApyPercent(tier.maxApyPercent),
+      apyPercent: await getEffectiveApyPercent(
+        tier.maxApyPercent,
+        tier.lockDays
+      ),
     }))
   ).then((plans) =>
     plans.map((p) => ({
@@ -161,5 +168,5 @@ export function calculateMaturityInterest(
 export async function resolveApyForDeposit(
   tier: InvestmentPlanTier
 ): Promise<number> {
-  return getEffectiveApyPercent(tier.maxApyPercent);
+  return getEffectiveApyPercent(tier.maxApyPercent, tier.lockDays);
 }
