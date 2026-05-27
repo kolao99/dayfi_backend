@@ -2,6 +2,11 @@ import crypto from 'node:crypto';
 import StellarSdk from '@stellar/stellar-sdk';
 import { db } from '../../config/database';
 import {
+  isStellarTestnet,
+  resolveEurcIssuer,
+  resolveUsdcIssuer,
+} from '../../config/stellarIssuers';
+import {
   buildIdempotencyKey,
   creditWalletBalance,
 } from './balanceService';
@@ -12,11 +17,19 @@ type WalletRef = {
   currency: string;
 };
 
-function isStellarTestnet(): boolean {
-  return String(process.env.STELLAR_NETWORK || '')
-    .trim()
-    .toLowerCase() !== 'public';
-}
+export type StellarInflowSyncResult = {
+  processed: number;
+  credited: number;
+  skipped: number;
+  errors: string[];
+  credits: Array<{
+    assetCode: string;
+    currency: string;
+    amount: number;
+    duplicate: boolean;
+    reference: string;
+  }>;
+};
 
 function horizonUrl(): string {
   const fromEnv = process.env.STELLAR_HORIZON_URL?.trim();
@@ -41,19 +54,44 @@ function pickRef(record: Record<string, unknown>): string {
   );
 }
 
+function isKnownStablecoinPayment(rec: Record<string, unknown>): boolean {
+  const assetType = String(rec.asset_type || '').toLowerCase();
+  const assetCode = assetType === 'native'
+    ? 'XLM'
+    : String(rec.asset_code || '').toUpperCase();
+  if (assetCode !== 'USDC' && assetCode !== 'EURC') return false;
+
+  const issuer = String(rec.asset_issuer || '').trim();
+  if (!issuer) return false;
+
+  const expected =
+    assetCode === 'USDC' ? resolveUsdcIssuer() : resolveEurcIssuer();
+  return issuer === expected;
+}
+
 /**
  * Mirror inbound Stellar USDC/EURC payments into internal ledger wallets.
- * This closes the gap where on-chain deposits existed but app wallet balances stayed unchanged.
  */
 export async function syncStellarInflowsToLedger(params: {
   userId: string;
   walletsByCurrency: Record<string, WalletRef | undefined>;
-}): Promise<{ processed: number; credited: number }> {
+}): Promise<StellarInflowSyncResult> {
+  const result: StellarInflowSyncResult = {
+    processed: 0,
+    credited: 0,
+    skipped: 0,
+    errors: [],
+    credits: [],
+  };
+
   const userId = String(params.userId || '').trim();
-  if (!userId) return { processed: 0, credited: 0 };
+  if (!userId) return result;
 
   const usdWallet = params.walletsByCurrency.USD;
-  if (!usdWallet?.wallet_id) return { processed: 0, credited: 0 };
+  if (!usdWallet?.wallet_id) {
+    result.errors.push('USD wallet missing');
+    return result;
+  }
 
   const row = await db.oneOrNone<{ stellar_deposit_address: string | null }>(
     `SELECT stellar_deposit_address
@@ -63,36 +101,54 @@ export async function syncStellarInflowsToLedger(params: {
     [userId]
   );
   const address = String(row?.stellar_deposit_address || '').trim();
-  if (!address) return { processed: 0, credited: 0 };
+  if (!address) {
+    result.errors.push('stellar_deposit_address not provisioned');
+    return result;
+  }
 
   let records: Record<string, unknown>[] = [];
   try {
     const server = new StellarSdk.Horizon.Server(horizonUrl());
-    const page = await server.payments().forAccount(address).limit(200).order('desc').call();
+    const page = await server
+      .payments()
+      .forAccount(address)
+      .limit(200)
+      .order('desc')
+      .call();
     records = (page.records as unknown as Record<string, unknown>[]) || [];
-  } catch {
-    return { processed: 0, credited: 0 };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[syncStellarInflows] horizon failed user=${userId} address=${address} network=${
+        isStellarTestnet() ? 'testnet' : 'mainnet'
+      }: ${msg}`
+    );
+    result.errors.push(`horizon: ${msg}`);
+    return result;
   }
-
-  let processed = 0;
-  let credited = 0;
 
   for (const rec of records) {
     if (String(rec.type || '').toLowerCase() !== 'payment') continue;
     if (String(rec.to || '') !== address) continue;
+    if (!isKnownStablecoinPayment(rec)) continue;
 
     const assetType = String(rec.asset_type || '').toLowerCase();
     const assetCode = assetType === 'native'
       ? 'XLM'
       : String(rec.asset_code || '').toUpperCase();
-    if (assetCode !== 'USDC' && assetCode !== 'EURC') continue;
 
     const amount = toAmount(rec.amount);
-    if (amount <= 0) continue;
+    if (amount <= 0) {
+      result.skipped += 1;
+      continue;
+    }
 
     const targetCurrency = assetCode === 'USDC' ? 'USD' : 'EUR';
     const targetWallet = params.walletsByCurrency[targetCurrency];
-    if (!targetWallet?.wallet_id) continue;
+    if (!targetWallet?.wallet_id) {
+      result.skipped += 1;
+      continue;
+    }
 
     const reference = `stellar-in:${pickRef(rec)}`;
     const idempotencyKey = buildIdempotencyKey('stellar', reference);
@@ -107,29 +163,50 @@ export async function syncStellarInflowsToLedger(params: {
       }
     }
 
-    const result = await creditWalletBalance({
-      userId,
-      walletId: targetWallet.wallet_id,
-      amount,
-      currency: targetCurrency,
-      usdEquivalent,
-      source: 'stellar',
-      idempotencyKey,
-      externalReference: reference,
-      metadata: {
-        network: 'stellar',
-        assetCode,
+    try {
+      const credit = await creditWalletBalance({
+        userId,
+        walletId: targetWallet.wallet_id,
         amount,
-        to: address,
-        from: String(rec.from || ''),
-        txHash: String(rec.transaction_hash || ''),
-        operationId: String(rec.id || ''),
-      },
-    });
+        currency: targetCurrency,
+        usdEquivalent,
+        source: 'stellar',
+        idempotencyKey,
+        externalReference: reference,
+        metadata: {
+          network: isStellarTestnet() ? 'stellar-testnet' : 'stellar-mainnet',
+          assetCode,
+          amount,
+          to: address,
+          from: String(rec.from || ''),
+          txHash: String(rec.transaction_hash || ''),
+          operationId: String(rec.id || ''),
+        },
+      });
 
-    processed += 1;
-    if (!result.duplicate) credited += 1;
+      result.processed += 1;
+      if (!credit.duplicate) result.credited += 1;
+      result.credits.push({
+        assetCode,
+        currency: targetCurrency,
+        amount,
+        duplicate: credit.duplicate,
+        reference,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[syncStellarInflows] credit failed user=${userId} ref=${reference}: ${msg}`
+      );
+      result.errors.push(`${reference}: ${msg}`);
+    }
   }
 
-  return { processed, credited };
+  if (result.processed > 0 || result.errors.length > 0) {
+    console.info(
+      `[syncStellarInflows] user=${userId} address=${address} processed=${result.processed} credited=${result.credited} errors=${result.errors.length}`
+    );
+  }
+
+  return result;
 }

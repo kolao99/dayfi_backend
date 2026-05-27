@@ -33,6 +33,13 @@ Router.get(
   paymentController.fetchBanks
 );
 
+Router.get(
+  '/banks/ng',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.fetchNigerianBanks
+);
+
 Router.post(
   '/add-dayfi-id',
   authMiddleware.getAuthToken,

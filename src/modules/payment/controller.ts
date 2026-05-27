@@ -53,7 +53,22 @@ class PaymentController {
         enums.HTTP_OK,
         banks
       );
-    } catch (err) {
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  /** Flutterwave NG banks as network rows (for send recipient picker). */
+  fetchNigerianBanks = async (_req: Request, res: Response): Promise<any> => {
+    try {
+      const networks = await this.paymentService.fetchNigerianBankNetworks();
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Nigerian banks'),
+        enums.HTTP_OK,
+        { networks }
+      );
+    } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
   };
@@ -182,8 +197,20 @@ class PaymentController {
         userId
       );
 
+      // Ensure deposit address exists before reading Horizon inflows.
+      try {
+        await provisionCryptoWalletsForUser(userId);
+      } catch (provisionErr: unknown) {
+        console.warn(
+          `[getWalletDetails] crypto provision skipped for user=${userId}: ${
+            provisionErr instanceof Error
+              ? provisionErr.message
+              : String(provisionErr)
+          }`
+        );
+      }
+
       // Keep app balances in sync with inbound Stellar testnet/mainnet deposits.
-      // Errors here should never block wallet details response.
       try {
         await syncStellarInflowsToLedger({
           userId,
@@ -561,12 +588,28 @@ class PaymentController {
 
   fetchNetworks = async (_req: Request, res: Response): Promise<any> => {
     try {
-      const networks = await this.yellowCardService.fetchNetworks();
+      let networks: unknown[] = [];
+      try {
+        const yc = await this.yellowCardService.fetchNetworks();
+        const raw = (yc as { networks?: unknown[] })?.networks ?? yc;
+        if (Array.isArray(raw)) networks = raw;
+      } catch (ycErr: unknown) {
+        console.warn(
+          `[fetchNetworks] Yellow Card unavailable: ${
+            ycErr instanceof Error ? ycErr.message : String(ycErr)
+          }`
+        );
+      }
+
+      if (!networks.length) {
+        networks = await this.paymentService.fetchNigerianBankNetworks();
+      }
+
       return success(
         res,
         enums.FETCHED_SUCCESSFULLY('Networks'),
         enums.HTTP_OK,
-        networks
+        { networks }
       );
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
@@ -800,7 +843,28 @@ class PaymentController {
 
   resolveBankDetailsYC = async (req: Request, res: Response): Promise<any> => {
     try {
-      const { accountNumber, networkId } = req.body;
+      const { accountNumber, networkId, bankCode } = req.body;
+      const fwBankCode = String(bankCode || networkId || '').trim();
+
+      // Nigeria domestic: Flutterwave V3 account resolve (test + live keys).
+      if (fwBankCode && /^\d{3,6}$/.test(fwBankCode)) {
+        const resolved = await this.paymentService.resolveBankAccount(
+          accountNumber,
+          fwBankCode
+        );
+        return success(
+          res,
+          'Bank account resolved successfully',
+          enums.HTTP_OK,
+          {
+            accountName: resolved.accountName,
+            accountNumber: resolved.accountNumber,
+            bankCode: resolved.bankCode,
+            bankName: resolved.bankName,
+          }
+        );
+      }
+
       const bankDetails = await this.yellowCardService.resolveBankDetailsYC(
         accountNumber,
         networkId

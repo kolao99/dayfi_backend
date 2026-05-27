@@ -3,75 +3,77 @@ import md5 from 'md5';
 import forge from 'node-forge';
 import config from '../../config/env';
 
-const headers = {
-  // Authorization: `Bearer ${config?.FLUTTERWAVE_SECRET_KEY}`,
-  'Content-Type': 'application/json',
-};
+const FLW_V3_BASE = 'https://api.flutterwave.com';
+
+function baseUrl(): string {
+  const fromConfig = String(config?.FLUTTERWAVE_BASE_URL || '').trim();
+  return fromConfig.replace(/\/+$/, '') || FLW_V3_BASE;
+}
+
+function secretKey(): string {
+  const key = String(config?.FLUTTERWAVE_SECRET_KEY || '').trim();
+  if (!key) {
+    throw new Error('Flutterwave secret key is not configured (DAYFI_FLUTTERWAVE_SECRET_KEY)');
+  }
+  return key;
+}
+
+function v3Headers(): Record<string, string> {
+  return {
+    Authorization: `Bearer ${secretKey()}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+}
+
+function unwrapData<T = Record<string, unknown>>(payload: unknown): T {
+  const root = payload as Record<string, unknown>;
+  const data = root?.data;
+  if (data && typeof data === 'object') return data as T;
+  return root as T;
+}
+
 export function getKey(seckey: string): string {
   const keymd5: string = md5(seckey);
-
   const keymd5last12: string = keymd5.slice(-12);
-
   const seckeyadjusted: string = seckey.replace('FLWSECK-', '');
-
   const seckeyadjustedfirst12: string = seckeyadjusted.slice(0, 12);
-
   return seckeyadjustedfirst12 + keymd5last12;
 }
 
 export function encryptPayload(
-  payload: Record<string, any>,
+  payload: Record<string, unknown>,
   encryptionKey: string
 ): string {
-  try {
-    const cardDetails = JSON.stringify(payload);
-    const key = getKey(encryptionKey);
-    const cipher = forge.cipher.createCipher(
-      '3DES-ECB',
-      forge.util.createBuffer(key)
-    );
-
-    cipher.start({ iv: '' });
-    // @ts-ignore
-    cipher.update(forge.util.createBuffer(cardDetails, 'utf-8'));
-    cipher.finish();
-
-    const encrypted = cipher.output;
-    const encryptedBase64 = forge.util.encode64(encrypted.getBytes());
-
-    console.log('Encrypted Payload:', encryptedBase64);
-    return encryptedBase64;
-  } catch (error: any) {
-    console.error('Encryption Error:', error.message);
-    throw error;
-  }
+  const cardDetails = JSON.stringify(payload);
+  const key = getKey(encryptionKey);
+  const cipher = forge.cipher.createCipher(
+    '3DES-ECB',
+    forge.util.createBuffer(key)
+  );
+  cipher.start({ iv: '' });
+  // @ts-ignore
+  cipher.update(forge.util.createBuffer(cardDetails, 'utf-8'));
+  cipher.finish();
+  const encrypted = cipher.output;
+  return forge.util.encode64(encrypted.getBytes());
 }
 
-export const chargeCard = async (chargeData: any): Promise<any> => {
-  try {
-    const secretKey = config?.FLUTTERWAVE_SECRET_KEY || 'SECRET_KEY';
+export const chargeCard = async (chargeData: Record<string, unknown>): Promise<any> => {
+  const secret = secretKey();
+  const encryptedPayload = encryptPayload(chargeData, secret);
+  const clientData = {
+    PBFPubKey: config?.FLUTTERWAVE_PUBLIC_KEY,
+    client: encryptedPayload,
+    alg: '3DES-24',
+  };
 
-    const encryptedPayload = encryptPayload(chargeData, secretKey);
-    const clientData = {
-      PBFPubKey: config?.FLUTTERWAVE_PUBLIC_KEY,
-      client: encryptedPayload,
-      alg: '3DES-24',
-    };
-
-    const response = await axios.post(
-      `${config?.FLUTTERWAVE_BASE_URL}/flwv3-pug/getpaidx/api/charge`,
-      clientData,
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    return response.data;
-  } catch (error) {
-    console.error(
-      'Error charging card:',
-      error.response?.data || error.message
-    );
-    throw error;
-  }
+  const response = await axios.post(
+    `${baseUrl()}/flwv3-pug/getpaidx/api/charge`,
+    clientData,
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+  return response.data;
 };
 
 export const chargeCardWithToken = async (
@@ -85,10 +87,8 @@ export const chargeCardWithToken = async (
   IP: string,
   narration: string
 ): Promise<any> => {
-  const url = 'https://api.ravepay.co/flwv3-pug/getpaidx/api/tokenized/charge';
-
   const data = {
-    SECKEY: config?.FLUTTERWAVE_SECRET_KEY,
+    SECKEY: secretKey(),
     token,
     currency,
     country,
@@ -102,123 +102,106 @@ export const chargeCardWithToken = async (
     meta: '',
   };
 
-  try {
-    const response = await axios.post(url, data, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    return response.data;
-  } catch (error) {
-    throw error;
-  }
+  const response = await axios.post(
+    `${baseUrl()}/flwv3-pug/getpaidx/api/tokenized/charge`,
+    data,
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+  return response.data;
 };
 
 export const verifyCharge = async (
   transaction_reference: string,
   otp: string
 ): Promise<any> => {
-  const url = `${config?.FLUTTERWAVE_BASE_URL}/flwv3-pug/getpaidx/api/validatecharge`;
-
   const data = {
     PBFPubKey: config?.FLUTTERWAVE_PUBLIC_KEY,
     transaction_reference,
     otp,
   };
 
-  try {
-    const response = await axios.post(url, data, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    return response.data;
-  } catch (error: any) {
-    console.error(
-      'Error verifying charge:',
-      error.response?.data || error.message
-    );
-    throw error;
-  }
+  const response = await axios.post(
+    `${baseUrl()}/flwv3-pug/getpaidx/api/validatecharge`,
+    data,
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+  return response.data;
 };
 
 export const verifyPayment = async (txref: string): Promise<any> => {
-  const url = `${config?.FLUTTERWAVE_BASE_URL}/flwv3-pug/getpaidx/api/v2/verify`;
   const data = {
     txref,
-    SECKEY: config?.FLUTTERWAVE_SECRET_KEY,
+    SECKEY: secretKey(),
   };
 
-  try {
-    const response = await axios.post(url, data, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    console.log(response);
-    return response.data;
-  } catch (error) {
-    console.log(error);
-    throw error;
-  }
+  const response = await axios.post(
+    `${baseUrl()}/flwv3-pug/getpaidx/api/v2/verify`,
+    data,
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+  return response.data;
 };
 
+/** V3 account name enquiry (Nigeria). */
 export const resolveBankDetails = async (
   accountNumber: string,
   bankCode: string
 ): Promise<AxiosResponse> => {
-  try {
-    return await axios.post(
-      `https://api.flutterwave.com/v3/accounts/resolve`,
-      {
-        account_number: accountNumber,
-        account_bank: bankCode,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${config?.FLUTTERWAVE_SECRET_KEY}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-      }
-    );
-  } catch (error) {
-    console.error('Error resolving bank details:', error);
-    throw error;
-  }
+  return axios.post(
+    `${baseUrl()}/v3/accounts/resolve`,
+    {
+      account_number: accountNumber,
+      account_bank: bankCode,
+    },
+    { headers: v3Headers() }
+  );
 };
 
-export const fetchBanks = async (): Promise<any> => {
-  try {
-    return await axios.get(
-      `${config?.FLUTTERWAVE_BASE_URL}/flwv3-pug/getpaidx/api/flwpbf-banks.js?json=1&public_key=${config?.FLUTTERWAVE_PUBLIC_KEY}`,
-      {
-        headers,
-      }
-    );
-  } catch (e) {
-    console.log('Error fetchBanks', e);
-    throw e;
-  }
+/** V3 Nigerian bank list for send / resolve UI. */
+export const fetchBanks = async (): Promise<{
+  banks: Array<{ id: string; code: string; name: string }>;
+}> => {
+  const response = await axios.get(`${baseUrl()}/v3/banks/NG`, {
+    headers: v3Headers(),
+  });
+  const rows = unwrapData<unknown[]>(response.data) || [];
+  const banks = (Array.isArray(rows) ? rows : []).map((row) => {
+    const r = row as Record<string, unknown>;
+    const code = String(r.code ?? r.id ?? '');
+    return {
+      id: code,
+      code,
+      name: String(r.name ?? ''),
+    };
+  });
+  return { banks };
 };
 
+/** V3 permanent NGN virtual account (test + live). */
 export const createVirtualAccount = async (
   email: string,
-  bvn: string
+  bvn: string,
+  options?: { firstname?: string; lastname?: string; phonenumber?: string }
 ): Promise<AxiosResponse> => {
-  try {
-    return await axios.post(
-      `${config?.FLUTTERWAVE_BASE_URL}/v2/banktransfers/accountnumbers`,
-      {
-        email,
-        bvn,
-        is_permanent: true,
-        narration: 'Your custom narration',
-        tx_ref: `vaccount-${Date.now()}`,
-        seckey: config?.FLUTTERWAVE_SECRET_KEY,
-      },
-      { headers }
-    );
-  } catch (e) {
-    console.log('Error createVirtualAccount', e);
-    throw e;
-  }
+  const txRef = `dayfi-va-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return axios.post(
+    `${baseUrl()}/v3/virtual-account-numbers`,
+    {
+      email,
+      bvn,
+      is_permanent: true,
+      tx_ref: txRef,
+      narration: 'Dayfi NGN Wallet',
+      currency: 'NGN',
+      ...(options?.firstname ? { firstname: options.firstname } : {}),
+      ...(options?.lastname ? { lastname: options.lastname } : {}),
+      ...(options?.phonenumber ? { phonenumber: options.phonenumber } : {}),
+    },
+    { headers: v3Headers() }
+  );
 };
 
+/** V3 bank transfer payout (debits Flutterwave balance). */
 export const initiateTransfer = async (
   account_bank: string,
   account_number: string,
@@ -227,30 +210,30 @@ export const initiateTransfer = async (
   currency = 'NGN',
   reference: string,
   beneficiary_name: string,
-  meta = {}
-): Promise<AxiosResponse> => {
-  const url = `${config?.FLUTTERWAVE_BASE_URL}/v2/gpx/transfers/create`;
-  const data = {
-    meta,
-    account_bank,
-    account_number,
-    amount,
-    seckey: config?.FLUTTERWAVE_SECRET_KEY,
-    narration,
-    currency,
-    reference,
-    beneficiary_name,
-  };
+  meta: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> => {
+  const response = await axios.post(
+    `${baseUrl()}/v3/transfers`,
+    {
+      account_bank,
+      account_number,
+      amount,
+      narration,
+      currency,
+      reference,
+      beneficiary_name,
+      meta,
+    },
+    { headers: v3Headers() }
+  );
 
-  try {
-    const response = await axios.post(url, data, { headers });
-
-    if (response.data.status === 'success') {
-      return response.data.data;
-    } else {
-      throw new Error(`Transfer failed: ${response.data.message}`);
-    }
-  } catch (error) {
-    throw error;
+  const root = response.data as Record<string, unknown>;
+  const status = String(root.status || '').toLowerCase();
+  if (status !== 'success') {
+    throw new Error(
+      String(root.message || 'Flutterwave transfer failed')
+    );
   }
+
+  return unwrapData<Record<string, unknown>>(root);
 };

@@ -448,8 +448,9 @@ class PaymentValidator {
   resolveBankDetailsYC = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       accountNumber: Joi.string().required(),
-      networkId: Joi.string().required(),
-    });
+      networkId: Joi.string().optional(),
+      bankCode: Joi.string().optional(),
+    }).or('networkId', 'bankCode');
 
     this.validateRequestBody(req, res, next, schema, 'resolveBankDetailsYC');
   };

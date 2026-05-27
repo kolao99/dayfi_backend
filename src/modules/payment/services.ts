@@ -50,15 +50,21 @@ class PaymentService {
   ): Promise<any> {
     try {
       const response = await resolveBankDetails(accountNumber, bankCode);
+      const data = response?.data?.data ?? response?.data;
 
       return {
         success: true,
-        accountName: response.data.data.account_name,
-        accountNumber: response.data.data.account_number,
-        bankCode: bankCode,
+        accountName: String(data?.account_name ?? ''),
+        accountNumber: String(data?.account_number ?? accountNumber),
+        bankCode: String(bankCode),
+        bankName: String(data?.bank_name ?? ''),
       };
     } catch (error: any) {
-      console.error('Error resolving bank account:', error.message);
+      const fwMsg =
+        error?.response?.data?.message ||
+        error?.response?.data?.data?.complete_message ||
+        error.message;
+      console.error('Error resolving bank account:', fwMsg);
       throw new Error(
         'Unable to verify account details at this time. Please try again.'
       );
@@ -66,8 +72,31 @@ class PaymentService {
   }
 
   async fetchBanks(): Promise<any> {
-    const response = await fetchBanks();
-    return response.data;
+    return fetchBanks();
+  }
+
+  /** Map Flutterwave bank list → Yellow Card–like network rows for mobile send UI. */
+  async fetchNigerianBankNetworks(): Promise<
+    Array<{
+      id: string;
+      code: string;
+      name: string;
+      country: string;
+      status: string;
+      accountNumberType: string;
+      channelIds: string[];
+    }>
+  > {
+    const { banks } = await fetchBanks();
+    return banks.map((b) => ({
+      id: b.code,
+      code: b.code,
+      name: b.name,
+      country: 'NG',
+      status: 'active',
+      accountNumberType: 'NUBAN',
+      channelIds: ['ngn_bank_flutterwave'],
+    }));
   }
 
   private async createWalletRow(
@@ -345,11 +374,17 @@ class PaymentService {
     const ngn = await this.ensureNgnWallet(userId);
 
     const response = await createVirtualAccount(email, bvn);
-    const data = response?.data?.data ?? response?.data;
-    const accountNumber = String(data?.account_number ?? data?.accountNumber ?? '');
-    const bankName = String(data?.bank_name ?? data?.bankName ?? 'Bank');
+    const root = response?.data as Record<string, unknown> | undefined;
+    const data = (root?.data ?? root) as Record<string, unknown> | undefined;
+    const accountNumber = String(
+      data?.account_number ?? data?.accountNumber ?? ''
+    );
+    const bankName = String(
+      data?.bank_name ?? data?.bankName ?? 'Wema Bank'
+    );
     if (!accountNumber) {
-      throw new Error('Flutterwave did not return a virtual account number');
+      const msg = String(root?.message ?? 'Flutterwave did not return a virtual account number');
+      throw new Error(msg);
     }
 
     await db.none(
