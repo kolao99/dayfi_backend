@@ -210,12 +210,31 @@ class PaymentController {
         );
       }
 
+      let stellarSync: Awaited<ReturnType<typeof syncStellarInflowsToLedger>> | null =
+        null;
+      let stellarDepositAddress: string | null = null;
+
       // Keep app balances in sync with inbound Stellar testnet/mainnet deposits.
       try {
-        await syncStellarInflowsToLedger({
+        const addrRow = await db.oneOrNone<{ stellar_deposit_address: string | null }>(
+          `SELECT stellar_deposit_address FROM wallets
+           WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
+          [userId]
+        );
+        stellarDepositAddress = addrRow?.stellar_deposit_address ?? null;
+
+        stellarSync = await syncStellarInflowsToLedger({
           userId,
           walletsByCurrency,
         });
+        if (
+          stellarSync.errors.length > 0 ||
+          (stellarSync.processed > 0 && stellarSync.credited === 0)
+        ) {
+          console.warn(
+            `[getWalletDetails] stellar sync user=${userId} address=${stellarDepositAddress} ${JSON.stringify(stellarSync)}`
+          );
+        }
       } catch (syncErr: unknown) {
         console.warn(
           `[getWalletDetails] stellar sync skipped for user=${userId}: ${
@@ -234,7 +253,14 @@ class PaymentController {
           balance: Number(w.balance ?? 0),
         }))
       );
-      const data = formatPrdWalletDetails(wallets as any, totalUsd);
+      const data = {
+        ...formatPrdWalletDetails(wallets as any, totalUsd),
+        stellarReceive: {
+          address: stellarDepositAddress,
+          network: process.env.STELLAR_NETWORK || 'testnet',
+          sync: stellarSync,
+        },
+      };
 
       return success(
         res,

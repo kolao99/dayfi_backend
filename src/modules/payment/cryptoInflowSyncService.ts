@@ -72,6 +72,13 @@ function isKnownStablecoinPayment(rec: Record<string, unknown>): boolean {
 /**
  * Mirror inbound Stellar USDC/EURC payments into internal ledger wallets.
  */
+async function ledgerMovementsReady(): Promise<boolean> {
+  const row = await db.oneOrNone<{ exists: boolean }>(
+    `SELECT to_regclass('public.ledger_movements') IS NOT NULL AS exists`
+  );
+  return row?.exists === true;
+}
+
 export async function syncStellarInflowsToLedger(params: {
   userId: string;
   walletsByCurrency: Record<string, WalletRef | undefined>;
@@ -86,6 +93,13 @@ export async function syncStellarInflowsToLedger(params: {
 
   const userId = String(params.userId || '').trim();
   if (!userId) return result;
+
+  if (!(await ledgerMovementsReady())) {
+    result.errors.push(
+      'ledger_movements table missing — run database migrations on Railway'
+    );
+    return result;
+  }
 
   const usdWallet = params.walletsByCurrency.USD;
   if (!usdWallet?.wallet_id) {
