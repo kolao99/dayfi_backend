@@ -4,6 +4,10 @@ import {
   buildIdempotencyKey,
   newReference,
 } from './balanceService';
+import {
+  buildWalletActivityTxId,
+  recordWalletActivity,
+} from './walletActivityService';
 import { PRIMARY_CURRENCY } from './walletModel';
 import { findPlanByLockDays, getStaticMaxApyPercent } from './investmentPlans';
 import {
@@ -297,6 +301,29 @@ export async function depositToInvestment(params: {
     externalReference: reference,
     metadata: { direction: 'deposit', lockDays: params.lockDays },
   });
+
+  const txId = buildWalletActivityTxId(`inv-dep-${reference}`);
+  try {
+    await recordWalletActivity({
+      userId: params.userId,
+      id: txId,
+      direction: 'debit',
+      amount: params.amount,
+      currency: PRIMARY_CURRENCY,
+      source: 'investment',
+      title: 'Investment lock',
+      reason: `Locked $${params.amount.toFixed(2)} for ${params.lockDays} days`,
+      externalReference: reference,
+      channel: 'wallet',
+      beneficiaryName: 'Investment pocket',
+    });
+  } catch (err: unknown) {
+    console.warn(
+      `[depositToInvestment] wallet activity record skipped: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
 
   const maturesAt = new Date();
   maturesAt.setUTCDate(maturesAt.getUTCDate() + params.lockDays);

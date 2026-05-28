@@ -488,3 +488,21 @@ export function buildReceiveCryptoPayload(row: {
     creditsTo: 'USD',
   };
 }
+
+/** Decrypt stored mnemonic for recovery phrase screen (after PIN verified). */
+export async function getRecoveryMnemonicForUser(
+  userId: string
+): Promise<string | null> {
+  const row = await db.oneOrNone<{ crypto_mnemonic_encrypted: string | null }>(
+    `SELECT crypto_mnemonic_encrypted FROM wallets
+     WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
+    [userId]
+  );
+  const enc = row?.crypto_mnemonic_encrypted;
+  if (!enc || !String(enc).trim()) return null;
+  try {
+    return decryptSecret(String(enc)).trim();
+  } catch {
+    return null;
+  }
+}

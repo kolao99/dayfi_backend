@@ -312,7 +312,8 @@ export async function creditWalletBalance(params: {
               ? 'bank'
               : 'wallet',
         network: params.source === 'stellar' ? 'stellar' : null,
-        beneficiaryName: 'Wallet Top Up',
+        beneficiaryName:
+          params.source === 'swap' ? 'Currency conversion' : 'Wallet Top Up',
       });
     } catch (err: unknown) {
       console.warn(

@@ -126,6 +126,15 @@ Router.get(
 );
 
 Router.post(
+  '/wallet/recovery-phrase',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.walletRecoveryPhrase,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentController.getWalletRecoveryPhrase
+);
+
+Router.post(
   '/bank-transfer',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,

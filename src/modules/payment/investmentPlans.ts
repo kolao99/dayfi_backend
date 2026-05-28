@@ -15,10 +15,27 @@ export const INVESTMENT_PLAN_TIERS: InvestmentPlanTier[] = [
 /** Extra APY for longer locks (on top of treasury base yield). */
 export const LOCK_APY_BONUS: Record<number, number> = {
   30: 0,
-  90: 0.5,
-  180: 1.0,
-  365: 1.5,
+  90: 1.25,
+  180: 2.5,
+  365: 4.0,
 };
+
+/** Customer-facing annual APY per lock tier (longer locks = higher APY). */
+export const LOCK_QUOTED_APY: Record<number, number> = {
+  30: 1.5,
+  90: 3.5,
+  180: 5.5,
+  365: 8.0,
+};
+
+/** Total return % for the lock period (APY prorated: apy × lockDays / 365). */
+export function periodReturnPercent(apyPercent: number, lockDays: number): number {
+  const pct = (apyPercent * lockDays) / 365;
+  return Math.round(pct * 1000) / 1000;
+}
+
+/** @deprecated Use LOCK_QUOTED_APY */
+export const LOCK_TIER_MIN_APY = LOCK_QUOTED_APY;
 
 export function getLockApyBonus(lockDays: number): number {
   return LOCK_APY_BONUS[lockDays] ?? 0;

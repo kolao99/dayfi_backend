@@ -271,6 +271,13 @@ class PaymentValidator {
     this.validateRequestQuery(req, res, next, schema, 'getPayoutQuote');
   };
 
+  walletRecoveryPhrase = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      pin: Joi.string().required(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'walletRecoveryPhrase');
+  };
+
   investmentDeposit = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       amount: Joi.number().positive().min(1).required(),

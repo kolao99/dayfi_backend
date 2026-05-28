@@ -16,6 +16,7 @@ import {
   provisionCryptoWalletsForUser,
   buildReceiveCryptoPayload,
   getCryptoWalletProvisionJob,
+  getRecoveryMnemonicForUser,
 } from './cryptoWalletProvision';
 import {
   getCryptoBalances,
@@ -1031,6 +1032,33 @@ class PaymentController {
       return errorResponse(
         res,
         err?.message || 'Unable to read status',
+        enums.HTTP_INTERNAL_SERVER_ERROR
+      );
+    }
+  };
+
+  getWalletRecoveryPhrase = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const mnemonic = await getRecoveryMnemonicForUser(userId);
+      if (!mnemonic) {
+        return errorResponse(
+          res,
+          'No recovery phrase found for this account',
+          enums.HTTP_NOT_FOUND
+        );
+      }
+      const words = mnemonic.split(/\s+/).filter(Boolean);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Recovery phrase'),
+        enums.HTTP_OK,
+        { words, phrase: mnemonic }
+      );
+    } catch (err: unknown) {
+      return errorResponse(
+        res,
+        err instanceof Error ? err.message : 'Unable to load recovery phrase',
         enums.HTTP_INTERNAL_SERVER_ERROR
       );
     }

@@ -102,9 +102,9 @@ export async function recordWalletActivity(
   if (extRef) {
     const existingByRef = await db.oneOrNone<{ id: string }>(
       `SELECT id FROM wallet_transactions
-       WHERE user_id = $1 AND external_reference = $2
+       WHERE user_id = $1 AND external_reference = $2 AND ledger_currency = $3
        LIMIT 1`,
-      [userId, extRef]
+      [userId, extRef, currency]
     );
     if (existingByRef) return { recorded: false };
   }
@@ -202,7 +202,17 @@ export async function backfillWalletActivitiesFromLedger(
   for (const row of rows) {
     const meta = row.metadata ?? {};
     const assetCode = String(meta.assetCode ?? row.currency).toUpperCase();
-    const txId = buildWalletActivityTxId(row.external_reference, row.id);
+    const isSwap = row.source === 'swap';
+    const activityTitle =
+      typeof meta.activityTitle === 'string' ? meta.activityTitle.trim() : '';
+    const txId =
+      isSwap && row.external_reference
+        ? buildWalletActivityTxId(
+            row.direction === 'credit'
+              ? `swap-credit-${row.external_reference}`
+              : `swap-debit-${row.external_reference}`
+          )
+        : buildWalletActivityTxId(row.external_reference, row.id);
 
     const result = await recordWalletActivity({
       userId: row.user_id,
@@ -211,8 +221,9 @@ export async function backfillWalletActivitiesFromLedger(
       amount: Number(row.amount),
       currency: row.currency,
       source: row.source as LedgerSource,
-      title:
-        row.direction === 'credit'
+      title: isSwap
+        ? activityTitle || `Convert ${meta.fromCurrency ?? row.currency}`
+        : row.direction === 'credit'
           ? `${assetCode} deposit`
           : `${row.currency} withdrawal`,
       externalReference: row.external_reference ?? undefined,
@@ -223,11 +234,17 @@ export async function backfillWalletActivitiesFromLedger(
             ? 'bank'
             : 'wallet',
       network: row.source === 'stellar' ? 'stellar' : null,
-      reason:
-        row.direction === 'credit'
+      reason: isSwap
+        ? activityTitle ||
+          `Convert ${meta.fromCurrency ?? ''} → ${meta.toCurrency ?? row.currency}`
+        : row.direction === 'credit'
           ? `${assetCode} deposit via ${row.source}`
           : `${row.currency} sent via ${row.source}`,
-      beneficiaryName: row.direction === 'credit' ? 'Wallet Top Up' : 'Recipient',
+      beneficiaryName: isSwap
+        ? 'Currency conversion'
+        : row.direction === 'credit'
+          ? 'Wallet Top Up'
+          : 'Recipient',
       timestamp: row.created_at,
     });
     if (result.recorded) inserted += 1;
