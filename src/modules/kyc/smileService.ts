@@ -79,11 +79,117 @@ function isVerifiedPayload(payload: Record<string, unknown>): boolean {
 }
 
 function partnerUserId(payload: Record<string, unknown>): string {
+  const direct = String(payload.user_id ?? payload.userId ?? '').trim();
+  if (direct) return direct;
+
   const params =
     (payload.PartnerParams as Record<string, unknown> | undefined) ??
     (payload.partner_params as Record<string, unknown> | undefined) ??
     {};
   return String(params.user_id ?? params.userId ?? '').trim();
+}
+
+/** Flutter Biometric KYC onSuccess — file paths only, not Smile verification JSON. */
+export function isBiometricSdkCapturePayload(raw: unknown): boolean {
+  let payload: Record<string, unknown>;
+  if (typeof raw === 'string') {
+    try {
+      payload = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+  } else if (raw && typeof raw === 'object') {
+    payload = raw as Record<string, unknown>;
+  } else {
+    return false;
+  }
+  return (
+    typeof payload.selfieFile === 'string' ||
+    payload.didSubmitBiometricKycJob !== undefined ||
+    Array.isArray(payload.livenessFiles)
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Poll Smile job_status after mobile Biometric KYC capture. */
+export async function fetchSmileJobStatus(
+  userId: string,
+  jobId: string
+): Promise<Record<string, unknown>> {
+  const timestamp = new Date().toISOString();
+  const signature = generateSignature(timestamp);
+
+  const response = await axios.post(
+    `${baseUrl()}/v1/job_status`,
+    {
+      partner_id: partnerId(),
+      timestamp,
+      signature,
+      user_id: userId,
+      job_id: jobId,
+      image_links: false,
+      history: false,
+    },
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+
+  return response.data as Record<string, unknown>;
+}
+
+export async function resolveBiometricKycFromJob(
+  userId: string,
+  jobId: string,
+  idTypeHint = 'BVN',
+  maxAttempts = 6,
+  delayMs = 2000
+): Promise<ParsedSmileKyc | null> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const status = await fetchSmileJobStatus(userId, jobId);
+    const resultBlock = status.result as Record<string, unknown> | undefined;
+
+    const parsed =
+      parseSmileKycPayload(status, idTypeHint, userId) ??
+      (resultBlock
+        ? parseSmileKycPayload(resultBlock, idTypeHint, userId)
+        : null) ??
+      parseSmileKycPayload(
+        {
+          ...status,
+          ...(resultBlock ?? {}),
+          PartnerParams: {
+            user_id: userId,
+            job_id: jobId,
+            ...(resultBlock?.PartnerParams as Record<string, unknown> | undefined),
+          },
+        },
+        idTypeHint,
+        userId
+      );
+
+    if (parsed?.verified) {
+      return { ...parsed, userId };
+    }
+
+    const complete = status.job_complete === true || status.job_complete === 'true';
+    const success = status.job_success === true || status.job_success === 'true';
+    if (complete && !success) {
+      const text = String(
+        (resultBlock?.ResultText as string | undefined) ??
+          status.ResultText ??
+          'BVN verification was not approved'
+      );
+      throw new Error(text);
+    }
+
+    if (attempt < maxAttempts - 1) {
+      await sleep(delayMs);
+    }
+  }
+
+  return null;
 }
 
 function extractIdNumber(
@@ -119,7 +225,8 @@ function extractIdNumber(
 
 export function parseSmileKycPayload(
   raw: unknown,
-  idTypeHint?: string
+  idTypeHint?: string,
+  userIdOverride?: string
 ): ParsedSmileKyc | null {
   let payload: Record<string, unknown>;
   if (typeof raw === 'string') {
@@ -134,6 +241,10 @@ export function parseSmileKycPayload(
     return null;
   }
 
+  if (isBiometricSdkCapturePayload(payload)) {
+    return null;
+  }
+
   const nested =
     (payload.result as Record<string, unknown> | undefined) ??
     (payload.data as Record<string, unknown> | undefined);
@@ -141,7 +252,7 @@ export function parseSmileKycPayload(
     payload = { ...payload, ...nested };
   }
 
-  const userId = partnerUserId(payload);
+  const userId = userIdOverride?.trim() || partnerUserId(payload);
   if (!userId) return null;
 
   const verified = isVerifiedPayload(payload);

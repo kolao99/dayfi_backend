@@ -1,12 +1,17 @@
 import { Request, Response } from 'express';
 import { success, errorResponse } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
+import AuthService from '../authentication/services';
 import {
+  isBiometricSdkCapturePayload,
   mergeAndApplySmileResult,
   parseSmileKycPayload,
+  resolveBiometricKycFromJob,
   smileCallbackUrl,
   verifyIdWithSmile,
 } from './smileService';
+
+const authService = new AuthService();
 
 class KycController {
   smileConfig = async (_req: Request, res: Response): Promise<any> => {
@@ -64,17 +69,45 @@ class KycController {
       const raw =
         req.body?.smileResult ?? req.body?.result ?? req.body?.payload ?? req.body;
       const idTypeHint = String(req.body?.idType ?? req.body?.id_type ?? 'BVN');
+      const jobId = String(req.body?.jobId ?? req.body?.job_id ?? '').trim();
+      const userId = user.user_id;
 
-      let parsed = parseSmileKycPayload(raw, idTypeHint);
+      let parsed = parseSmileKycPayload(raw, idTypeHint, userId);
+
+      if (!parsed && isBiometricSdkCapturePayload(raw)) {
+        if (!jobId) {
+          return errorResponse(
+            res,
+            'Missing Smile job ID. Please retry BVN verification.',
+            enums.HTTP_BAD_REQUEST
+          );
+        }
+
+        parsed = await resolveBiometricKycFromJob(userId, jobId, idTypeHint);
+
+        if (!parsed) {
+          const profile = await authService.getUserById(userId);
+          const existingBvn = String(profile?.bvn ?? '').trim();
+          if (/^\d{11}$/.test(existingBvn)) {
+            parsed = {
+              userId,
+              verified: true,
+              bvn: existingBvn,
+              idType: 'BVN',
+            };
+          }
+        }
+      }
+
       if (!parsed) {
         return errorResponse(
           res,
-          'Invalid Smile ID result payload',
+          'Verification is still processing. Wait a moment and tap Continue again, or retry the selfie step.',
           enums.HTTP_BAD_REQUEST
         );
       }
 
-      parsed = { ...parsed, userId: user.user_id };
+      parsed = { ...parsed, userId };
 
       if (!parsed.verified) {
         return errorResponse(
