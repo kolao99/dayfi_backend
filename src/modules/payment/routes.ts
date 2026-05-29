@@ -194,6 +194,13 @@ Router.get(
   paymentController.getExchangeRate
 );
 
+Router.get(
+  '/exchange-rates/wallet',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getWalletExchangeRates
+);
+
 Router.post(
   '/wallets/swap',
   authMiddleware.getAuthToken,

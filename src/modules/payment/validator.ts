@@ -282,6 +282,7 @@ class PaymentValidator {
     const schema = Joi.object({
       amount: Joi.number().positive().min(1).required(),
       lockDays: Joi.number().integer().valid(30, 90, 180, 365).required(),
+      name: Joi.string().trim().min(1).max(120).required(),
       pin: Joi.string().required(),
       idempotencyKey: Joi.string().max(255).optional(),
     });

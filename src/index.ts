@@ -43,6 +43,13 @@ async function main(app: Express): Promise<void> {
   }
   await db.connect();
 
+  const {
+    syncWalletExchangeRatesFromMarket,
+    startWalletFxSyncScheduler,
+  } = await import('./modules/payment/fxRateSyncService');
+  await syncWalletExchangeRatesFromMarket();
+  startWalletFxSyncScheduler();
+
   const server = http.createServer(app);
 
   const preferredPort = Number(Env.get('PORT') ?? 3000);

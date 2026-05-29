@@ -1,0 +1,2 @@
+ALTER TABLE investment_positions
+  ADD COLUMN IF NOT EXISTS name VARCHAR(120) NOT NULL DEFAULT 'My lock';

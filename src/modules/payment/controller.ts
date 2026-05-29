@@ -598,6 +598,17 @@ class PaymentController {
     }
   };
 
+  getWalletExchangeRates = async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const { getWalletExchangeRateMatrix } = await import('./fxRateSyncService');
+      const matrix = await getWalletExchangeRateMatrix();
+      success(res, 'Wallet exchange rates', enums.HTTP_OK, matrix);
+    } catch (err: any) {
+      console.error(`Wallet exchange rates error: ${err.message}`);
+      errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
   swapCurrency = async (req: Request, res: Response): Promise<void> => {
     try {
       const { fromCurrency, toCurrency, amount } = req.body;
@@ -1556,13 +1567,14 @@ class PaymentController {
 
   depositInvestment = async (req: Request, res: Response): Promise<any> => {
     try {
-      const { amount, lockDays, idempotencyKey } = req.body;
+      const { amount, lockDays, name, idempotencyKey } = req.body;
       const usd = await this.paymentService.ensureUsdWallet(req.user?.user_id);
       const result = await depositToInvestment({
         userId: req.user?.user_id,
         usdWalletId: usd.wallet_id,
         amount: Number(amount),
         lockDays: Number(lockDays),
+        name: String(name || '').trim(),
         idempotencyKey,
       });
       return success(

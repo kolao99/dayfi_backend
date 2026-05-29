@@ -24,6 +24,7 @@ import {
 export type InvestmentPositionRow = {
   id: string;
   user_id: string;
+  name: string;
   principal: string;
   apy_percent: string;
   lock_days: number;
@@ -57,6 +58,7 @@ function formatPosition(row: InvestmentPositionRow) {
 
   return {
     id: row.id,
+    name: row.name?.trim() || 'My lock',
     principal,
     apyPercent: apy,
     lockDays,
@@ -148,7 +150,7 @@ export async function listInvestmentPositions(userId: string) {
   if (!(await investmentPositionsReady())) return [];
   await refreshMaturedPositions(userId);
   const rows = await db.manyOrNone<InvestmentPositionRow>(
-    `SELECT id, user_id, principal, apy_percent, lock_days, interest_earned,
+    `SELECT id, user_id, name, principal, apy_percent, lock_days, interest_earned,
             status, started_at, matures_at, claimed_at, deposit_reference
      FROM investment_positions
      WHERE user_id = $1
@@ -232,6 +234,7 @@ export async function depositToInvestment(params: {
   usdWalletId: string;
   amount: number;
   lockDays: number;
+  name: string;
   idempotencyKey?: string;
 }): Promise<{
   reference: string;
@@ -249,6 +252,10 @@ export async function depositToInvestment(params: {
   const tier = findPlanByLockDays(params.lockDays);
   if (!tier) throw new Error('Invalid lock period. Choose 30, 90, 180, or 365 days.');
   if (params.amount < 1) throw new Error('Minimum investment is $1');
+  const lockName = params.name?.trim();
+  if (!lockName || lockName.length > 120) {
+    throw new Error('Lock name is required (max 120 characters)');
+  }
 
   const pocket = await db.oneOrNone<{ risk_accepted_at: Date | null }>(
     `SELECT risk_accepted_at FROM investment_pockets WHERE user_id = $1`,
@@ -311,7 +318,7 @@ export async function depositToInvestment(params: {
       amount: params.amount,
       currency: PRIMARY_CURRENCY,
       source: 'investment',
-      title: 'Investment lock',
+      title: lockName,
       reason: `Locked $${params.amount.toFixed(2)} for ${params.lockDays} days`,
       externalReference: reference,
       channel: 'wallet',
@@ -331,12 +338,13 @@ export async function depositToInvestment(params: {
   const positionId = await db.tx(async (t) => {
     const pos = await t.one<{ id: string }>(
       `INSERT INTO investment_positions (
-         user_id, principal, apy_percent, lock_days, status,
+         user_id, name, principal, apy_percent, lock_days, status,
          started_at, matures_at, deposit_reference, idempotency_key
-       ) VALUES ($1, $2, $3, $4, 'active', CURRENT_TIMESTAMP, $5, $6, $7)
+       ) VALUES ($1, $2, $3, $4, $5, 'active', CURRENT_TIMESTAMP, $6, $7, $8)
        RETURNING id`,
       [
         params.userId,
+        lockName,
         params.amount,
         apyPercent,
         params.lockDays,
@@ -413,7 +421,7 @@ export async function claimInvestmentPosition(params: {
   }
 
   const row = await db.oneOrNone<InvestmentPositionRow>(
-    `SELECT id, user_id, principal, apy_percent, lock_days, interest_earned,
+    `SELECT id, user_id, name, principal, apy_percent, lock_days, interest_earned,
             status, started_at, matures_at, claimed_at, deposit_reference
      FROM investment_positions
      WHERE id = $1 AND user_id = $2`,
