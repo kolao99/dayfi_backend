@@ -25,6 +25,7 @@ import {
 } from './cryptoSendService';
 import { syncStellarInflowsToLedger } from './cryptoInflowSyncService';
 import { getPayoutQuote } from './payoutQuoteService';
+import { getUserFeatureActivity } from './featureActivityService';
 import {
   acceptInvestmentRisk,
   claimInvestmentPosition,
@@ -447,6 +448,22 @@ class PaymentController {
       );
     } catch (err: any) {
       console.error('Error fetching wallet transactions:', err.message);
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  getFeatureActivity = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      const activity = await getUserFeatureActivity(user?.user_id);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Feature activity'),
+        enums.HTTP_OK,
+        activity
+      );
+    } catch (err: any) {
+      console.error('Error fetching feature activity:', err.message);
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
   };

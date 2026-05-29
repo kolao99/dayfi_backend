@@ -1,6 +1,7 @@
 import express from 'express';
 import { paymentController } from './controller';
 import { billsController } from './billsController';
+import { budgetController } from './budgetController';
 import { paymentValidator } from './validator';
 import { authMiddleware } from '../authentication/middleware';
 import { paymentMiddleware } from './middleware';
@@ -154,6 +155,13 @@ Router.get(
 );
 
 Router.get(
+  '/feature-activity',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getFeatureActivity
+);
+
+Router.get(
   '/beneficiaries',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
@@ -272,6 +280,55 @@ Router.get(
   authMiddleware.validateUserAuthToken,
   paymentValidator.getPayoutQuote,
   paymentController.getPayoutQuoteHandler
+);
+
+Router.get(
+  '/budgets',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.list
+);
+
+Router.post(
+  '/budgets',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.create
+);
+
+Router.get(
+  '/budgets/:budgetId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.getOne
+);
+
+Router.patch(
+  '/budgets/:budgetId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.update
+);
+
+Router.post(
+  '/budgets/:budgetId/pause',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.pause
+);
+
+Router.post(
+  '/budgets/:budgetId/resume',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.resume
+);
+
+Router.delete(
+  '/budgets/:budgetId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.remove
 );
 
 Router.get(
