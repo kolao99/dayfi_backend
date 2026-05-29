@@ -144,6 +144,11 @@ export async function syncStellarInflowsToLedger(params: {
   for (const rec of records) {
     if (String(rec.type || '').toLowerCase() !== 'payment') continue;
     if (String(rec.to || '') !== address) continue;
+    const fromAddress = String(rec.from || '').trim();
+    if (fromAddress && fromAddress === address) {
+      result.skipped += 1;
+      continue;
+    }
     if (!isKnownStablecoinPayment(rec)) continue;
 
     const assetType = String(rec.asset_type || '').toLowerCase();

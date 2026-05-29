@@ -91,21 +91,18 @@ export async function sendStellarAsset(params: {
   }
 
   if (!destExists) {
-    txBuilder.addOperation(
-      StellarSdk.Operation.createAccount({
-        destination: dest,
-        startingBalance: '1',
-      })
-    );
-  } else {
-    txBuilder.addOperation(
-      StellarSdk.Operation.payment({
-        destination: dest,
-        asset,
-        amount: params.amount,
-      })
+    throw new Error(
+      'Destination Stellar account not found. The recipient must create and fund their Stellar wallet first.'
     );
   }
+
+  txBuilder.addOperation(
+    StellarSdk.Operation.payment({
+      destination: dest,
+      asset,
+      amount: params.amount,
+    })
+  );
 
   const memo = (params.memo || '').trim();
   if (memo) txBuilder.addMemo(StellarSdk.Memo.text(memo.substring(0, 28)));

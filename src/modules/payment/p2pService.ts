@@ -31,9 +31,6 @@ export async function transferByDayfiTag(params: {
   if (!recipientWallet) {
     throw new Error(`Recipient Dayfi tag not found for ${currency}`);
   }
-  if (recipientWallet.user_id === params.senderUserId) {
-    throw new Error('Cannot send to yourself');
-  }
 
   const reference = newReference('p2p');
   const debitKey = buildIdempotencyKey('p2p-debit', reference);

@@ -23,6 +23,7 @@ import {
   getCryptoSendConfig,
   routeCryptoSend,
 } from './cryptoSendService';
+import { recordCryptoOutboundLedger } from './cryptoOutboundLedgerService';
 import { syncStellarInflowsToLedger } from './cryptoInflowSyncService';
 import { getPayoutQuote } from './payoutQuoteService';
 import { getUserFeatureActivity } from './featureActivityService';
@@ -314,11 +315,29 @@ class PaymentController {
         return errorResponse(res, 'Invalid dayfi ID', enums.HTTP_BAD_REQUEST);
       }
 
+      const userRow = await db.oneOrNone<{
+        first_name: string | null;
+        last_name: string | null;
+      }>(
+        `SELECT first_name, last_name FROM users WHERE user_id = $1 LIMIT 1`,
+        [wallet.user_id]
+      );
+
+      const fullName =
+        `${userRow?.first_name ?? ''} ${userRow?.last_name ?? ''}`.trim();
+      const accountName =
+        String(wallet.account_name ?? '').trim() || fullName || null;
+
       return success(
         res,
         enums.FETCHED_SUCCESSFULLY('Dayfi id'),
         enums.HTTP_OK,
-        wallet
+        {
+          ...wallet,
+          first_name: userRow?.first_name ?? null,
+          last_name: userRow?.last_name ?? null,
+          account_name: accountName,
+        }
       );
     } catch (err) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
@@ -1376,11 +1395,21 @@ class PaymentController {
         memo: memo ? String(memo) : undefined,
       });
 
+      const ledger = await recordCryptoOutboundLedger({
+        userId,
+        amount: String(amount),
+        asset: String(asset),
+        network: String(network),
+        txHash: result.hash,
+        to: result.to,
+        from: result.from,
+      });
+
       return success(
         res,
         'Crypto transfer submitted',
         enums.HTTP_OK,
-        result
+        { ...result, ledger }
       );
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
