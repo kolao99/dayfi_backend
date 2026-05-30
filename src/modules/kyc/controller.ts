@@ -13,6 +13,7 @@ import {
   verifyBvnForUser,
   verifyIdWithSmile,
 } from './smileService';
+import { verifyUserIdentity } from './identityService';
 
 const authService = new AuthService();
 
@@ -82,6 +83,39 @@ class KycController {
         err instanceof Error ? err.message : String(err),
         enums.HTTP_INTERNAL_SERVER_ERROR
       );
+    }
+  };
+
+  /** One-step BVN + NIN verification (Flutterwave BVN + NGN VA). */
+  verifyIdentity = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      if (!user?.user_id) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+
+      const bvn = String(req.body?.bvn ?? '').trim();
+      const nin = String(req.body?.nin ?? '').trim();
+
+      const outcome = await verifyUserIdentity({
+        userId: user.user_id,
+        bvn,
+        nin,
+        firstName: user.first_name ?? '',
+        lastName: user.last_name ?? '',
+      });
+
+      return success(
+        res,
+        outcome.ngnAccount?.accountNumber
+          ? 'Verification complete. Your NGN bank account is ready.'
+          : 'Verification complete.',
+        enums.HTTP_OK,
+        outcome
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
     }
   };
 

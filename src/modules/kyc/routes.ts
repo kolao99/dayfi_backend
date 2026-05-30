@@ -4,6 +4,13 @@ import { kycController } from './controller';
 
 const Router = express.Router();
 
+Router.post(
+  '/verify-identity',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  kycController.verifyIdentity
+);
+
 Router.get('/status', authMiddleware.getAuthToken, authMiddleware.validateUserAuthToken, kycController.getKycStatus);
 
 Router.get('/smile/config', kycController.smileConfig);
