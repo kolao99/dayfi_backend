@@ -229,30 +229,39 @@ export const initiateTransfer = async (
   beneficiary_name: string,
   meta: Record<string, unknown> = {}
 ): Promise<Record<string, unknown>> => {
-  const response = await axios.post(
-    `${baseUrl()}/v3/transfers`,
-    {
-      account_bank,
-      account_number,
-      amount,
-      narration,
-      currency,
-      reference,
-      beneficiary_name,
-      meta,
-    },
-    { headers: v3Headers() }
-  );
+  try {
+    const response = await axios.post(
+      `${baseUrl()}/v3/transfers`,
+      {
+        account_bank,
+        account_number,
+        amount,
+        narration,
+        currency,
+        reference,
+        beneficiary_name,
+        meta,
+      },
+      { headers: v3Headers() }
+    );
 
-  const root = response.data as Record<string, unknown>;
-  const status = String(root.status || '').toLowerCase();
-  if (status !== 'success') {
+    const root = response.data as Record<string, unknown>;
+    const status = String(root.status || '').toLowerCase();
+    if (status !== 'success') {
+      throw new Error(
+        flutterwaveErrorMessage(
+          { response: { data: root } },
+          String(root.message || 'Flutterwave transfer failed')
+        )
+      );
+    }
+
+    return unwrapData<Record<string, unknown>>(root);
+  } catch (err: unknown) {
     throw new Error(
-      String(root.message || 'Flutterwave transfer failed')
+      flutterwaveErrorMessage(err, 'Flutterwave bank transfer failed')
     );
   }
-
-  return unwrapData<Record<string, unknown>>(root);
 };
 
 function assertFlutterwaveSuccess(payload: unknown, fallback: string): unknown {
@@ -267,9 +276,24 @@ function assertFlutterwaveSuccess(payload: unknown, fallback: string): unknown {
 /** Map axios/Flutterwave errors to a readable message (not "Request failed with status code 400"). */
 export function flutterwaveErrorMessage(err: unknown, fallback: string): string {
   if (axios.isAxiosError(err)) {
-    const data = err.response?.data as Record<string, unknown> | undefined;
-    if (data?.message) return String(data.message);
-    if (typeof data === 'string') return data;
+    const rawData = err.response?.data;
+    if (typeof rawData === 'string' && rawData.trim()) {
+      return rawData.trim();
+    }
+    const data = rawData as Record<string, unknown> | undefined;
+    if (data) {
+      const nested = data.data as Record<string, unknown> | undefined;
+      const complete =
+        nested?.complete_message ??
+        data.complete_message ??
+        nested?.message;
+      if (complete != null && String(complete).trim()) {
+        return String(complete).trim();
+      }
+      if (data.message != null && String(data.message).trim()) {
+        return String(data.message).trim();
+      }
+    }
   }
   if (err instanceof Error && err.message && !err.message.startsWith('Request failed with status code')) {
     return err.message;

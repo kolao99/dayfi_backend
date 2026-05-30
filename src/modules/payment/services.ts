@@ -586,9 +586,11 @@ class PaymentService {
           [totalDebit, walletId]
         );
       });
-      throw new Error(
-        flutterwaveErrorMessage(err, 'Flutterwave bank transfer failed')
+      const msg = flutterwaveErrorMessage(err, 'Flutterwave bank transfer failed');
+      console.error(
+        `[bankTransfer] Flutterwave payout failed user=${userId} ref=${reference} bank=${bankCode} acct=${accountNumber} amount=${amount}: ${msg}`
       );
+      throw new Error(msg);
     }
   }
 
