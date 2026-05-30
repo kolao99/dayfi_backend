@@ -391,23 +391,38 @@ const paymentService = new PaymentService();
 
 export type KycProfileSnapshot = {
   level: string;
+  tierLevel: number;
   bvn?: string;
   idType?: string;
   idNumber?: string;
   bvnVerified: boolean;
   ninVerified: boolean;
   canSendMoney: boolean;
+  /** Next step for mobile routing: tier2 = BVN + selfie, tier3 = NIN, none = complete */
+  nextVerificationStep: 'tier2' | 'tier3' | 'none';
   ngnAccount?: { accountNumber?: string; bankName?: string };
 };
 
-function parseTierLevel(level: string): number {
+export function parseTierLevel(level: string): number {
   const raw = String(level || '').toLowerCase();
   if (raw.startsWith('level-')) {
     const n = Number.parseInt(raw.slice(6), 10);
-    return Number.isFinite(n) && n >= 2 ? n : 1;
+    if (!Number.isFinite(n) || n < 1) return 1;
+    return Math.min(n, 3);
   }
   const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 2 ? n : 1;
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, 3);
+}
+
+function resolveNextVerificationStep(
+  tierLevel: number,
+  bvnVerified: boolean,
+  ninVerified: boolean
+): 'tier2' | 'tier3' | 'none' {
+  if (tierLevel < 2 || !bvnVerified) return 'tier2';
+  if (tierLevel < 3 || !ninVerified) return 'tier3';
+  return 'none';
 }
 
 export async function buildKycProfileSnapshot(
@@ -422,15 +437,22 @@ export async function buildKycProfileSnapshot(
   const bvnVerified = /^\d{11}$/.test(bvn);
   const ninVerified =
     idType.toUpperCase().includes('NIN') && /^\d{11}$/.test(idNumber);
+  const tierLevel = parseTierLevel(level);
 
   return {
     level,
+    tierLevel,
     bvn: bvnVerified ? bvn : undefined,
     idType: idType || undefined,
     idNumber: idNumber || undefined,
     bvnVerified,
     ninVerified,
-    canSendMoney: parseTierLevel(level) >= 2,
+    canSendMoney: tierLevel >= 2 && bvnVerified,
+    nextVerificationStep: resolveNextVerificationStep(
+      tierLevel,
+      bvnVerified,
+      ninVerified
+    ),
     ngnAccount,
   };
 }
@@ -485,10 +507,19 @@ export async function applySmileKycToUser(params: {
 
   if (bvn && /^\d{11}$/.test(bvn)) {
     await authService.saveUserBvn(userId, bvn);
+    await authService.updateUserLevel('level-2', userId);
   }
 
   if (nin && /^\d{11}$/.test(nin)) {
-    const user = await authService.getUserById(userId);
+    const existing = await authService.getUserById(userId);
+    const storedBvn = String(existing?.bvn ?? bvn ?? '').trim();
+    if (!/^\d{11}$/.test(storedBvn)) {
+      throw new Error(
+        'Complete Tier 2 verification (BVN + selfie) before verifying your NIN.'
+      );
+    }
+
+    const user = existing ?? (await authService.getUserById(userId));
     const snakeUser = {
       gender: user?.gender ?? '',
       dateOfBirth: user?.date_of_birth ?? user?.dateOfBirth ?? '',
@@ -504,28 +535,16 @@ export async function applySmileKycToUser(params: {
       idNumber: nin,
     };
     await authService.updateUserProfile(snakeUser as any);
-    await authService.updateUserLevel('level-2', userId);
-  } else if (bvn) {
-    const existing = await authService.getUserById(userId);
-    const hasNin =
-      String(existing?.id_type ?? '').toUpperCase().includes('NIN') &&
-      String(existing?.id_number ?? '').trim().length === 11;
-    if (hasNin) {
-      await authService.updateUserLevel('level-2', userId);
-    }
+    await authService.updateUserLevel('level-3', userId);
   }
 
   let ngnAccount: { accountNumber?: string; bankName?: string } | undefined;
   const profile = await authService.getUserById(userId);
   const email = String(profile?.email ?? '').trim();
   const storedBvn = String(profile?.bvn ?? bvn ?? '').trim();
-  const level = String(profile?.level ?? '');
+  const tierLevel = parseTierLevel(String(profile?.level ?? ''));
 
-  if (
-    email &&
-    storedBvn &&
-    (level.includes('level-2') || (nin && /^\d{11}$/.test(nin)))
-  ) {
+  if (email && storedBvn && tierLevel >= 2) {
     try {
       const wallet = await paymentService.ensureNgnVirtualAccount(
         userId,

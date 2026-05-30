@@ -86,7 +86,7 @@ class KycController {
     }
   };
 
-  /** One-step BVN + NIN verification (Flutterwave BVN + NGN VA). */
+  /** One-step BVN verification for Tier 2 (Flutterwave BVN + NGN VA). NIN is Tier 3. */
   verifyIdentity = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;
@@ -252,12 +252,22 @@ class KycController {
     }
   };
 
-  /** Verify NIN via Smile Enhanced KYC (server-side), then tier-2 + NGN VA. */
+  /** Verify NIN via Smile Enhanced KYC (server-side), then tier-3. Requires Tier 2 (BVN). */
   verifyNinWithSmile = async (req: Request, res: Response): Promise<any> => {
     try {
       const user = req.user;
       if (!user?.user_id) {
         return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+
+      const profile = await authService.getUserById(user.user_id);
+      const storedBvn = String(profile?.bvn ?? '').trim();
+      if (!/^\d{11}$/.test(storedBvn)) {
+        return errorResponse(
+          res,
+          'Complete Tier 2 verification (BVN + selfie) before verifying your NIN.',
+          enums.HTTP_BAD_REQUEST
+        );
       }
 
       const nin = String(req.body?.nin ?? '').trim();

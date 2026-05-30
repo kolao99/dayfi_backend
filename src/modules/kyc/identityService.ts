@@ -10,23 +10,28 @@ function formatApiError(err: unknown, fallback: string): string {
   return fallback;
 }
 
-/** BVN (Flutterwave) + NIN + tier-2 + NGN virtual account in one step. */
+/** Tier 2: BVN (Flutterwave) + level-2 + NGN virtual account. NIN is Tier 3 via Smile. */
 export async function verifyUserIdentity(params: {
   userId: string;
   bvn: string;
-  nin: string;
+  nin?: string;
   firstName: string;
   lastName: string;
 }): Promise<KycProfileSnapshot> {
   const userId = params.userId;
   const bvn = String(params.bvn).trim();
-  const nin = String(params.nin).trim();
+  const nin = String(params.nin ?? '').trim();
 
   if (!/^\d{11}$/.test(bvn)) {
     throw new Error('BVN must be exactly 11 digits.');
   }
-  if (!/^\d{11}$/.test(nin)) {
+  if (nin && !/^\d{11}$/.test(nin)) {
     throw new Error('NIN must be exactly 11 digits.');
+  }
+  if (nin) {
+    throw new Error(
+      'NIN verification is Tier 3. Complete BVN verification first, then verify your NIN separately.'
+    );
   }
 
   const firstName = String(params.firstName ?? '').trim();
@@ -53,22 +58,6 @@ export async function verifyUserIdentity(params: {
   }
 
   await authService.saveUserBvn(userId, bvn);
-
-  const user = await authService.getUserById(userId);
-  await authService.updateUserProfile({
-    gender: user?.gender ?? '',
-    dateOfBirth: user?.date_of_birth ?? user?.dateOfBirth ?? '',
-    userId,
-    country: user?.country ?? 'NG',
-    state: user?.state ?? '',
-    street: user?.street ?? '',
-    city: user?.city ?? '',
-    postalCode: user?.postal_code ?? user?.postalCode ?? '',
-    address: user?.address ?? '',
-    phoneNumber: user?.phone_number ?? user?.phoneNumber ?? '',
-    idType: 'NIN_V2',
-    idNumber: nin,
-  } as any);
   await authService.updateUserLevel('level-2', userId);
 
   const profile = await authService.getUserById(userId);
@@ -87,7 +76,7 @@ export async function verifyUserIdentity(params: {
   } catch (err: unknown) {
     const msg = formatApiError(err, 'Could not create NGN bank account.');
     throw new Error(
-      `Your BVN and NIN were saved, but we could not create your NGN bank account: ${msg}`
+      `Your BVN was verified, but we could not create your NGN bank account: ${msg}`
     );
   }
 
