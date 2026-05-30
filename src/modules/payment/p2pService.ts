@@ -1,6 +1,7 @@
 import { db } from '../../config/database';
 import { buildIdempotencyKey, newReference } from './balanceService';
 import { convertAmountToUsd } from './fxService';
+import { notifyP2pRecipient } from '../notifications/notificationService';
 
 export async function transferByDayfiTag(params: {
   senderUserId: string;
@@ -116,6 +117,22 @@ export async function transferByDayfiTag(params: {
     `SELECT balance FROM wallets WHERE wallet_id = $1`,
     [params.senderWalletId]
   );
+
+  try {
+    await notifyP2pRecipient({
+      recipientUserId: recipientWallet.user_id,
+      senderUserId: params.senderUserId,
+      senderWalletId: params.senderWalletId,
+      amount,
+      currency,
+      reference,
+    });
+  } catch (err: unknown) {
+    console.warn(
+      '[p2p] recipient notification failed:',
+      err instanceof Error ? err.message : err
+    );
+  }
 
   return {
     reference,

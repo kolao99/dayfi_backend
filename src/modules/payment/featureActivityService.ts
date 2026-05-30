@@ -113,6 +113,17 @@ export async function getUserFeatureActivity(
     [userId]
   );
 
+  let budgetCreated = false;
+  try {
+    const createdRow = await db.oneOrNone<{ ok: boolean }>(
+      `SELECT true AS ok FROM budgets WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
+    budgetCreated = createdRow?.ok === true;
+  } catch {
+    budgetCreated = false;
+  }
+
   let budgetSpent = false;
   try {
     const budgetRow = await db.oneOrNone<{ ok: boolean }>(
@@ -133,7 +144,7 @@ export async function getUserFeatureActivity(
       swap: false,
       pay: false,
       invest: false,
-      budget: budgetSpent,
+      budget: budgetSpent || budgetCreated,
     };
   }
 
@@ -143,6 +154,6 @@ export async function getUserFeatureActivity(
     swap: row.swap,
     pay: row.pay,
     invest: row.invest,
-    budget: row.budget_tx || budgetSpent,
+    budget: row.budget_tx || budgetSpent || budgetCreated,
   };
 }

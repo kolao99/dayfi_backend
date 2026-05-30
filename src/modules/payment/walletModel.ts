@@ -3,6 +3,8 @@
  * @see docs/PAYMENTS_ARCHITECTURE.md
  */
 
+import config from '../../config/env';
+
 export const PRIMARY_CURRENCY = 'USD' as const;
 export const LOCAL_SPEND_CURRENCY = 'NGN' as const;
 
@@ -27,6 +29,39 @@ export type GreyKybStatus =
   | 'pending'
   | 'processing'
   | 'request_bank_account';
+
+/** Realistic Grey sandbox samples when KYB account numbers are not provisioned yet. */
+const GREY_SANDBOX_DEMO: Record<
+  string,
+  {
+    accountNumber?: string;
+    iban?: string;
+    bankName: string;
+    routingNumber?: string;
+  }
+> = {
+  USD: {
+    accountNumber: '4848920173',
+    routingNumber: '021000021',
+    bankName: 'Column N.A.',
+  },
+  EUR: {
+    iban: 'DE89370400440532013000',
+    bankName: 'Grey EU',
+  },
+  GBP: {
+    accountNumber: '31926819',
+    routingNumber: '040004',
+    bankName: 'Grey UK',
+  },
+};
+
+function greySandboxDemoEnabled(): boolean {
+  return (
+    (config?.GREY_SANDBOX as boolean | undefined) ??
+    process.env.DAYFI_GREY_SANDBOX !== 'false'
+  );
+}
 
 export type WalletRow = {
   wallet_id: string;
@@ -160,13 +195,31 @@ export function formatGreyAccountForUi(
 ): Record<string, unknown> {
   const currency = String(row.currency ?? 'USD').toUpperCase();
   const meta = parseGreyMeta(row);
-  const hasDepositDetails = Boolean(
-    row.account_number || row.iban || row.routing_number
-  );
+  let accountNumber = row.account_number ?? null;
+  let iban = row.iban ?? null;
+  let bankName = row.bank_name ?? null;
+  let routingNumber = row.routing_number ?? null;
+  let isDemoAccount = false;
+
+  const hasDepositDetails = Boolean(accountNumber || iban || routingNumber);
 
   let kybStatus = String(meta.kybStatus ?? 'pending') as GreyKybStatus;
   if (hasDepositDetails) {
     kybStatus = 'active';
+  } else if (
+    !hasDepositDetails &&
+    currency !== 'NGN' &&
+    greySandboxDemoEnabled()
+  ) {
+    const demo = GREY_SANDBOX_DEMO[currency];
+    if (demo) {
+      accountNumber = demo.accountNumber ?? accountNumber;
+      iban = demo.iban ?? iban;
+      bankName = demo.bankName;
+      routingNumber = demo.routingNumber ?? routingNumber;
+      kybStatus = 'active';
+      isDemoAccount = true;
+    }
   } else if (currency === 'NGN') {
     kybStatus = 'request_bank_account';
   } else if (currency === 'USD') {
@@ -185,17 +238,23 @@ export function formatGreyAccountForUi(
   const balance =
     ledgerBalance != null ? ledgerBalance : 0;
 
+  const hasDisplayDetails = Boolean(accountNumber || iban);
+
   return {
     currency,
     name: WALLET_LABELS[currency] ?? currency,
     kybStatus,
-    statusLabel: statusMessage[kybStatus],
+    statusLabel: isDemoAccount
+      ? 'Demo · Grey testnet'
+      : statusMessage[kybStatus],
     balance,
     formattedBalance: formatMoney(balance, currency),
-    canReceiveDeposits: kybStatus === 'active',
-    accountNumber: row.account_number ?? null,
-    iban: row.iban ?? null,
-    bankName: row.bank_name ?? null,
+    canReceiveDeposits: hasDisplayDetails && !isDemoAccount && kybStatus === 'active',
+    isDemoAccount,
+    accountNumber,
+    iban,
+    bankName,
+    routingNumber,
     rails: meta.rails ?? [],
     provider: currency === 'NGN' ? 'flutterwave' : 'grey',
     creditsTo: currency,
