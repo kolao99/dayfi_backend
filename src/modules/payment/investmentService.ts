@@ -11,6 +11,7 @@ import {
 import { PRIMARY_CURRENCY } from './walletModel';
 import { findPlanByLockDays, getStaticMaxApyPercent } from './investmentPlans';
 import {
+  calculateAccruedInterest,
   calculateMaturityInterest,
   getInvestmentPlansForApi,
   getMaxTvlUsd,
@@ -55,6 +56,18 @@ function formatPosition(row: InvestmentPositionRow) {
     row.status === 'claimed' ||
     now >= maturesAt.getTime();
   const canClaim = row.status === 'matured' || (row.status === 'active' && isMatured);
+  const accruedInterest =
+    row.status === 'claimed'
+      ? 0
+      : calculateAccruedInterest(
+          principal,
+          apy,
+          lockDays,
+          new Date(row.started_at),
+          maturesAt,
+          new Date(),
+          interest
+        );
 
   return {
     id: row.id,
@@ -63,6 +76,7 @@ function formatPosition(row: InvestmentPositionRow) {
     apyPercent: apy,
     lockDays,
     interestEarned: roundMoney(interest),
+    accruedInterest: roundMoney(accruedInterest),
     totalPayout: roundMoney(principal + interest),
     status: row.status === 'active' && isMatured ? 'matured' : row.status,
     startedAt: row.started_at.toISOString(),
@@ -204,11 +218,14 @@ export async function getInvestmentSummary(userId: string) {
 
   const positions = await listInvestmentPositions(userId);
   const maturedCount = positions.filter((p) => p.canClaim).length;
+  const accruedInterestTotal = positions
+    .filter((p) => p.status !== 'claimed')
+    .reduce((sum, p) => sum + p.accruedInterest, 0);
 
   return {
     balance: Number(pocket?.balance ?? 0),
     lockedPrincipal: Number(agg.locked),
-    estimatedInterest: roundMoney(Number(agg.pending_interest)),
+    estimatedInterest: roundMoney(accruedInterestTotal),
     claimablePrincipal: Number(agg.claimable),
     totalDeposited: Number(pocket?.total_deposited ?? 0),
     riskAccepted: Boolean(pocket?.risk_accepted_at),

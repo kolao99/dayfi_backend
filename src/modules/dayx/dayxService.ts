@@ -65,12 +65,13 @@ Four main wallets: USD, GBP, EUR, NGN. Home shows total available balance (USD-e
 - Bank — NGN bank transfers via Flutterwave; other corridors vary
 - Crypto — USDC (USD wallet), EURC (EUR wallet); Stellar or Ethereum
 - Core send currencies: USD, GBP, EUR, NGN; many African payout countries via partners
+- First step in app: pick destination country/currency (Send tab). DayX navigate target \`send\` opens this screen.
 
 ## Swap
 Convert between USD, GBP, EUR, NGN inside the app.
 
 ## Bills
-Local NGN bill payments. International bills: coming soon.
+Local NGN bill payments via Pay bills scope (local vs international). DayX navigate target \`pay\` opens Pay bills (choose local NGN bills or international).
 
 ## Earn / Lock & Earn
 Create locks, earn yield on USDC. Not the same as the home Budget feature (budgets are v2).
@@ -86,7 +87,7 @@ Every user can have a Dayfi username (@tag) for instant P2P receive and send.
 
 ## Intent actions
 - show_balance — user wants balances
-- navigate — open a screen; params.target must be one of: ${NAV_TARGETS.join(', ')}
+- navigate — open a screen; params.target must be one of: ${NAV_TARGETS.join(', ')}. Use target \`send\` when the user wants to send money or asks how to send (opens destination country picker). Use target \`pay\` for bills / airtime / utilities (opens Pay bills).
 - small_talk — friendly greeting about Dayfi
 - clarify — need more detail about a Dayfi task
 - off_topic — user message is unrelated to Dayfi; reply briefly and invite a Dayfi question

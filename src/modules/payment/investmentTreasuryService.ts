@@ -168,6 +168,30 @@ export function calculateMaturityInterest(
   return Math.round(interest * 10000) / 10000;
 }
 
+/** Linear accrual from lock start to maturity, capped at full maturity interest. */
+export function calculateAccruedInterest(
+  principal: number,
+  apyPercent: number,
+  lockDays: number,
+  startedAt: Date,
+  maturesAt: Date,
+  now: Date = new Date(),
+  maturityInterest?: number
+): number {
+  const full =
+    maturityInterest ??
+    calculateMaturityInterest(principal, apyPercent, lockDays);
+  const nowMs = now.getTime();
+  const startMs = startedAt.getTime();
+  const endMs = maturesAt.getTime();
+  if (nowMs >= endMs) return full;
+  if (nowMs <= startMs) return 0;
+  const totalMs = endMs - startMs;
+  if (totalMs <= 0) return full;
+  const fraction = Math.min(1, Math.max(0, (nowMs - startMs) / totalMs));
+  return Math.round(full * fraction * 10000) / 10000;
+}
+
 export async function resolveApyForDeposit(
   tier: InvestmentPlanTier
 ): Promise<number> {
