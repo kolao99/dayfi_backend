@@ -4,11 +4,13 @@ import enums from '../../shared/lib/enums';
 import AuthService from '../authentication/services';
 import {
   allowSmileReEnroll,
+  buildKycProfileSnapshot,
   isBiometricSdkCapturePayload,
   mergeAndApplySmileResult,
   parseSmileKycPayload,
   resolveBiometricKycFromJob,
   smileCallbackUrl,
+  verifyBvnForUser,
   verifyIdWithSmile,
 } from './smileService';
 
@@ -51,6 +53,30 @@ class KycController {
       });
     } catch (err: unknown) {
       console.error('[smileWebhook]', err);
+      return errorResponse(
+        res,
+        err instanceof Error ? err.message : String(err),
+        enums.HTTP_INTERNAL_SERVER_ERROR
+      );
+    }
+  };
+
+  /** Current KYC state from server (BVN, NIN, tier). */
+  getKycStatus = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      if (!user?.user_id) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+
+      const snapshot = await buildKycProfileSnapshot(user.user_id);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('KYC status'),
+        enums.HTTP_OK,
+        snapshot
+      );
+    } catch (err: unknown) {
       return errorResponse(
         res,
         err instanceof Error ? err.message : String(err),
@@ -156,6 +182,39 @@ class KycController {
         err instanceof Error ? err.message : String(err),
         enums.HTTP_INTERNAL_SERVER_ERROR
       );
+    }
+  };
+
+  /** Verify BVN server-side (Smile Enhanced KYC, Flutterwave fallback). */
+  verifyBvnWithSmile = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      if (!user?.user_id) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+
+      const bvn = String(req.body?.bvn ?? '').trim();
+      if (!/^\d{11}$/.test(bvn)) {
+        return errorResponse(
+          res,
+          'BVN must be exactly 11 digits',
+          enums.HTTP_BAD_REQUEST
+        );
+      }
+
+      const parsed = await verifyBvnForUser({
+        userId: user.user_id,
+        bvn,
+        firstName: user.first_name ?? '',
+        lastName: user.last_name ?? '',
+        dob: user.date_of_birth ?? undefined,
+      });
+
+      const outcome = await mergeAndApplySmileResult(parsed);
+      return success(res, 'BVN verified successfully', enums.HTTP_OK, outcome);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
     }
   };
 

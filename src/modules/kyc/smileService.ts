@@ -389,14 +389,96 @@ export async function verifyIdWithSmile(params: {
 const authService = new AuthService();
 const paymentService = new PaymentService();
 
+export type KycProfileSnapshot = {
+  level: string;
+  bvn?: string;
+  idType?: string;
+  idNumber?: string;
+  bvnVerified: boolean;
+  ninVerified: boolean;
+  canSendMoney: boolean;
+  ngnAccount?: { accountNumber?: string; bankName?: string };
+};
+
+function parseTierLevel(level: string): number {
+  const raw = String(level || '').toLowerCase();
+  if (raw.startsWith('level-')) {
+    const n = Number.parseInt(raw.slice(6), 10);
+    return Number.isFinite(n) && n >= 2 ? n : 1;
+  }
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 2 ? n : 1;
+}
+
+export async function buildKycProfileSnapshot(
+  userId: string,
+  ngnAccount?: { accountNumber?: string; bankName?: string }
+): Promise<KycProfileSnapshot> {
+  const profile = await authService.getUserById(userId);
+  const level = String(profile?.level ?? 'level-1');
+  const bvn = String(profile?.bvn ?? '').trim();
+  const idType = String(profile?.id_type ?? profile?.idType ?? '').trim();
+  const idNumber = String(profile?.id_number ?? profile?.idNumber ?? '').trim();
+  const bvnVerified = /^\d{11}$/.test(bvn);
+  const ninVerified =
+    idType.toUpperCase().includes('NIN') && /^\d{11}$/.test(idNumber);
+
+  return {
+    level,
+    bvn: bvnVerified ? bvn : undefined,
+    idType: idType || undefined,
+    idNumber: idNumber || undefined,
+    bvnVerified,
+    ninVerified,
+    canSendMoney: parseTierLevel(level) >= 2,
+    ngnAccount,
+  };
+}
+
+/** Smile Enhanced KYC for BVN; falls back to Flutterwave lookup + save when Smile fails. */
+export async function verifyBvnForUser(params: {
+  userId: string;
+  bvn: string;
+  firstName: string;
+  lastName: string;
+  dob?: string;
+}): Promise<ParsedSmileKyc> {
+  const bvn = String(params.bvn).trim();
+  if (!/^\d{11}$/.test(bvn)) {
+    throw new Error('BVN must be exactly 11 digits');
+  }
+
+  try {
+    return await verifyIdWithSmile({
+      userId: params.userId,
+      idType: 'BVN',
+      idNumber: bvn,
+      firstName: params.firstName,
+      lastName: params.lastName,
+      dob: params.dob,
+    });
+  } catch (smileErr: unknown) {
+    console.warn(
+      `[verifyBvnForUser] Smile BVN failed, using Flutterwave fallback: ${
+        smileErr instanceof Error ? smileErr.message : String(smileErr)
+      }`
+    );
+    await authService.initiateBvnLookup(bvn, params.firstName, params.lastName);
+    return {
+      userId: params.userId,
+      verified: true,
+      bvn,
+      idType: 'BVN',
+      idNumber: bvn,
+    };
+  }
+}
+
 export async function applySmileKycToUser(params: {
   userId: string;
   bvn?: string;
   nin?: string;
-}): Promise<{
-  level: string;
-  ngnAccount?: { accountNumber?: string; bankName?: string };
-}> {
+}): Promise<KycProfileSnapshot> {
   const userId = params.userId;
   const bvn = params.bvn?.trim();
   const nin = params.nin?.trim();
@@ -463,12 +545,12 @@ export async function applySmileKycToUser(params: {
     }
   }
 
-  return { level: level || 'level-2', ngnAccount };
+  return buildKycProfileSnapshot(userId, ngnAccount);
 }
 
 export async function mergeAndApplySmileResult(
   parsed: ParsedSmileKyc
-): Promise<{ level: string; ngnAccount?: { accountNumber?: string; bankName?: string } }> {
+): Promise<KycProfileSnapshot> {
   const user = await authService.getUserById(parsed.userId);
   let bvn = parsed.bvn;
   let nin = parsed.nin;

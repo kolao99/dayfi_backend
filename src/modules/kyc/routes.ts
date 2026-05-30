@@ -4,6 +4,8 @@ import { kycController } from './controller';
 
 const Router = express.Router();
 
+Router.get('/status', authMiddleware.getAuthToken, authMiddleware.validateUserAuthToken, kycController.getKycStatus);
+
 Router.get('/smile/config', kycController.smileConfig);
 
 Router.post('/smile/webhook', kycController.smileWebhook);
@@ -20,6 +22,13 @@ Router.post(
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
   kycController.prepareSmileBvn
+);
+
+Router.post(
+  '/smile/verify-bvn',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  kycController.verifyBvnWithSmile
 );
 
 Router.post(
