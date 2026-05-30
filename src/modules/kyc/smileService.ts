@@ -62,6 +62,39 @@ function generateSignature(timestamp: string): string {
     .digest('base64');
 }
 
+/** Smile v2 REST headers (block-user, etc.). */
+function generateV2RequestSignature(timestamp: string): string {
+  return crypto
+    .createHmac('sha256', apiKey())
+    .update(`${timestamp}${partnerId()}sid_request`)
+    .digest('base64');
+}
+
+/** Allow an existing Smile user_id to submit a new Biometric KYC enrollment job. */
+export async function allowSmileReEnroll(userId: string): Promise<void> {
+  const trimmed = userId.trim();
+  if (!trimmed) return;
+
+  const timestamp = new Date().toISOString();
+  const signature = generateV2RequestSignature(timestamp);
+
+  await axios.post(
+    `${baseUrl()}/v2/block-user`,
+    {
+      allow_new_enroll: true,
+      user_id: trimmed,
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'smileid-partner-id': partnerId(),
+        'smileid-timestamp': timestamp,
+        'smileid-request-signature': signature,
+      },
+    }
+  );
+}
+
 function isVerifiedPayload(payload: Record<string, unknown>): boolean {
   const code = String(payload.ResultCode ?? payload.resultCode ?? '').trim();
   if (code && SUCCESS_RESULT_CODES.has(code)) return true;

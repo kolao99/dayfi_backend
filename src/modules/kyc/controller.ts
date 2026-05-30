@@ -3,6 +3,7 @@ import { success, errorResponse } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
 import AuthService from '../authentication/services';
 import {
+  allowSmileReEnroll,
   isBiometricSdkCapturePayload,
   mergeAndApplySmileResult,
   parseSmileKycPayload,
@@ -50,6 +51,36 @@ class KycController {
       });
     } catch (err: unknown) {
       console.error('[smileWebhook]', err);
+      return errorResponse(
+        res,
+        err instanceof Error ? err.message : String(err),
+        enums.HTTP_INTERNAL_SERVER_ERROR
+      );
+    }
+  };
+
+  /** Call before Biometric KYC selfie when user may already exist in Smile. */
+  prepareSmileBvn = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const user = req.user;
+      if (!user?.user_id) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+
+      try {
+        await allowSmileReEnroll(user.user_id);
+      } catch (err: unknown) {
+        console.warn(
+          `[prepareSmileBvn] allowSmileReEnroll skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+
+      return success(res, 'Ready for BVN verification', enums.HTTP_OK, {
+        userId: user.user_id,
+      });
+    } catch (err: unknown) {
       return errorResponse(
         res,
         err instanceof Error ? err.message : String(err),

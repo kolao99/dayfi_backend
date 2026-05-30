@@ -16,6 +16,13 @@ Router.post(
 );
 
 Router.post(
+  '/smile/prepare-bvn',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  kycController.prepareSmileBvn
+);
+
+Router.post(
   '/smile/verify-nin',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
