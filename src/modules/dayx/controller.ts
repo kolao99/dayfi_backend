@@ -30,7 +30,7 @@ class DayxController {
       if (msg === 'DAYX_AI_UNAVAILABLE') {
         return errorResponse(
           res,
-          'DayX AI is not configured on the server. Set OPENAI_API_KEY.',
+          'DayX AI is not configured on the server. Set GROQ_API_KEY (or OPENAI_API_KEY).',
           enums.HTTP_SERVICE_UNAVAILABLE
         );
       }
