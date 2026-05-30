@@ -424,7 +424,12 @@ class PaymentController {
         resolvedAccount
       );
     } catch (err) {
-      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+      const msg = err instanceof Error ? err.message : String(err);
+      const status =
+        /insufficient|invalid|flutterwave|bank code|account/i.test(msg)
+          ? enums.HTTP_BAD_REQUEST
+          : enums.HTTP_INTERNAL_SERVER_ERROR;
+      return errorResponse(res, msg, status);
     }
   };
 
@@ -666,21 +671,30 @@ class PaymentController {
 
   fetchNetworks = async (_req: Request, res: Response): Promise<any> => {
     try {
+      // NGN bank payouts use Flutterwave — prefer FW bank list; Yellow Card as fallback.
       let networks: unknown[] = [];
       try {
-        const yc = await this.yellowCardService.fetchNetworks();
-        const raw = (yc as { networks?: unknown[] })?.networks ?? yc;
-        if (Array.isArray(raw)) networks = raw;
-      } catch (ycErr: unknown) {
+        networks = await this.paymentService.fetchNigerianBankNetworks();
+      } catch (fwErr: unknown) {
         console.warn(
-          `[fetchNetworks] Yellow Card unavailable: ${
-            ycErr instanceof Error ? ycErr.message : String(ycErr)
+          `[fetchNetworks] Flutterwave banks unavailable: ${
+            fwErr instanceof Error ? fwErr.message : String(fwErr)
           }`
         );
       }
 
       if (!networks.length) {
-        networks = await this.paymentService.fetchNigerianBankNetworks();
+        try {
+          const yc = await this.yellowCardService.fetchNetworks();
+          const raw = (yc as { networks?: unknown[] })?.networks ?? yc;
+          if (Array.isArray(raw)) networks = raw;
+        } catch (ycErr: unknown) {
+          console.warn(
+            `[fetchNetworks] Yellow Card unavailable: ${
+              ycErr instanceof Error ? ycErr.message : String(ycErr)
+            }`
+          );
+        }
       }
 
       return success(
@@ -696,16 +710,53 @@ class PaymentController {
 
   fetchExchangeRates = async (req: Request, res: Response): Promise<any> => {
     try {
-      const { currency } = req.query;
-      const rates = await this.yellowCardService.fetchExchangeRates(
-        currency as string
-      );
-      return success(
-        res,
-        enums.FETCHED_SUCCESSFULLY('Exchange Rates'),
-        enums.HTTP_OK,
-        rates
-      );
+      const currency = String(req.query.currency ?? 'NGN')
+        .trim()
+        .toUpperCase();
+
+      // Domestic NGN does not need Yellow Card FX.
+      if (currency === 'NGN') {
+        return success(
+          res,
+          enums.FETCHED_SUCCESSFULLY('Exchange Rates'),
+          enums.HTTP_OK,
+          {
+            currency: 'NGN',
+            rate: 1,
+            buy: 1,
+            sell: 1,
+            source: 'platform',
+          }
+        );
+      }
+
+      try {
+        const rates = await this.yellowCardService.fetchExchangeRates(currency);
+        return success(
+          res,
+          enums.FETCHED_SUCCESSFULLY('Exchange Rates'),
+          enums.HTTP_OK,
+          rates
+        );
+      } catch (ycErr: unknown) {
+        console.warn(
+          `[fetchExchangeRates] Yellow Card unavailable: ${
+            ycErr instanceof Error ? ycErr.message : String(ycErr)
+          }`
+        );
+        return success(
+          res,
+          enums.FETCHED_SUCCESSFULLY('Exchange Rates'),
+          enums.HTTP_OK,
+          {
+            currency,
+            rate: 1,
+            buy: 1,
+            sell: 1,
+            source: 'fallback',
+          }
+        );
+      }
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
@@ -924,7 +975,7 @@ class PaymentController {
       const { accountNumber, networkId, bankCode } = req.body;
       const fwBankCode = String(bankCode || networkId || '').trim();
 
-      // Nigeria domestic: Flutterwave V3 account resolve (test + live keys).
+      // Nigeria domestic: Flutterwave V3 account resolve (primary for NGN bank transfers).
       if (fwBankCode && /^\d{3,6}$/.test(fwBankCode)) {
         const resolved = await this.paymentService.resolveBankAccount(
           accountNumber,
@@ -943,16 +994,25 @@ class PaymentController {
         );
       }
 
-      const bankDetails = await this.yellowCardService.resolveBankDetailsYC(
-        accountNumber,
-        networkId
-      );
-      return success(
-        res,
-        enums.FETCHED_SUCCESSFULLY('Bank Details'),
-        enums.HTTP_OK,
-        bankDetails
-      );
+      // Yellow Card fallback when Flutterwave bank code is unavailable.
+      try {
+        const bankDetails = await this.yellowCardService.resolveBankDetailsYC(
+          accountNumber,
+          networkId
+        );
+        return success(
+          res,
+          enums.FETCHED_SUCCESSFULLY('Bank Details'),
+          enums.HTTP_OK,
+          bankDetails
+        );
+      } catch (ycErr: unknown) {
+        throw new Error(
+          ycErr instanceof Error
+            ? ycErr.message
+            : 'Unable to resolve bank account. Select a bank from the list and try again.'
+        );
+      }
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
@@ -1028,7 +1088,7 @@ class PaymentController {
 
   fetchFees = async (_req: Request, res: Response): Promise<any> => {
     return success(res, enums.FETCHED_SUCCESSFULLY('Fees'), enums.HTTP_OK, {
-      transfer: { dayfi_to_dayfi: 0, dayfi_to_bank: 25 },
+      transfer: { dayfi_to_dayfi: 0, dayfi_to_bank: 10 },
       withdrawal: { local: 0, international: 0 },
     });
   };

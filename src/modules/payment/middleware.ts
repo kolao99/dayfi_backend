@@ -144,6 +144,7 @@ class PaymentMiddleware {
   ): Promise<any> => {
     try {
       const amount: number = parseFloat(req.body.amount);
+      const fee: number = parseFloat(req.body.fee) || 0;
       const wallet = (req as any).wallet;
 
       if (!wallet) {
@@ -154,10 +155,13 @@ class PaymentMiddleware {
         );
       }
 
-      if (wallet.balance < amount) {
+      const totalRequired = amount + fee;
+      if (Number(wallet.balance) < totalRequired) {
         return errorResponse(
           res,
-          'Insufficient wallet balance',
+          fee > 0
+            ? `Insufficient wallet balance. You need ₦${totalRequired.toLocaleString()} (₦${amount.toLocaleString()} + ₦${fee.toLocaleString()} fee).`
+            : 'Insufficient wallet balance',
           enums.HTTP_BAD_REQUEST
         );
       }

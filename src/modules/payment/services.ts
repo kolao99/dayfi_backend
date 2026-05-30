@@ -7,6 +7,7 @@ import {
   chargeCardWithToken,
   verifyCharge,
   verifyPayment,
+  flutterwaveErrorMessage,
 } from './flutterwaveService';
 import { db } from '../../config/database';
 import DBService from '../../shared/services/db.service';
@@ -527,7 +528,9 @@ class PaymentService {
         throw new Error('NGN wallet required for local bank transfer');
       }
       if (Number(wallet.balance) < totalDebit) {
-        throw new Error('Insufficient NGN balance');
+        throw new Error(
+          `Insufficient NGN balance. You need ₦${totalDebit.toLocaleString()} (₦${amount.toLocaleString()} + ₦${feeNum.toLocaleString()} fee).`
+        );
       }
       await t.none(
         `UPDATE wallets SET balance = balance - $1, updated_at = CURRENT_TIMESTAMP WHERE wallet_id = $2`,
@@ -541,40 +544,52 @@ class PaymentService {
       LastName: accountName.split(' ')[1] || '',
     };
 
-    const response = await initiateTransfer(
-      bankCode,
-      accountNumber,
-      amount,
-      narration,
-      LOCAL_SPEND_CURRENCY,
-      reference,
-      accountName,
-      meta
-    );
+    try {
+      const response = await initiateTransfer(
+        bankCode,
+        accountNumber,
+        amount,
+        narration,
+        LOCAL_SPEND_CURRENCY,
+        reference,
+        accountName,
+        meta
+      );
 
-    await recordWalletActivity({
-      userId,
-      id: reference,
-      direction: 'debit',
-      amount,
-      currency: LOCAL_SPEND_CURRENCY,
-      source: 'bank_out',
-      title: `Transfer to ${accountName}`,
-      reason: `Bank transfer to ${accountName} (${bankName})`,
-      channel: 'bank',
-      status: 'success-payment',
-      beneficiaryName: accountName,
-      accountNumber,
-      bankName,
-      externalReference: reference,
-    });
+      await recordWalletActivity({
+        userId,
+        id: reference,
+        direction: 'debit',
+        amount,
+        currency: LOCAL_SPEND_CURRENCY,
+        source: 'bank_out',
+        title: `Transfer to ${accountName}`,
+        reason: `Bank transfer to ${accountName} (${bankName})`,
+        channel: 'bank',
+        status: 'success-payment',
+        beneficiaryName: accountName,
+        accountNumber,
+        bankName,
+        externalReference: reference,
+      });
 
-    return {
-      success: true,
-      transferCode: reference,
-      response,
-      message: 'Transfer initiated successfully',
-    };
+      return {
+        success: true,
+        transferCode: reference,
+        response,
+        message: 'Transfer initiated successfully',
+      };
+    } catch (err: unknown) {
+      await db.tx(async (t) => {
+        await t.none(
+          `UPDATE wallets SET balance = balance + $1, updated_at = CURRENT_TIMESTAMP WHERE wallet_id = $2`,
+          [totalDebit, walletId]
+        );
+      });
+      throw new Error(
+        flutterwaveErrorMessage(err, 'Flutterwave bank transfer failed')
+      );
+    }
   }
 
   async verifyTransfer({
