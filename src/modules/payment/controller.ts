@@ -37,6 +37,15 @@ import {
   quoteInvestment,
   withdrawFromInvestment,
 } from './investmentService';
+import {
+  computeInterestPreview,
+  createDayEarnPot,
+  depositToDayEarnPot,
+  getDayEarnPotDetail,
+  getDayEarnSummary,
+  renameDayEarnPot,
+  withdrawFromDayEarnPot,
+} from './dayearnService';
 import { db } from '../../config/database';
 
 class PaymentController {
@@ -1718,6 +1727,146 @@ class PaymentController {
         enums.HTTP_OK,
         result
       );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  getDayEarn = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const summary = await getDayEarnSummary(req.user?.user_id);
+      return success(res, 'DayEarn summary', enums.HTTP_OK, summary);
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  getDayEarnPreview = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const amount = Number(req.query.amount);
+      const currency = String(req.query.currency);
+      const preview = computeInterestPreview(amount, currency);
+      return success(res, 'DayEarn preview', enums.HTTP_OK, preview);
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  getDayEarnPot = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const potId = String(req.params.potId || '');
+      const detail = await getDayEarnPotDetail(req.user?.user_id, potId);
+      return success(res, 'DayEarn pot', enums.HTTP_OK, detail);
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  createDayEarnPotHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const { name, amount, currency, idempotencyKey } = req.body;
+      const wallet = await this.paymentService.ensureWalletForCurrency(
+        req.user?.user_id,
+        currency
+      );
+      const result = await createDayEarnPot({
+        userId: req.user?.user_id,
+        walletId: wallet.wallet_id,
+        name: String(name),
+        amount: Number(amount),
+        currency: String(currency),
+        idempotencyKey,
+      });
+      return success(
+        res,
+        'DayEarn pot created successfully',
+        enums.HTTP_OK,
+        result
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  depositDayEarnPotHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const { amount, idempotencyKey } = req.body;
+      const potId = String(req.params.potId || '');
+      const detail = await getDayEarnPotDetail(req.user?.user_id, potId);
+      const currency = detail.pot.currency;
+      const wallet = await this.paymentService.ensureWalletForCurrency(
+        req.user?.user_id,
+        currency
+      );
+      const result = await depositToDayEarnPot({
+        userId: req.user?.user_id,
+        walletId: wallet.wallet_id,
+        potId,
+        amount: Number(amount),
+        idempotencyKey,
+      });
+      return success(
+        res,
+        'Added to DayEarn successfully',
+        enums.HTTP_OK,
+        result
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  withdrawDayEarnPotHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const { amount, withdrawAll, idempotencyKey } = req.body;
+      const potId = String(req.params.potId || '');
+      const detail = await getDayEarnPotDetail(req.user?.user_id, potId);
+      const currency = detail.pot.currency;
+      const wallet = await this.paymentService.ensureWalletForCurrency(
+        req.user?.user_id,
+        currency
+      );
+      const result = await withdrawFromDayEarnPot({
+        userId: req.user?.user_id,
+        walletId: wallet.wallet_id,
+        potId,
+        amount: amount != null ? Number(amount) : undefined,
+        withdrawAll: withdrawAll === true,
+        idempotencyKey,
+      });
+      return success(
+        res,
+        'Withdrawal successful',
+        enums.HTTP_OK,
+        result
+      );
+    } catch (err: any) {
+      return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  renameDayEarnPotHandler = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const potId = String(req.params.potId || '');
+      const { name } = req.body;
+      const result = await renameDayEarnPot(
+        req.user?.user_id,
+        potId,
+        String(name)
+      );
+      return success(res, 'DayEarn pot renamed', enums.HTTP_OK, result);
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
     }

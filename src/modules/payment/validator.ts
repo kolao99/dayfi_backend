@@ -314,6 +314,59 @@ class PaymentValidator {
     this.validateRequestBody(req, res, next, schema, 'investmentWithdraw');
   };
 
+  dayEarnPreview = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().min(1).required(),
+      currency: Joi.string()
+        .trim()
+        .uppercase()
+        .valid('NGN', 'USD', 'EUR', 'GBP')
+        .required(),
+    });
+    this.validateRequestQuery(req, res, next, schema, 'dayEarnPreview');
+  };
+
+  dayEarnCreatePot = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      name: Joi.string().trim().min(1).max(120).required(),
+      amount: Joi.number().positive().min(1).required(),
+      currency: Joi.string()
+        .trim()
+        .uppercase()
+        .valid('NGN', 'USD', 'EUR', 'GBP')
+        .required(),
+      pin: Joi.string().required(),
+      idempotencyKey: Joi.string().max(255).optional(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'dayEarnCreatePot');
+  };
+
+  dayEarnDeposit = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().min(1).required(),
+      pin: Joi.string().required(),
+      idempotencyKey: Joi.string().max(255).optional(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'dayEarnDeposit');
+  };
+
+  dayEarnWithdraw = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      amount: Joi.number().positive().optional(),
+      withdrawAll: Joi.boolean().optional(),
+      pin: Joi.string().required(),
+      idempotencyKey: Joi.string().max(255).optional(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'dayEarnWithdraw');
+  };
+
+  dayEarnRename = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      name: Joi.string().trim().min(1).max(120).required(),
+    });
+    this.validateRequestBody(req, res, next, schema, 'dayEarnRename');
+  };
+
   swapCurrency: (req: Request, res: Response, next: NextFunction) => any =
     async (req, res, next) => {
       const schema = Joi.object({

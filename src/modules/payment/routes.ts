@@ -405,6 +405,66 @@ Router.post(
 );
 
 Router.get(
+  '/dayearn',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getDayEarn
+);
+
+Router.get(
+  '/dayearn/preview',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.dayEarnPreview,
+  paymentController.getDayEarnPreview
+);
+
+Router.get(
+  '/dayearn/pots/:potId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getDayEarnPot
+);
+
+Router.post(
+  '/dayearn/pots',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.dayEarnCreatePot,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentController.createDayEarnPotHandler
+);
+
+Router.post(
+  '/dayearn/pots/:potId/deposit',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.dayEarnDeposit,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentController.depositDayEarnPotHandler
+);
+
+Router.post(
+  '/dayearn/pots/:potId/withdraw',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.dayEarnWithdraw,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentController.withdrawDayEarnPotHandler
+);
+
+Router.patch(
+  '/dayearn/pots/:potId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.dayEarnRename,
+  paymentController.renameDayEarnPotHandler
+);
+
+Router.get(
   '/crypto-channels',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,

@@ -18,6 +18,7 @@ export type LedgerSource =
   | 'swap'
   | 'bank_out'
   | 'investment'
+  | 'dayearn'
   | 'manual'
   | 'card'
   | 'bill_pay';
