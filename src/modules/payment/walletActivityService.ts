@@ -23,7 +23,6 @@ export type RecordWalletActivityParams = {
   networkId?: string;
   beneficiaryCountry?: string;
   bankName?: string;
-  /** Defaults to now; backfill should pass ledger_movements.created_at */
   timestamp?: Date;
 };
 
@@ -263,17 +262,29 @@ export async function backfillWalletActivitiesFromLedger(
             )
           : buildWalletActivityTxId(row.external_reference, row.id);
 
-    const p2pTagFromLegacy =
-      isP2p && row.direction === 'debit' && row.external_reference
-        ? parseP2pTagFromReason(
-            (
-              await db.oneOrNone<{ reason: string }>(
-                `SELECT reason FROM wallet_transactions WHERE id = $1 LIMIT 1`,
-                [row.external_reference]
-              )
-            )?.reason
+    let p2pTagFromLegacy: string | null = null;
+    if (isP2p && row.direction === 'debit' && row.external_reference) {
+      p2pTagFromLegacy = parseP2pTagFromReason(
+        (
+          await db.oneOrNone<{ reason: string }>(
+            `SELECT reason FROM wallet_transactions WHERE id = $1 LIMIT 1`,
+            [row.external_reference]
           )
-        : null;
+        )?.reason
+      );
+      if (!p2pTagFromLegacy) {
+        const fromTransfer = await db.oneOrNone<{ dayfi_id: string | null }>(
+          `SELECT w.dayfi_id
+           FROM p2p_transfers pt
+           JOIN wallets w ON w.user_id = pt.recipient_user_id AND w.currency = 'USD'
+           WHERE pt.reference = $1
+           LIMIT 1`,
+          [row.external_reference]
+        );
+        p2pTagFromLegacy =
+          fromTransfer?.dayfi_id?.replace(/^@/, '').trim() || null;
+      }
+    }
 
     const p2pSenderLabel =
       isP2p && row.direction === 'credit' && meta.senderUserId
@@ -344,4 +355,167 @@ export async function backfillWalletActivitiesFromLedger(
   }
 
   return { inserted };
+}
+
+async function resolveP2pRecipientTag(
+  userId: string,
+  row: {
+    id: string;
+    external_reference: string | null;
+    send_amount: string | null;
+    timestamp: Date;
+  }
+): Promise<string | null> {
+  const refs: string[] = [];
+  if (row.external_reference?.trim()) refs.push(row.external_reference.trim());
+  const idMatch = row.id.match(/^wt-p2p-debit-(.+)$/i);
+  if (idMatch?.[1]) refs.push(idMatch[1]);
+
+  for (const ref of refs) {
+    const fromP2p = await db.oneOrNone<{ dayfi_id: string | null }>(
+      `SELECT w.dayfi_id
+       FROM p2p_transfers pt
+       JOIN wallets w ON w.user_id = pt.recipient_user_id AND w.currency = 'USD'
+       WHERE pt.reference = $1 AND pt.sender_user_id = $2
+       LIMIT 1`,
+      [ref, userId]
+    );
+    const tag = fromP2p?.dayfi_id?.replace(/^@/, '').trim();
+    if (tag) return tag;
+  }
+
+  const amount = Number(row.send_amount);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  const fromAmount = await db.oneOrNone<{ dayfi_id: string | null }>(
+    `SELECT w.dayfi_id
+     FROM p2p_transfers pt
+     JOIN wallets w ON w.user_id = pt.recipient_user_id AND w.currency = 'USD'
+     WHERE pt.sender_user_id = $1
+       AND pt.amount_usd = $2
+       AND ABS(EXTRACT(EPOCH FROM (pt.created_at - $3::timestamp))) < 300
+     ORDER BY pt.created_at DESC
+     LIMIT 1`,
+    [userId, amount, row.timestamp]
+  );
+  return fromAmount?.dayfi_id?.replace(/^@/, '').trim() || null;
+}
+
+/** Fix legacy P2P rows that still show generic "Recipient" / missing username metadata. */
+export async function repairP2pWalletTransactions(
+  userId: string
+): Promise<{ repaired: number }> {
+  const rows = await db.manyOrNone<{
+    id: string;
+    external_reference: string | null;
+    send_amount: string | null;
+    ledger_currency: string | null;
+    reason: string | null;
+    beneficiary_id: string | null;
+    source_id: string | null;
+    beneficiary_name: string | null;
+    timestamp: Date;
+  }>(
+    `SELECT wt.id, wt.external_reference, wt.send_amount, wt.ledger_currency,
+            wt.reason, wt.beneficiary_id, wt.source_id, b.name AS beneficiary_name,
+            wt.timestamp
+     FROM wallet_transactions wt
+     LEFT JOIN beneficiaries b ON b.id = wt.beneficiary_id
+     WHERE wt.user_id = $1
+       AND wt.status ILIKE '%payment%'
+       AND (
+         LOWER(COALESCE(b.name, '')) IN ('recipient', '')
+         OR wt.reason ILIKE '%via p2p%'
+         OR wt.id ILIKE '%p2p%'
+       )
+       AND COALESCE(wt.reason, '') NOT LIKE 'p2p:%'`,
+    [userId]
+  );
+
+  let repaired = 0;
+  for (const row of rows ?? []) {
+    const tag = await resolveP2pRecipientTag(userId, row);
+    if (!tag) continue;
+
+    const recipient = await db.oneOrNone<{
+      first_name: string | null;
+      last_name: string | null;
+      dayfi_id: string | null;
+    }>(
+      `SELECT u.first_name, u.last_name, w.dayfi_id
+       FROM wallets w
+       JOIN users u ON u.user_id = w.user_id
+       WHERE LOWER(TRIM(BOTH '@' FROM COALESCE(w.dayfi_id, ''))) = $1
+         AND w.currency = COALESCE($2, 'USD')
+       LIMIT 1`,
+      [tag.toLowerCase(), row.ledger_currency ?? 'USD']
+    );
+
+    const resolvedTag = recipient?.dayfi_id?.replace(/^@/, '').trim() || tag;
+    const legalName = [recipient?.first_name, recipient?.last_name]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    const beneficiaryLabel = legalName
+      ? `@${resolvedTag} · ${legalName}`
+      : `@${resolvedTag}`;
+    const currency = String(row.ledger_currency ?? 'USD').toUpperCase();
+
+    let beneficiaryId = row.beneficiary_id;
+    if (beneficiaryId) {
+      await db.none(
+        `UPDATE beneficiaries
+         SET name = $2, country = $3
+         WHERE id = $1`,
+        [beneficiaryId, beneficiaryLabel, countryForWalletCurrency(currency)]
+      );
+    } else {
+      beneficiaryId = `ben-repair-${row.id.slice(0, 32)}`;
+      await db.none(
+        `INSERT INTO beneficiaries (id, user_id, name, country, phone, address, dob, email, id_number, id_type)
+         VALUES ($1, $2, $3, $4, '', '', '', '', '', 'individual')
+         ON CONFLICT (id) DO UPDATE
+           SET name = EXCLUDED.name, country = EXCLUDED.country`,
+        [
+          beneficiaryId,
+          userId,
+          beneficiaryLabel,
+          countryForWalletCurrency(currency),
+        ]
+      );
+    }
+
+    let sourceId = row.source_id;
+    if (sourceId) {
+      await db.none(
+        `UPDATE source
+         SET account_type = 'dayfi', account_number = $2, network_id = ''
+         WHERE id = $1`,
+        [sourceId, resolvedTag]
+      );
+    } else if (beneficiaryId) {
+      sourceId = `src-repair-${row.id.slice(0, 32)}`;
+      await db.none(
+        `INSERT INTO source (id, account_type, account_number, network_id, beneficiary_id)
+         VALUES ($1, 'dayfi', $2, '', $3)
+         ON CONFLICT (id) DO UPDATE
+           SET account_type = EXCLUDED.account_type,
+               account_number = EXCLUDED.account_number`,
+        [sourceId, resolvedTag, beneficiaryId]
+      );
+    }
+
+    await db.none(
+      `UPDATE wallet_transactions
+       SET reason = $2,
+           beneficiary_id = COALESCE(beneficiary_id, $3),
+           source_id = COALESCE(source_id, $4),
+           send_channel = 'wallet'
+       WHERE id = $1`,
+      [row.id, `p2p:${resolvedTag}`, beneficiaryId, sourceId]
+    );
+    repaired += 1;
+  }
+
+  return { repaired };
 }

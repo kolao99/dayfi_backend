@@ -38,7 +38,11 @@ import {
 } from './balanceService';
 import { transferByDayfiTag } from './p2pService';
 import { createVirtualAccount } from './flutterwaveService';
-import { recordWalletActivity, backfillWalletActivitiesFromLedger } from './walletActivityService';
+import {
+  recordWalletActivity,
+  backfillWalletActivitiesFromLedger,
+  repairP2pWalletTransactions,
+} from './walletActivityService';
 
 type TransactionCountResult = { total: string | number };
 
@@ -1000,6 +1004,15 @@ class PaymentService {
       } catch (err: unknown) {
         console.warn(
           `[fetchWalletTransactions] ledger backfill skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      try {
+        await repairP2pWalletTransactions(userId);
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] p2p repair skipped: ${
             err instanceof Error ? err.message : String(err)
           }`
         );
