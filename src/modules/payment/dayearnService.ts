@@ -91,22 +91,28 @@ function potBalance(row: DayEarnPotRow): number {
   return Number(row.principal) + Number(row.interest_earned);
 }
 
-function formatPot(row: DayEarnPotRow, synced?: DayEarnPotRow) {
+function formatPot(
+  row: DayEarnPotRow,
+  synced?: DayEarnPotRow,
+  interestCreditedToday = 0
+) {
   const source = synced ?? row;
   const principal = Number(source.principal);
   const interestEarned = Number(source.interest_earned);
   const balance = principal + interestEarned;
   const apy = Number(source.apy_percent);
-  const dailyInterest = computeDailyInterest(balance, apy);
+  const projectedDailyInterest = computeDailyInterest(balance, apy);
   const accrualStart = new Date(source.accrual_starts_at);
   const lastInterest = source.last_interest_at
     ? new Date(source.last_interest_at)
     : null;
-  const now = Date.now();
-  const accrualActive = now >= accrualStart.getTime();
+  const nowMs = Date.now();
+  const accrualActive = nowMs >= accrualStart.getTime();
+  const firstCreditAt = new Date(accrualStart.getTime() + 86400000);
+  const awaitingFirstCredit = nowMs < firstCreditAt.getTime();
   const nextInterestAt = lastInterest
     ? new Date(lastInterest.getTime() + 86400000)
-    : accrualStart;
+    : firstCreditAt;
 
   return {
     id: source.id,
@@ -116,15 +122,42 @@ function formatPot(row: DayEarnPotRow, synced?: DayEarnPotRow) {
     interestEarned: roundInterest(interestEarned),
     balance: roundMoney(balance),
     apyPercent: apy,
-    dailyInterest,
-    todaysInterest: dailyInterest,
+    dailyInterest: projectedDailyInterest,
+    projectedDailyInterest,
+    todaysInterest: awaitingFirstCredit
+      ? 0
+      : roundInterest(interestCreditedToday),
+    awaitingFirstCredit,
     accrualStartsAt: accrualStart.toISOString(),
+    firstCreditAt: firstCreditAt.toISOString(),
     lastInterestAt: lastInterest?.toISOString() ?? null,
     nextInterestAt: nextInterestAt.toISOString(),
     accrualActive,
     status: source.status,
     createdAt: source.created_at.toISOString(),
   };
+}
+
+async function sumInterestCreditedTodayUtc(
+  userId: string,
+  potIds: string[]
+): Promise<Map<string, number>> {
+  if (potIds.length === 0) return new Map();
+  const rows = await db.manyOrNone<{ pot_id: string; total: string }>(
+    `SELECT pot_id, COALESCE(SUM(amount::numeric), 0) AS total
+     FROM dayearn_movements
+     WHERE user_id = $1
+       AND pot_id = ANY($2::text[])
+       AND movement_type = 'interest'
+       AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+     GROUP BY pot_id`,
+    [userId, potIds]
+  );
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    map.set(r.pot_id, roundInterest(Number(r.total)));
+  }
+  return map;
 }
 
 async function dayEarnTablesReady(): Promise<boolean> {
@@ -163,11 +196,19 @@ export async function syncPotInterest(
     const apy = Number(row.apy_percent);
     let principal = Number(row.principal);
     let interestEarned = Number(row.interest_earned);
+    const accrualStart = new Date(row.accrual_starts_at);
+    const firstCreditAt = accrualStart.getTime() + 86400000;
     let cursor = row.last_interest_at
       ? new Date(row.last_interest_at)
-      : new Date(row.accrual_starts_at);
+      : new Date(accrualStart.getTime());
     const now = Date.now();
     const dayMs = 86400000;
+
+    // No interest before one full accrual day after creation (e.g. create May 31 → credit June 2 00:00 UTC).
+    if (!row.last_interest_at && now < firstCreditAt) {
+      return row;
+    }
+
     let totalNewInterest = 0;
     let credits = 0;
 
@@ -249,7 +290,13 @@ export async function getDayEarnSummary(userId: string) {
     [userId]
   );
 
-  const pots = rows.map((r) => formatPot(r));
+  const todayByPot = await sumInterestCreditedTodayUtc(
+    userId,
+    rows.map((r) => r.id)
+  );
+  const pots = rows.map((r) =>
+    formatPot(r, undefined, todayByPot.get(r.id) ?? 0)
+  );
   const byCurrency = new Map<
     string,
     { totalBalance: number; todaysInterest: number }
@@ -262,7 +309,7 @@ export async function getDayEarnSummary(userId: string) {
       todaysInterest: 0,
     };
     existing.totalBalance += pot.balance;
-    existing.todaysInterest += pot.dailyInterest;
+    existing.todaysInterest += pot.todaysInterest;
     byCurrency.set(cur, existing);
   }
 
@@ -278,7 +325,7 @@ export async function getDayEarnSummary(userId: string) {
     pots.reduce((sum, p) => sum + p.balance, 0)
   );
   const todaysInterest = roundInterest(
-    pots.reduce((sum, p) => sum + p.dailyInterest, 0)
+    pots.reduce((sum, p) => sum + p.todaysInterest, 0)
   );
 
   return {
@@ -302,6 +349,8 @@ export async function getDayEarnPotDetail(userId: string, potId: string) {
   const row = synced ?? (await getPotRow(userId, potId));
   if (!row) throw new Error('DayEarn pot not found');
 
+  const todayMap = await sumInterestCreditedTodayUtc(userId, [potId]);
+
   const movements = await db.manyOrNone<DayEarnMovementRow>(
     `SELECT * FROM dayearn_movements
      WHERE pot_id = $1 AND user_id = $2
@@ -311,7 +360,7 @@ export async function getDayEarnPotDetail(userId: string, potId: string) {
   );
 
   return {
-    pot: formatPot(row),
+    pot: formatPot(row, undefined, todayMap.get(potId) ?? 0),
     activity: movements.map((m) => ({
       id: m.id,
       type: m.movement_type,
@@ -416,7 +465,7 @@ export async function createDayEarnPot(params: {
     pot: formatPot(pot),
     preview: computeInterestPreview(amount, currency),
     accrualNote:
-      'Interest starts accumulating tomorrow at 12:00 AM UTC. Keep funds for at least 24 full hours after accrual begins to earn the first daily interest.',
+      'Interest counting starts at midnight on the day after you create. Keep funds through that full day — your first credit lands at the next midnight (e.g. create May 31, first interest June 2 at 12:00 AM UTC). Withdraw before then and you earn nothing.',
   };
 }
 
