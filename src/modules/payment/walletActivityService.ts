@@ -393,8 +393,7 @@ async function resolveP2pRecipientTag(
      JOIN wallets w ON w.user_id = pt.recipient_user_id AND w.currency = 'USD'
      WHERE pt.sender_user_id = $1
        AND pt.amount_usd = $2
-       AND ABS(EXTRACT(EPOCH FROM (pt.created_at - $3::timestamp))) < 300
-     ORDER BY pt.created_at DESC
+     ORDER BY ABS(EXTRACT(EPOCH FROM (pt.created_at - $3::timestamp))) ASC
      LIMIT 1`,
     [userId, amount, row.timestamp]
   );
@@ -427,8 +426,13 @@ export async function repairP2pWalletTransactions(
          LOWER(COALESCE(b.name, '')) IN ('recipient', '')
          OR wt.reason ILIKE '%via p2p%'
          OR wt.id ILIKE '%p2p%'
+         OR wt.source_id IS NULL
        )
-       AND COALESCE(wt.reason, '') NOT LIKE 'p2p:%'`,
+       AND (
+         COALESCE(wt.reason, '') NOT LIKE 'p2p:%'
+         OR LOWER(COALESCE(b.name, '')) IN ('recipient', '')
+         OR wt.source_id IS NULL
+       )`,
     [userId]
   );
 
