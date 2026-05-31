@@ -22,6 +22,7 @@ import {
   formatPrdWalletDetails,
 } from './walletModel';
 import { creditUsdInflow, creditWalletInflow } from './inflowService';
+import { normalizeDayfiId } from '../authentication/socialAuth';
 import {
   sumBalancesToUsd,
   ensurePlatformExchangeRates,
@@ -40,6 +41,50 @@ import { createVirtualAccount } from './flutterwaveService';
 import { recordWalletActivity, backfillWalletActivitiesFromLedger } from './walletActivityService';
 
 type TransactionCountResult = { total: string | number };
+
+type WalletTransactionRow = {
+  id?: string;
+  external_reference?: string | null;
+  ledger_currency?: string | null;
+  beneficiary?: { name?: string | null } | null;
+  timestamp?: string | Date;
+};
+
+function walletTransactionQuality(row: WalletTransactionRow): number {
+  let score = 0;
+  if (row.ledger_currency) score += 4;
+  if (String(row.id ?? '').startsWith('wt-')) score += 2;
+  if (row.beneficiary?.name && row.beneficiary.name !== 'Recipient') score += 1;
+  return score;
+}
+
+function walletTransactionDedupeKey(row: WalletTransactionRow): string {
+  const ext = String(row.external_reference ?? '').trim();
+  if (ext) return ext;
+  const id = String(row.id ?? '').trim();
+  if (id.startsWith('wt-p2p-debit-')) return id.replace(/^wt-p2p-debit-/, '');
+  if (id.startsWith('wt-p2p-credit-')) return `credit:${id.replace(/^wt-p2p-credit-/, '')}`;
+  if (id.startsWith('wt-')) return id.slice(3);
+  return id;
+}
+
+function dedupeWalletTransactions<T extends WalletTransactionRow>(
+  rows: T[]
+): T[] {
+  const bestByKey = new Map<string, T>();
+  for (const row of rows) {
+    const key = walletTransactionDedupeKey(row);
+    const existing = bestByKey.get(key);
+    if (!existing || walletTransactionQuality(row) > walletTransactionQuality(existing)) {
+      bestByKey.set(key, row);
+    }
+  }
+  return Array.from(bestByKey.values()).sort((a, b) => {
+    const aTime = new Date(String(a.timestamp ?? 0)).getTime();
+    const bTime = new Date(String(b.timestamp ?? 0)).getTime();
+    return bTime - aTime;
+  });
+}
 
 export type Wallet = {
   id: string;
@@ -882,9 +927,11 @@ class PaymentService {
   }
 
   async getWalletByDayfiId(dayfiId: string): Promise<any> {
+    const normalized = normalizeDayfiId(dayfiId);
+    if (!normalized) return null;
     return await this.dbService.singleTransaction(
       'getWalletByDayfiId',
-      [dayfiId],
+      [normalized],
       enums.PAYMENT_QUERY
     );
   }
@@ -920,9 +967,19 @@ class PaymentService {
   }
 
   async addDayfiId(dayfiId: string, userId: string): Promise<any> {
+    const normalized = normalizeDayfiId(dayfiId);
+    if (!normalized) {
+      throw new Error('Please enter a valid Dayfi Tag.');
+    }
+
+    const existing = await this.getWalletByDayfiId(normalized);
+    if (existing?.user_id && String(existing.user_id) !== String(userId)) {
+      throw new Error('This Dayfi Tag is already taken. Try another.');
+    }
+
     return await this.dbService.singleTransaction(
       'updateWalletWithDayfiId',
-      [dayfiId, userId],
+      [normalized, userId],
       enums.PAYMENT_QUERY
     );
   }
@@ -978,13 +1035,17 @@ class PaymentService {
       transactionCountPromise,
     ]);
 
+    const dedupedTransactions = dedupeWalletTransactions(
+      (transactionsResult as WalletTransactionRow[]) ?? []
+    );
+
     const countRow = transactionCountResult[0] as TransactionCountResult;
     const totalCount = Number(countRow?.total || 0);
     const totalPages = Math.ceil(totalCount / limit);
     const currentPage = Math.max(1, Math.floor(offset / limit) + 1);
 
     return {
-      transactions: transactionsResult,
+      transactions: dedupedTransactions,
       totalCount,
       totalPages,
       page: currentPage,

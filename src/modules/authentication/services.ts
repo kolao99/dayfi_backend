@@ -14,6 +14,12 @@ import {
   namesFromGoogleUserinfo,
 } from './socialNames';
 import {
+  AuthProviderConflictError,
+  authProviderFromRefreshToken,
+  type AuthProvider,
+  type SocialAuthAction,
+} from './socialAuth';
+import {
   flutterwaveBaseUrl,
   flutterwaveV3Headers,
   isFlutterwaveBvnServiceUnavailable,
@@ -369,144 +375,181 @@ class AuthService {
     }
   }
 
-  signInWithApple = async (input: {
-    identityToken: string;
-    rawNonce?: string;
-    firstName?: string;
-    lastName?: string;
-  }): Promise<{ user: any; data: any }> => {
-    const { sub, email: emailFromApple } = await verifyAppleIdentityToken(
-      input.identityToken,
-      input.rawNonce
-    );
-    const appleRef = `apple:${sub}`;
-    let user: any = await this.getAUser(appleRef);
-    if (!user && emailFromApple) {
-      const byEmail = await this.getAUser(emailFromApple.toLowerCase());
-      if (byEmail) {
-        await this.dbService.singleTransaction<any>(
-          'setAppleRefreshToken',
-          [appleRef, byEmail.user_id],
-          enums.AUTH_QUERY
-        );
-        user = await this.getAUser(appleRef);
-      }
-    }
-    if (!user) {
-      const email =
-        (emailFromApple && emailFromApple.toLowerCase().trim()) ||
-        `apple_${sub.replace(/[^a-zA-Z0-9._-]/g, '_')}@private.dayfi.app`;
-      const randomPass = Crypto.randomBytes(24).toString('hex');
-      const hashed = await HashText.getHash(randomPass);
-      const { firstName, lastName } = namesFromAppleClient(
-        input.firstName,
-        input.lastName,
-        email
-      );
-      try {
-        user = await this.dbService.singleTransaction<any>(
-          'createAppleUser',
-          [email, hashed, firstName, lastName, '', appleRef],
-          enums.AUTH_QUERY
-        );
-      } catch (e: any) {
-        if (e?.code === '23505') {
-          user = await this.getAUser(email.toLowerCase());
-          if (user?.user_id) {
-            await this.dbService.singleTransaction<any>(
-              'setAppleRefreshToken',
-              [appleRef, user.user_id],
-              enums.AUTH_QUERY
-            );
-            user = await this.getAUser(appleRef);
-          }
-        } else {
-          throw e;
-        }
-      }
-    }
-    if (!user?.user_id) {
-      throw new Error(
-        'Could not complete Sign in with Apple. Please try again.'
-      );
-    }
+  private assertSocialUserActive(user: any): void {
     if (user.status === 'inactive') {
       throw new Error(enums.USER_INACTIVE);
     }
     if (user.status === 'deactivated' || user.status === 'blacklisted') {
       throw new Error(enums.USER_DEACTIVATED);
     }
+  }
+
+  private async linkProviderRefToUser(
+    providerRef: string,
+    userId: string
+  ): Promise<any> {
+    await this.dbService.singleTransaction<any>(
+      'setAppleRefreshToken',
+      [providerRef, userId],
+      enums.AUTH_QUERY
+    );
+    return this.getAUser(providerRef);
+  }
+
+  private async resolveSocialAccount(input: {
+    providerRef: string;
+    provider: AuthProvider;
+    email?: string | null;
+    createUser: () => Promise<any>;
+  }): Promise<{ user: any; action: SocialAuthAction }> {
+    let user: any = await this.getAUser(input.providerRef);
+    if (user?.user_id) {
+      return { user, action: 'login' };
+    }
+
+    const normalizedEmail = input.email?.toLowerCase().trim();
+    if (normalizedEmail) {
+      const byEmail = await this.getAUser(normalizedEmail);
+      if (byEmail?.user_id) {
+        const existing = authProviderFromRefreshToken(byEmail.refresh_token);
+        if (existing === input.provider) {
+          user = await this.linkProviderRefToUser(
+            input.providerRef,
+            byEmail.user_id
+          );
+          if (user?.user_id) {
+            return { user, action: 'login' };
+          }
+        }
+        throw new AuthProviderConflictError(existing, input.provider);
+      }
+    }
+
+    try {
+      user = await input.createUser();
+    } catch (e: any) {
+      if (e?.code === '23505' && normalizedEmail) {
+        const byEmail = await this.getAUser(normalizedEmail);
+        if (byEmail?.user_id) {
+          const existing = authProviderFromRefreshToken(byEmail.refresh_token);
+          if (existing === input.provider) {
+            user = await this.linkProviderRefToUser(
+              input.providerRef,
+              byEmail.user_id
+            );
+            if (user?.user_id) {
+              return { user, action: 'login' };
+            }
+          }
+          throw new AuthProviderConflictError(existing, input.provider);
+        }
+      }
+      throw e;
+    }
+
+    if (!user?.user_id) {
+      throw new Error('Could not complete sign-in. Please try again.');
+    }
+
+    return { user, action: 'signup' };
+  }
+
+  signInWithApple = async (input: {
+    identityToken: string;
+    rawNonce?: string;
+    firstName?: string;
+    lastName?: string;
+  }): Promise<{
+    user: any;
+    data: any;
+    action: SocialAuthAction;
+    authProvider: 'apple';
+  }> => {
+    const { sub, email: emailFromApple } = await verifyAppleIdentityToken(
+      input.identityToken,
+      input.rawNonce
+    );
+    const appleRef = `apple:${sub}`;
+
+    const { user, action } = await this.resolveSocialAccount({
+      providerRef: appleRef,
+      provider: 'apple',
+      email: emailFromApple,
+      createUser: async () => {
+        const email =
+          (emailFromApple && emailFromApple.toLowerCase().trim()) ||
+          `apple_${sub.replace(/[^a-zA-Z0-9._-]/g, '_')}@private.dayfi.app`;
+        const randomPass = Crypto.randomBytes(24).toString('hex');
+        const hashed = await HashText.getHash(randomPass);
+        const { firstName, lastName } = namesFromAppleClient(
+          input.firstName,
+          input.lastName,
+          email
+        );
+        return this.dbService.singleTransaction<any>(
+          'createAppleUser',
+          [email, hashed, firstName, lastName, '', appleRef],
+          enums.AUTH_QUERY
+        );
+      },
+    });
+
+    if (!user?.user_id) {
+      throw new Error(
+        'Could not complete Sign in with Apple. Please try again.'
+      );
+    }
+    this.assertSocialUserActive(user);
     const data = await this.tokenService.generateAuthToken(user);
-    return { user, data };
+    return { user, data, action, authProvider: 'apple' };
   };
 
   signInWithGoogle = async (input: {
     accessToken: string;
-  }): Promise<{ user: any; data: any }> => {
+  }): Promise<{
+    user: any;
+    data: any;
+    action: SocialAuthAction;
+    authProvider: 'google';
+  }> => {
     const profile = await verifyGoogleAccessToken(input.accessToken);
     const { sub, email: emailFromGoogle } = profile;
     const { firstName: gFirst, lastName: gLast } = namesFromGoogleUserinfo(
       profile as Record<string, unknown>
     );
     const googleRef = `google:${sub}`;
-    let user: any = await this.getAUser(googleRef);
-    if (!user && emailFromGoogle) {
-      const byEmail = await this.getAUser(emailFromGoogle.toLowerCase());
-      if (byEmail) {
-        await this.dbService.singleTransaction<any>(
-          'setAppleRefreshToken',
-          [googleRef, byEmail.user_id],
-          enums.AUTH_QUERY
-        );
-        user = await this.getAUser(googleRef);
-      }
-    }
-    if (!user) {
-      const email =
-        (emailFromGoogle && emailFromGoogle.toLowerCase().trim()) ||
-        `google_${sub.replace(/[^a-zA-Z0-9._-]/g, '_')}@private.dayfi.app`;
-      const randomPass = Crypto.randomBytes(24).toString('hex');
-      const hashed = await HashText.getHash(randomPass);
-      const firstName =
-        gFirst.trim() !== ''
-          ? gFirst
-          : fallbackFirstNameFromEmail(email.toLowerCase());
-      const lastName = gLast.trim();
-      try {
-        user = await this.dbService.singleTransaction<any>(
+
+    const { user, action } = await this.resolveSocialAccount({
+      providerRef: googleRef,
+      provider: 'google',
+      email: emailFromGoogle,
+      createUser: async () => {
+        const email =
+          (emailFromGoogle && emailFromGoogle.toLowerCase().trim()) ||
+          `google_${sub.replace(/[^a-zA-Z0-9._-]/g, '_')}@private.dayfi.app`;
+        const randomPass = Crypto.randomBytes(24).toString('hex');
+        const hashed = await HashText.getHash(randomPass);
+        const firstName =
+          gFirst.trim() !== ''
+            ? gFirst
+            : fallbackFirstNameFromEmail(email.toLowerCase());
+        const lastName = gLast.trim();
+        return this.dbService.singleTransaction<any>(
           'createAppleUser',
           [email, hashed, firstName, lastName, '', googleRef],
           enums.AUTH_QUERY
         );
-      } catch (e: any) {
-        if (e?.code === '23505') {
-          user = await this.getAUser(email.toLowerCase());
-          if (user?.user_id) {
-            await this.dbService.singleTransaction<any>(
-              'setAppleRefreshToken',
-              [googleRef, user.user_id],
-              enums.AUTH_QUERY
-            );
-            user = await this.getAUser(googleRef);
-          }
-        } else {
-          throw e;
-        }
-      }
-    }
+      },
+    });
+
     if (!user?.user_id) {
       throw new Error(
         'Could not complete Sign in with Google. Please try again.'
       );
     }
-    if (user.status === 'inactive') {
-      throw new Error(enums.USER_INACTIVE);
-    }
-    if (user.status === 'deactivated' || user.status === 'blacklisted') {
-      throw new Error(enums.USER_DEACTIVATED);
-    }
+    this.assertSocialUserActive(user);
     const data = await this.tokenService.generateAuthToken(user);
-    return { user, data };
+    return { user, data, action, authProvider: 'google' };
   };
 }
 export default AuthService;

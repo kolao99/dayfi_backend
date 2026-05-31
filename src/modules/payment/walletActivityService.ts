@@ -19,6 +19,9 @@ export type RecordWalletActivityParams = {
   status?: string;
   beneficiaryName?: string;
   accountNumber?: string;
+  accountType?: string;
+  networkId?: string;
+  beneficiaryCountry?: string;
   bankName?: string;
   /** Defaults to now; backfill should pass ledger_movements.created_at */
   timestamp?: Date;
@@ -47,6 +50,24 @@ export function buildWalletActivityTxId(
   if (!raw) return '';
   const normalized = raw.replace(/:/g, '-').replace(/[^a-zA-Z0-9_-]/g, '');
   return `wt-${normalized.slice(0, 80)}`;
+}
+
+function countryForWalletCurrency(currency: string): string {
+  switch (String(currency).toUpperCase()) {
+    case 'USD':
+      return 'US';
+    case 'EUR':
+      return 'EU';
+    case 'GBP':
+      return 'GB';
+    default:
+      return 'NG';
+  }
+}
+
+function parseP2pTagFromReason(reason?: string | null): string | null {
+  const match = String(reason ?? '').match(/^p2p:@?(.+)$/i);
+  return match?.[1]?.trim() || null;
 }
 
 function channelForSource(
@@ -118,25 +139,45 @@ export async function recordWalletActivity(
 
   if (beneficiaryName) {
     beneficiaryId = `ben-act-${id.slice(0, 40)}`;
+    const beneficiaryCountry = params.beneficiaryCountry?.trim() || 'NG';
     await db.none(
       `INSERT INTO beneficiaries (id, user_id, name, country, phone, address, dob, email, id_number, id_type)
-       VALUES ($1, $2, $3, 'NG', '', '', '', '', '', 'individual')
+       VALUES ($1, $2, $3, $4, '', '', '', '', '', 'individual')
        ON CONFLICT (id) DO NOTHING`,
-      [beneficiaryId, userId, beneficiaryName]
+      [beneficiaryId, userId, beneficiaryName, beneficiaryCountry]
+    );
+  }
+
+  let sourceId: string | null = null;
+  const accountNumber = params.accountNumber?.trim();
+  if (beneficiaryId && accountNumber) {
+    sourceId = `src-act-${id.slice(0, 40)}`;
+    await db.none(
+      `INSERT INTO source (id, account_type, account_number, network_id, beneficiary_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        sourceId,
+        params.accountType?.trim() || 'dayfi',
+        accountNumber,
+        params.networkId?.trim() || '',
+        beneficiaryId,
+      ]
     );
   }
 
   if (direction === 'credit') {
     await db.none(
       `INSERT INTO wallet_transactions (
-         id, user_id, beneficiary_id, status, reason,
+         id, user_id, beneficiary_id, source_id, status, reason,
          receive_amount, receive_channel, receive_network,
          ledger_currency, activity_kind, external_reference, timestamp
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         id,
         userId,
         beneficiaryId,
+        sourceId,
         status,
         reason,
         amount,
@@ -151,14 +192,15 @@ export async function recordWalletActivity(
   } else {
     await db.none(
       `INSERT INTO wallet_transactions (
-         id, user_id, beneficiary_id, status, reason,
+         id, user_id, beneficiary_id, source_id, status, reason,
          send_amount, send_channel, send_network,
          ledger_currency, activity_kind, external_reference, timestamp
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         id,
         userId,
         beneficiaryId,
+        sourceId,
         status,
         reason,
         amount,
@@ -205,6 +247,7 @@ export async function backfillWalletActivitiesFromLedger(
     const isSwap = row.source === 'swap';
     const activityTitle =
       typeof meta.activityTitle === 'string' ? meta.activityTitle.trim() : '';
+    const isP2p = row.source === 'p2p';
     const txId =
       isSwap && row.external_reference
         ? buildWalletActivityTxId(
@@ -212,7 +255,37 @@ export async function backfillWalletActivitiesFromLedger(
               ? `swap-credit-${row.external_reference}`
               : `swap-debit-${row.external_reference}`
           )
-        : buildWalletActivityTxId(row.external_reference, row.id);
+        : isP2p && row.external_reference
+          ? buildWalletActivityTxId(
+              row.direction === 'credit'
+                ? `p2p-credit-${row.external_reference}`
+                : `p2p-debit-${row.external_reference}`
+            )
+          : buildWalletActivityTxId(row.external_reference, row.id);
+
+    const p2pTagFromLegacy =
+      isP2p && row.direction === 'debit' && row.external_reference
+        ? parseP2pTagFromReason(
+            (
+              await db.oneOrNone<{ reason: string }>(
+                `SELECT reason FROM wallet_transactions WHERE id = $1 LIMIT 1`,
+                [row.external_reference]
+              )
+            )?.reason
+          )
+        : null;
+
+    const p2pSenderLabel =
+      isP2p && row.direction === 'credit' && meta.senderUserId
+        ? await db.oneOrNone<{ dayfi_id: string | null; first_name: string | null }>(
+            `SELECT w.dayfi_id, u.first_name
+             FROM users u
+             LEFT JOIN wallets w ON w.user_id = u.user_id AND w.currency = 'USD'
+             WHERE u.user_id = $1
+             LIMIT 1`,
+            [String(meta.senderUserId)]
+          )
+        : null;
 
     const result = await recordWalletActivity({
       userId: row.user_id,
@@ -237,14 +310,34 @@ export async function backfillWalletActivitiesFromLedger(
       reason: isSwap
         ? activityTitle ||
           `Convert ${meta.fromCurrency ?? ''} → ${meta.toCurrency ?? row.currency}`
-        : row.direction === 'credit'
-          ? `${assetCode} deposit via ${row.source}`
-          : `${row.currency} sent via ${row.source}`,
+        : isP2p && row.direction === 'debit' && p2pTagFromLegacy
+          ? `p2p:${p2pTagFromLegacy}`
+          : row.direction === 'credit'
+            ? `${assetCode} deposit via ${row.source}`
+            : `${row.currency} sent via ${row.source}`,
       beneficiaryName: isSwap
         ? 'Currency conversion'
-        : row.direction === 'credit'
-          ? 'Wallet Top Up'
-          : 'Recipient',
+        : isP2p && row.direction === 'debit' && p2pTagFromLegacy
+          ? `@${p2pTagFromLegacy}`
+          : isP2p && row.direction === 'credit'
+            ? p2pSenderLabel?.dayfi_id
+              ? `@${String(p2pSenderLabel.dayfi_id).replace(/^@/, '')}`
+              : p2pSenderLabel?.first_name?.trim() || 'Dayfi user'
+            : row.direction === 'credit'
+              ? 'Wallet Top Up'
+              : 'Recipient',
+      accountNumber:
+        isP2p && row.direction === 'debit' && p2pTagFromLegacy
+          ? p2pTagFromLegacy
+          : isP2p &&
+              row.direction === 'credit' &&
+              p2pSenderLabel?.dayfi_id
+            ? String(p2pSenderLabel.dayfi_id).replace(/^@/, '')
+            : undefined,
+      accountType: isP2p ? 'dayfi' : undefined,
+      beneficiaryCountry: isP2p
+        ? countryForWalletCurrency(row.currency)
+        : undefined,
       timestamp: row.created_at,
     });
     if (result.recorded) inserted += 1;

@@ -113,7 +113,9 @@ export const paymentQueries: PaymentQueries = {
   `,
 
   getWalletByDayfiId: `
-    SELECT * FROM wallets WHERE dayfi_id = $1 LIMIT 1;
+    SELECT * FROM wallets
+    WHERE LOWER(TRIM(BOTH '@' FROM COALESCE(dayfi_id, ''))) = LOWER(TRIM(BOTH '@' FROM $1))
+    LIMIT 1;
   `,
 
   getWalletByUserId: `

@@ -7,6 +7,7 @@ import HashText from '../../shared/services/hashing';
 import Helper from '../../shared/utils/helper';
 import { sendVerificationEmail } from '../../config/email';
 import { bootstrapWalletsOnAuth } from '../payment/authWalletBootstrap';
+import { AuthProviderConflictError } from './socialAuth';
 
 class AuthController {
   private readonly authService: AuthService;
@@ -60,7 +61,8 @@ class AuthController {
         body.lastName != null && String(body.lastName).trim() !== ''
           ? String(body.lastName).trim()
           : undefined;
-      const { user, data } = await this.authService.signInWithApple({
+      const { user, data, action, authProvider } =
+        await this.authService.signInWithApple({
         identityToken: authToken,
         rawNonce: nonce,
         firstName,
@@ -72,9 +74,14 @@ class AuthController {
         ...safeUser,
         token: data.token,
         expires: data.expires,
+        action,
+        authProvider,
       };
       return success(res, enums.LOGIN_SUCCESSFUL, enums.HTTP_OK, userData);
     } catch (err: any) {
+      if (err instanceof AuthProviderConflictError) {
+        return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+      }
       const msg = err?.message || String(err);
       const lower = msg.toLowerCase();
       if (
@@ -101,7 +108,8 @@ class AuthController {
     try {
       const body = (req as any).validatedBody ?? req.body;
       const authToken = String(body.authToken ?? '');
-      const { user, data } = await this.authService.signInWithGoogle({
+      const { user, data, action, authProvider } =
+        await this.authService.signInWithGoogle({
         accessToken: authToken,
       });
       const { password: _pw, ...safeUser } = user;
@@ -110,9 +118,14 @@ class AuthController {
         ...safeUser,
         token: data.token,
         expires: data.expires,
+        action,
+        authProvider,
       };
       return success(res, enums.LOGIN_SUCCESSFUL, enums.HTTP_OK, userData);
     } catch (err: any) {
+      if (err instanceof AuthProviderConflictError) {
+        return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+      }
       const msg = err?.message || String(err);
       const lower = msg.toLowerCase();
       if (

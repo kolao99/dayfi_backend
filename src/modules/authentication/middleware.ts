@@ -3,6 +3,11 @@ import { errorResponse } from '../../shared/lib/api-response';
 import AuthService from './services';
 import HashText from '../../shared/services/hashing';
 import { NextFunction, Request, Response } from 'express';
+import {
+  authProviderFromRefreshToken,
+  emailLoginBlockedMessage,
+  emailSignupBlockedMessage,
+} from './socialAuth';
 
 class AuthMiddleware {
   private authService: AuthService;
@@ -114,10 +119,10 @@ class AuthMiddleware {
           console.log(
             `${enums.CURRENT_TIME_STAMP}, Info: successfully confirms that user with email:'${payload}' already exist in the DB auth.middleware.js`
           );
-          // Message wording is matched by the mobile app (check for "already exists").
+          const provider = authProviderFromRefreshToken(user.refresh_token);
           return errorResponse(
             res,
-            'An account with this email already exists. Please log in.',
+            emailSignupBlockedMessage(provider),
             enums.HTTP_BAD_REQUEST
           );
         }
@@ -235,6 +240,16 @@ class AuthMiddleware {
         user,
         body: { email, password, encryptedPassword },
       } = req;
+
+      const provider = authProviderFromRefreshToken(user?.refresh_token);
+      if (provider !== 'email') {
+        return errorResponse(
+          res,
+          emailLoginBlockedMessage(provider),
+          enums.HTTP_UNAUTHORIZED
+        );
+      }
+
       let verifyHash;
       if (password != null) {
         verifyHash = await HashText.verifyHash(
