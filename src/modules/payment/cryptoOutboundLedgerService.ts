@@ -118,6 +118,10 @@ export async function recordCryptoOutboundLedger(params: {
       channel: 'crypto',
       network: activityNetwork,
       beneficiaryName: params.to.trim(),
+      accountNumber: params.to.trim(),
+      accountType: 'crypto',
+      networkId: activityNetwork,
+      beneficiaryCountry: currency === 'EUR' ? 'EU' : 'US',
     });
   } catch (err: unknown) {
     console.warn(

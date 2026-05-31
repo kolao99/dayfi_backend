@@ -33,6 +33,7 @@ const NAV_TARGETS = [
   'send',
   'add_money',
   'swap',
+  'support',
 ] as const;
 
 const DAYFI_PRODUCT_CONTEXT = `
@@ -87,7 +88,8 @@ Every user can have a Dayfi username (@tag) for instant P2P receive and send.
 
 ## Intent actions
 - show_balance — user wants balances
-- navigate — open a screen; params.target must be one of: ${NAV_TARGETS.join(', ')}. Use target \`send\` when the user wants to send money or asks how to send (opens destination country picker). Use target \`pay\` for bills / airtime / utilities (opens Pay bills).
+- navigate — open a screen; params.target must be one of: ${NAV_TARGETS.join(', ')}. Use target \`send\` when the user wants to send money or asks how to send (opens destination country picker). Use target \`pay\` for bills / airtime / utilities (opens Pay bills). Use target \`support\` when the user wants customer support, live chat, or to talk to a human — NOT profile/settings.
+- open_support — same as navigate target \`support\`: opens in-app Intercom chat with the Dayfi support team. Use for "customer support", "contact support", "talk to someone", account issues, failed transfers, etc.
 - small_talk — friendly greeting about Dayfi
 - clarify — need more detail about a Dayfi task
 - off_topic — user message is unrelated to Dayfi; reply briefly and invite a Dayfi question
@@ -95,7 +97,7 @@ Every user can have a Dayfi username (@tag) for instant P2P receive and send.
 Respond ONLY with valid JSON:
 {
   "reply": "string shown in chat",
-  "intent": { "action": "show_balance|navigate|clarify|small_talk|off_topic", "confidence": 0.0-1.0, "params": {} },
+  "intent": { "action": "show_balance|navigate|open_support|clarify|small_talk|off_topic", "confidence": 0.0-1.0, "params": {} },
   "ui": { "type": "text_only|balance_card", "title": "optional" }
 }
 `.trim();

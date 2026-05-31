@@ -112,6 +112,24 @@ export async function transferByDayfiTag(params: {
     currency
   );
 
+  const recipientProfile = await db.oneOrNone<{
+    first_name: string | null;
+    last_name: string | null;
+  }>(
+    `SELECT first_name, last_name FROM users WHERE user_id = $1 LIMIT 1`,
+    [recipientWallet.user_id]
+  );
+  const recipientLegalName = [
+    recipientProfile?.first_name,
+    recipientProfile?.last_name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  const recipientBeneficiaryLabel = recipientLegalName
+    ? `@${normalizedTag} · ${recipientLegalName}`
+    : `@${normalizedTag}`;
+
   if (recipientWallet.user_id === params.senderUserId) {
     throw new Error('You cannot send to your own Dayfi Tag');
   }
@@ -206,7 +224,7 @@ export async function transferByDayfiTag(params: {
     reason: `p2p:${normalizedTag}`,
     channel: 'wallet',
     status: 'success-payment',
-    beneficiaryName: `@${normalizedTag}`,
+    beneficiaryName: recipientBeneficiaryLabel,
     accountNumber: normalizedTag,
     accountType: 'dayfi',
     beneficiaryCountry: recipientCountry,
