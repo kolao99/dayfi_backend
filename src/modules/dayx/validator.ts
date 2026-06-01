@@ -40,6 +40,29 @@ class DayxValidator {
     });
     return this.validateRequestBody(req, res, next, schema);
   };
+
+  flowTurn = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      flow: Joi.string()
+        .valid('send', 'swap', 'pay', 'add_money')
+        .required(),
+      action: Joi.string()
+        .valid('start', 'select', 'submit', 'cancel')
+        .required(),
+      session: Joi.object({
+        flow: Joi.string().required(),
+        step: Joi.string().required(),
+        data: Joi.object().unknown(true).optional(),
+      }).optional()
+        .allow(null),
+      optionId: Joi.string().trim().max(120).optional(),
+      field: Joi.string().trim().max(80).optional(),
+      value: Joi.alternatives()
+        .try(Joi.string().max(500), Joi.number())
+        .optional(),
+    });
+    return this.validateRequestBody(req, res, next, schema);
+  };
 }
 
 export const dayxValidator = new DayxValidator();

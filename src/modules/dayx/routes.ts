@@ -20,4 +20,12 @@ Router.post(
   dayxController.chat
 );
 
+Router.post(
+  '/flow/turn',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayxValidator.flowTurn,
+  dayxController.flowTurn
+);
+
 export const dayxRouter = Router;

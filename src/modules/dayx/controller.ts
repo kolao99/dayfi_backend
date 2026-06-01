@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { errorResponse, success } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
+import { processDayxFlowTurn } from './dayxFlowService';
 import { chatWithDayx, getDayxStatus } from './dayxService';
 
 class DayxController {
@@ -37,6 +38,20 @@ class DayxController {
       return errorResponse(
         res,
         msg || 'DayX chat failed',
+        enums.HTTP_BAD_REQUEST
+      );
+    }
+  };
+
+  flowTurn = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const result = await processDayxFlowTurn(userId, req.body);
+      return success(res, 'DayX flow', enums.HTTP_OK, result);
+    } catch (err: unknown) {
+      return errorResponse(
+        res,
+        err instanceof Error ? err.message : String(err),
         enums.HTTP_BAD_REQUEST
       );
     }
