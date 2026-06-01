@@ -453,14 +453,29 @@ export async function upsertActivePlan(userId: string, input: DayflowPlanInput) 
 }
 
 export async function getDayflowDashboard(userId: string) {
-  const [ngnBalance, plan, recentSpend, pendingIncome] = await Promise.all([
-    loadNgnBalance(userId),
-    getActivePlan(userId),
-    loadRecentCategorySpend(userId),
-    getPendingIncome(userId),
-  ]);
+  const { getFlowsDashboard, sumActiveHeldAmount } = await import(
+    './dayflowFlowService'
+  );
 
-  const safeToSpend = computeSafeToSpend(ngnBalance, plan);
+  const [ngnBalance, plan, recentSpend, pendingIncome, flowsDash, flowHeld] =
+    await Promise.all([
+      loadNgnBalance(userId),
+      getActivePlan(userId),
+      loadRecentCategorySpend(userId),
+      getPendingIncome(userId),
+      getFlowsDashboard(userId).catch(() => ({
+        flows: [],
+        activeCount: 0,
+        totalHeld: 0,
+      })),
+      sumActiveHeldAmount(userId).catch(() => 0),
+    ]);
+
+  const planSafe = computeSafeToSpend(ngnBalance, plan);
+  const safeToSpend =
+    flowsDash.activeCount > 0
+      ? Math.max(0, ngnBalance)
+      : planSafe;
   const healthScore = computeHealthScore(plan);
   const forecast = computeForecast(ngnBalance, plan);
   const insights = buildInsights(plan, recentSpend);
@@ -474,6 +489,9 @@ export async function getDayflowDashboard(userId: string) {
     recentSpend,
     pendingIncome,
     plan,
-    hasActivePlan: plan != null,
+    hasActivePlan: plan != null || flowsDash.activeCount > 0,
+    flows: flowsDash.flows,
+    activeFlowCount: flowsDash.activeCount,
+    totalFlowHeld: flowHeld,
   };
 }

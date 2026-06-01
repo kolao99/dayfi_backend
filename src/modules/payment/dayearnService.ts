@@ -452,10 +452,12 @@ export async function createDayEarnPot(params: {
       currency,
       source: 'dayearn',
       title: `DayEarn · ${name}`,
-      reason: `Created ${name} DayEarn pot`,
+      reason: `Added to ${name} DayEarn pot`,
       externalReference: reference,
       channel: 'wallet',
-      beneficiaryName: name,
+      beneficiaryName: 'DayEarn',
+      accountType: 'dayearn',
+      accountNumber: name,
     });
   } catch {
     /* non-fatal */
@@ -530,6 +532,26 @@ export async function depositToDayEarnPot(params: {
 
     return pot;
   });
+
+  try {
+    await recordWalletActivity({
+      userId: params.userId,
+      id: buildWalletActivityTxId(reference),
+      direction: 'debit',
+      amount,
+      currency,
+      source: 'dayearn',
+      title: `DayEarn · ${row.name}`,
+      reason: `Added to ${row.name} DayEarn pot`,
+      externalReference: reference,
+      channel: 'wallet',
+      beneficiaryName: 'DayEarn',
+      accountType: 'dayearn',
+      accountNumber: row.name,
+    });
+  } catch {
+    /* non-fatal */
+  }
 
   return { pot: formatPot(updated) };
 }
@@ -619,7 +641,11 @@ export async function withdrawFromDayEarnPot(params: {
     source: 'dayearn',
     idempotencyKey: `${idempotencyKey}-credit`,
     externalReference: reference,
-    metadata: { potId: params.potId, action: 'withdraw' },
+    metadata: {
+      potId: params.potId,
+      potName: row.name,
+      action: 'withdraw',
+    },
   });
 
   const updated = closePot

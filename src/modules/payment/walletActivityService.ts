@@ -78,6 +78,7 @@ function channelForSource(
   if (source === 'flutterwave') return 'bank';
   if (source === 'bank_out') return 'bank';
   if (source === 'p2p') return 'wallet';
+  if (source === 'dayearn' || source === 'dayflow') return 'wallet';
   return 'wallet';
 }
 

@@ -71,6 +71,45 @@ class DayflowValidator {
     return this.validateRequestBody(req, res, next, schema);
   };
 
+  createFlow = (req: Request, res: Response, next: NextFunction) => {
+    const scheduleSchema = Joi.object({
+      id: Joi.string().optional(),
+      title: Joi.string().trim().min(1).max(120).required(),
+      amount: Joi.number().positive().required(),
+      frequency: Joi.string()
+        .valid('once', 'weekly', 'biweekly', 'monthly')
+        .optional(),
+      dueLabel: Joi.string().trim().max(80).optional(),
+      recipientHint: Joi.string().trim().max(200).optional(),
+      recipientId: Joi.string().trim().max(255).allow(null).optional(),
+      paymentType: Joi.string().valid('send', 'bill', 'savings').optional(),
+      autoPay: Joi.boolean().optional(),
+    });
+
+    const schema = Joi.object({
+      title: Joi.string().trim().max(120).optional(),
+      budgetType: Joi.string()
+        .valid('weekly', 'monthly', 'annual', 'custom')
+        .optional(),
+      periodLabel: Joi.string().trim().max(80).optional(),
+      summaryLine: Joi.string().trim().max(500).optional(),
+      currency: Joi.string().valid('NGN').optional(),
+      categories: Joi.array()
+        .items(
+          Joi.object({
+            name: Joi.string().required(),
+            allocated: Joi.number().min(0).required(),
+            spent: Joi.number().min(0).optional(),
+            locked: Joi.boolean().optional(),
+          })
+        )
+        .optional(),
+      schedules: Joi.array().items(scheduleSchema).optional(),
+    }).or('categories', 'schedules');
+
+    return this.validateRequestBody(req, res, next, schema);
+  };
+
   ackIncome = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       transactionIds: Joi.array().items(Joi.string().trim().min(1)).min(1).max(20).required(),

@@ -57,4 +57,33 @@ Router.post(
   dayflowController.chat
 );
 
+Router.get(
+  '/flows',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowController.listFlows
+);
+
+Router.get(
+  '/flows/:flowId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowController.getFlow
+);
+
+Router.post(
+  '/flows',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowValidator.createFlow,
+  dayflowController.createFlow
+);
+
+Router.post(
+  '/flows/:flowId/cancel',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowController.cancelFlow
+);
+
 export const dayflowRouter = Router;

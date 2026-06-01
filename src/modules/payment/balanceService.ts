@@ -19,6 +19,7 @@ export type LedgerSource =
   | 'bank_out'
   | 'investment'
   | 'dayearn'
+  | 'dayflow'
   | 'manual'
   | 'card'
   | 'bill_pay';
@@ -279,10 +280,39 @@ export async function creditWalletBalance(params: {
     const assetCode = String(meta.assetCode ?? currency).toUpperCase();
     const activityTitle =
       typeof meta.activityTitle === 'string' ? meta.activityTitle.trim() : '';
+    const potName =
+      typeof meta.potName === 'string' ? meta.potName.trim() : '';
+    const flowTitle =
+      typeof meta.flowTitle === 'string' ? meta.flowTitle.trim() : '';
     const txId =
       params.source === 'swap' && params.externalReference
         ? buildWalletActivityTxId(`swap-credit-${params.externalReference}`)
         : buildWalletActivityTxId(params.externalReference, movementId);
+
+    let creditTitle = activityTitle;
+    let creditReason = activityTitle;
+    let creditBeneficiary = 'Wallet Top Up';
+    let creditAccountType: string | undefined;
+    let creditAccountNumber: string | undefined;
+
+    if (params.source === 'dayearn' && meta.action === 'withdraw') {
+      creditTitle = potName ? `DayEarn · ${potName}` : 'DayEarn withdrawal';
+      creditReason = potName
+        ? `Withdrawal from ${potName} pot`
+        : 'Withdrawal from DayEarn pot';
+      creditBeneficiary = 'DayEarn';
+      creditAccountType = 'dayearn';
+      creditAccountNumber = potName || undefined;
+    } else if (params.source === 'dayflow' && meta.dayflowAction === 'release') {
+      creditTitle = flowTitle ? `DayFlow · ${flowTitle}` : 'DayFlow refund';
+      creditReason = flowTitle
+        ? `Returned unused funds from ${flowTitle}`
+        : 'DayFlow funds returned to wallet';
+      creditBeneficiary = 'DayFlow';
+      creditAccountType = 'dayflow';
+      creditAccountNumber = flowTitle || undefined;
+    }
+
     try {
       await recordWalletActivity({
         userId: params.userId,
@@ -292,14 +322,14 @@ export async function creditWalletBalance(params: {
         currency,
         source: params.source,
         title:
-          activityTitle ||
+          creditTitle ||
           (params.source === 'stellar'
             ? `${assetCode} deposit`
             : params.source === 'flutterwave'
               ? 'NGN bank deposit'
               : `${currency} deposit`),
         reason:
-          activityTitle ||
+          creditReason ||
           (params.source === 'stellar'
             ? `${assetCode} deposit via Stellar`
             : params.source === 'flutterwave'
@@ -314,7 +344,11 @@ export async function creditWalletBalance(params: {
               : 'wallet',
         network: params.source === 'stellar' ? 'stellar' : null,
         beneficiaryName:
-          params.source === 'swap' ? 'Currency conversion' : 'Wallet Top Up',
+          params.source === 'swap'
+            ? 'Currency conversion'
+            : creditBeneficiary,
+        accountType: creditAccountType,
+        accountNumber: creditAccountNumber,
       });
     } catch (err: unknown) {
       console.warn(

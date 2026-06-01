@@ -3,6 +3,12 @@ import { errorResponse, success } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
 import { chatWithDayflow, getDayflowStatus } from './dayflowService';
 import {
+  cancelFlow,
+  createAndActivateFlow,
+  getFlow,
+  listFlows,
+} from './dayflowFlowService';
+import {
   acknowledgeIncome,
   getActivePlan,
   getDayflowDashboard,
@@ -102,6 +108,75 @@ class DayflowController {
         String(err?.message ?? err),
         enums.HTTP_BAD_REQUEST
       );
+    }
+  };
+
+  listFlows = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const status =
+        typeof req.query.status === 'string' ? req.query.status : undefined;
+      const flows = await listFlows(userId, status);
+      return success(res, 'DayFlow flows', enums.HTTP_OK, { flows });
+    } catch (err: any) {
+      return errorResponse(
+        res,
+        String(err?.message ?? err),
+        enums.HTTP_BAD_REQUEST
+      );
+    }
+  };
+
+  getFlow = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const flowId = String(req.params.flowId ?? '');
+      const flow = await getFlow(userId, flowId);
+      if (!flow) {
+        return errorResponse(res, 'Flow not found', enums.HTTP_NOT_FOUND);
+      }
+      return success(res, 'DayFlow flow', enums.HTTP_OK, { flow });
+    } catch (err: any) {
+      return errorResponse(
+        res,
+        String(err?.message ?? err),
+        enums.HTTP_BAD_REQUEST
+      );
+    }
+  };
+
+  createFlow = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const flow = await createAndActivateFlow(userId, req.body);
+      return success(res, 'DayFlow flow created', enums.HTTP_CREATED, {
+        flow,
+      });
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      if (msg === 'DAYFLOW_FLOWS_TABLE_MISSING') {
+        return errorResponse(
+          res,
+          'DayFlow flows table not migrated yet. Run npm run migrate up.',
+          enums.HTTP_SERVICE_UNAVAILABLE
+        );
+      }
+      return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  cancelFlow = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const flowId = String(req.params.flowId ?? '');
+      const result = await cancelFlow(userId, flowId);
+      return success(res, 'DayFlow flow cancelled', enums.HTTP_OK, result);
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      if (msg === 'Flow not found') {
+        return errorResponse(res, msg, enums.HTTP_NOT_FOUND);
+      }
+      return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
     }
   };
 
