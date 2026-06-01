@@ -71,6 +71,7 @@ class DayxValidator {
         )
         .max(12)
         .optional(),
+      preferredFromCurrency: Joi.string().trim().uppercase().valid('USD', 'NGN', 'GBP', 'EUR').optional(),
     });
     return this.validateRequestBody(req, res, next, schema);
   };

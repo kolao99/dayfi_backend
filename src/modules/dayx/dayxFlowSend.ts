@@ -1,12 +1,14 @@
 import PaymentService from '../payment/services';
 import type { DayxFlowContext } from './dayxFlowContext';
+import { countryLabel } from './dayxFlowChannels';
 import {
-  countryLabel,
-  loadWithdrawCorridors,
-  methodsForCorridor,
-  uniqueCorridors,
-} from './dayxFlowChannels';
+  CORE_DESTINATION_OPTIONS,
+  deliveryMethodsForCorridor,
+  isCoreReceiveCurrency,
+  methodStepReply,
+} from './dayxFlowDelivery';
 import { countryReply, parseFlowUtterance } from './dayxFlowNlu';
+import { handleAddMoneyFlowTurn } from './dayxFlowAddMoney';
 import type {
   DayxFlowExecutePayload,
   DayxFlowSession,
@@ -99,7 +101,7 @@ export async function handleSendFlowTurn(
       patch.receiveCurrency = slots.receiveCurrency;
     }
     if (slots.recipientHint) patch.recipientHint = slots.recipientHint;
-    if (slots.amount) patch.amount = slots.amount;
+    if (slots.amount != null) patch.amount = slots.amount;
 
     const options = walletOptionsFromBalances(ctx.balances);
     let reply =
@@ -136,15 +138,13 @@ export async function handleSendFlowTurn(
     );
 
     if (d.receiveCountry && d.receiveCurrency) {
-      return advanceToMethod(next, ctx, String(d.receiveCountry), String(d.receiveCurrency));
+      return advanceToMethod(
+        next,
+        ctx,
+        String(d.receiveCountry),
+        String(d.receiveCurrency)
+      );
     }
-
-    const corridors = uniqueCorridors(await loadWithdrawCorridors());
-    const options = corridors.slice(0, 24).map((c) => ({
-      id: `${c.country}|${c.currency}`,
-      label: countryLabel(c.country),
-      subtitle: c.currency,
-    }));
 
     return {
       reply: `Sending from your ${spendCurrency} wallet. Where are they receiving the money?`,
@@ -152,7 +152,7 @@ export async function handleSendFlowTurn(
       ui: {
         step: 'select_country',
         title: 'Destination',
-        options,
+        options: CORE_DESTINATION_OPTIONS,
         showBack: true,
       },
     };
@@ -234,20 +234,26 @@ export async function handleSendFlowTurn(
     return handleAmountSubmit(session, body, ctx);
   }
 
+  if (body.action === 'select' && body.optionId === 'top_up') {
+    const spend = String(data(session).spendCurrency ?? 'NGN');
+    return handleAddMoneyFlowTurn(
+      {
+        flow: 'add_money',
+        action: 'select',
+        optionId: spend,
+        session: {
+          flow: 'add_money',
+          step: 'select_wallet',
+          data: { resumeParent: session, currency: spend },
+        },
+      },
+      ctx
+    ) as Promise<DayxFlowTurnResult>;
+  }
+
   if (session.step === 'review' && body.action === 'select') {
     if (body.optionId === 'cancel') {
       return { reply: 'Transfer cancelled.', session: null };
-    }
-    if (body.optionId === 'top_up') {
-      return {
-        reply: 'Which wallet do you want to fund?',
-        session: { flow: 'add_money', step: 'idle', data: {} },
-        ui: {
-          step: 'select_currency',
-          title: 'Add money',
-          options: walletOptionsFromBalances(ctx.balances),
-        },
-      };
     }
     if (body.optionId === 'confirm') {
       const d = data(session);
@@ -306,37 +312,23 @@ async function advanceToMethod(
   country: string,
   currency: string
 ): Promise<DayxFlowTurnResult> {
-  const channels = await loadWithdrawCorridors();
-  let methods = methodsForCorridor(channels, country, currency);
-
-  if (country === 'NG' && currency === 'NGN') {
-    methods = [
-      { id: 'dayfi_tag', label: 'Dayfi Tag', subtitle: 'If they use DayFi' },
-      {
-        id: 'bank',
-        label: 'Bank transfer',
-        subtitle: NG_BANK_HINT,
-      },
-      {
-        id: 'mobile_money',
-        label: 'Mobile money',
-        subtitle: 'Opay, PalmPay, etc.',
-      },
-    ];
-  }
-
   const spend = String(data(session).spendCurrency ?? 'NGN');
+  const receive = currency.toUpperCase();
+  const methods = deliveryMethodsForCorridor(country, receive);
+
   return {
-    reply: `How should they receive it in ${countryLabel(country)}?`,
+    reply: isCoreReceiveCurrency(receive)
+      ? methodStepReply(spend, receive)
+      : `How should they receive it in ${countryLabel(country)}?`,
     session: withData(
       { ...session, step: 'select_method' },
-      { receiveCountry: country, receiveCurrency: currency }
+      { receiveCountry: country, receiveCurrency: receive }
     ),
     ui: {
       step: 'select_method',
-      title: 'Delivery method',
+      title: 'Choose delivery method',
       options: methods,
-      hint: `Debiting your ${spend} wallet`,
+      hint: methodStepReply(spend, receive),
       showBack: true,
     },
   };
@@ -356,11 +348,11 @@ function handleMethodSelect(
 
   if (method === 'dayfi_tag') {
     return {
-      reply: 'Enter their Dayfi Tag (username without @).',
+      reply: 'Enter their username (without @).',
       session: next,
       ui: {
         step: 'collect_recipient',
-        title: 'Dayfi Tag',
+        title: 'Username',
         input: {
           type: 'text',
           field: 'dayfiId',
@@ -466,11 +458,12 @@ async function handleRecipientSubmit(
         { ...session, step: 'input_amount' },
         { dayfiId: tag, recipientName: String(name), dayfiVerified: true }
       );
-      return {
-        reply: `Found @${tag} (${name}). How much do you want to send?`,
-        session: next,
-        ui: amountUi(String(d.spendCurrency ?? 'USD')),
-      };
+      return amountStepResult(
+        next,
+        body,
+        _ctx,
+        `Found @${tag} (${name}). How much do you want to send?`
+      );
     } catch (e: unknown) {
       return {
         reply: e instanceof Error ? e.message : 'Could not verify Dayfi Tag.',
@@ -489,11 +482,12 @@ async function handleRecipientSubmit(
         { ...session, step: 'input_amount' },
         { accountNumber: value, accountName: String(accountName) }
       );
-      return {
-        reply: `Account verified: ${accountName}. How much should I send?`,
-        session: next,
-        ui: amountUi(String(d.spendCurrency ?? 'NGN')),
-      };
+      return amountStepResult(
+        next,
+        body,
+        _ctx,
+        `Account verified: ${accountName}. How much should I send?`
+      );
     } catch (e: unknown) {
       return {
         reply:
@@ -516,11 +510,12 @@ async function handleRecipientSubmit(
       { ...session, step: 'input_amount' },
       { cryptoAddress: value }
     );
-    return {
-      reply: 'How much do you want to send?',
-      session: next,
-      ui: amountUi(String(d.spendCurrency ?? 'USD')),
-    };
+    return amountStepResult(
+      next,
+      body,
+      _ctx,
+      'How much do you want to send?'
+    );
   }
 
   if (method === 'mobile_money' && field === 'phone') {
@@ -528,11 +523,12 @@ async function handleRecipientSubmit(
       { ...session, step: 'input_amount' },
       { phone: value, recipientName: value }
     );
-    return {
-      reply: 'How much should I send?',
-      session: next,
-      ui: amountUi(String(d.spendCurrency ?? 'NGN')),
-    };
+    return amountStepResult(
+      next,
+      body,
+      _ctx,
+      'How much should I send?'
+    );
   }
 
   return { reply: 'Please complete the field above.', session };
@@ -588,6 +584,24 @@ async function handleAmountSubmit(
       ],
     },
   };
+}
+
+function amountStepResult(
+  session: DayxFlowSession,
+  body: DayxFlowTurnBody,
+  ctx: DayxFlowContext,
+  reply: string
+): Promise<DayxFlowTurnResult> | DayxFlowTurnResult {
+  const spend = String(data(session).spendCurrency ?? 'NGN');
+  const prefilled = Number(data(session).amount);
+  if (Number.isFinite(prefilled) && prefilled > 0) {
+    return handleAmountSubmit(
+      session,
+      { ...body, action: 'submit', value: prefilled },
+      ctx
+    );
+  }
+  return { reply, session, ui: amountUi(spend) };
 }
 
 function buildExecutePayload(

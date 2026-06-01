@@ -6,8 +6,6 @@ import type {
   DayxFlowTurnResult,
   DayxFlowDepositPanel,
 } from './dayxFlowTypes';
-import { walletOptionsFromBalances } from './dayxFlowWallets';
-
 const billsService = new BillsService();
 
 const LOCAL_BILL_CATEGORIES = [
@@ -22,7 +20,7 @@ function data(session: DayxFlowSession): Record<string, unknown> {
   return session.data ?? {};
 }
 
-function depositTabsFor(currency: string): Array<'username' | 'bank' | 'crypto'> {
+export function depositTabsFor(currency: string): Array<'username' | 'bank' | 'crypto'> {
   const c = currency.toUpperCase();
   if (c === 'USD' || c === 'EUR') {
     return ['username', 'bank', 'crypto'];
@@ -30,7 +28,7 @@ function depositTabsFor(currency: string): Array<'username' | 'bank' | 'crypto'>
   return ['username', 'bank'];
 }
 
-function depositPanel(currency: string): DayxFlowDepositPanel {
+export function depositPanel(currency: string): DayxFlowDepositPanel {
   const c = currency.toUpperCase();
   return {
     currency: c,
@@ -402,60 +400,3 @@ function customerIdPlaceholder(categoryCode: string): string {
   return 'Enter ID';
 }
 
-export function handleAddMoneyFlowTurn(
-  body: DayxFlowTurnBody,
-  ctx: DayxFlowContext
-): Promise<DayxFlowTurnResult> | DayxFlowTurnResult {
-  const session: DayxFlowSession = body.session ?? {
-    flow: 'add_money',
-    step: 'idle',
-    data: {},
-  };
-
-  if (body.action === 'cancel') {
-    return { reply: 'Cancelled.', session: null };
-  }
-
-  if (body.action === 'start' || session.step === 'idle') {
-    return {
-      reply: 'Which wallet do you want to fund? NGN, USD, EUR, or GBP.',
-      session: { flow: 'add_money', step: 'select_currency', data: {} },
-      ui: {
-        step: 'select_currency',
-        title: 'Add money',
-        options: walletOptionsFromBalances(ctx.balances),
-      },
-    };
-  }
-
-  if (session.step === 'select_currency' && body.action === 'select') {
-    const currency = (body.optionId ?? 'USD').toUpperCase();
-    const panel = depositPanel(currency);
-    return {
-      reply: `To fund your ${currency} wallet, use your Dayfi Tag, bank transfer,${panel.tabs.includes('crypto') ? ' or on-chain deposit' : ''} below.`,
-      session: {
-        flow: 'add_money',
-        step: 'show_deposit',
-        data: { currency },
-      },
-      ui: {
-        step: 'show_deposit',
-        title: `Add ${currency}`,
-        panel: 'deposit',
-        deposit: panel,
-        options: [{ id: 'done', label: 'Done — back to chat' }],
-      },
-      completed: false,
-    };
-  }
-
-  if (session.step === 'show_deposit' && body.action === 'select') {
-    return {
-      reply: 'Anything else I can help with?',
-      session: null,
-      completed: true,
-    };
-  }
-
-  return { reply: 'Pick a wallet to fund.', session };
-}

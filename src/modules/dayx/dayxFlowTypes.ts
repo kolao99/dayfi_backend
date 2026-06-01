@@ -91,6 +91,8 @@ export type DayxFlowTurnBody = {
   utterance?: string;
   /** Client wallet hub snapshot for balance checks & spend wallet list. */
   walletBalances?: DayxFlowWalletBalance[];
+  /** Pre-select swap "from" wallet (e.g. current wallet detail screen). */
+  preferredFromCurrency?: string;
 };
 
 export type DayxFlowTurnResult = {

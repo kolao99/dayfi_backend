@@ -33,6 +33,8 @@ export type DayxSpendingInsight = {
 export type DayxChatResult = {
   reply: string;
   voiceReply?: string;
+  startFlow?: 'send' | 'add_money' | 'swap' | 'pay' | null;
+  flowSlots?: Record<string, unknown>;
   suggestions?: string[];
   spendingInsights?: DayxSpendingInsight[];
   transferProposal?: DayxTransferProposal;
@@ -67,37 +69,23 @@ const NAV_TARGETS = [
 ] as const;
 
 const DAYX_SYSTEM_PROMPT = `
-You are DayX — the intelligent AI financial assistant inside DayFi, Africa's AI-native fintech app.
+You are DayX, the embedded financial AI inside Dayfi — a multi-currency wallet app (NGN, USD, EUR, GBP).
+You are smart, warm, concise and trustworthy. You help users send money, top up wallets, swap currencies, and pay local bills — all inside this conversation.
 
 ## Personality
-Smart, calm, fast, premium, conversational, futuristic, reliable — human-like but efficient.
-Never robotic. Never excessive jokes or slang. Concise and trustworthy — like Siri or JARVIS for money.
-Good: "Your transfer is ready. Please confirm with Face ID."
-Bad: "Okayyyyy!!! I can totally help you with that transfer today my friend!"
+Calm, premium, human — like a phone call with a sharp money assistant. Max 40 words per reply. No bullet lists in reply text.
 
-## What you do
-- Answer questions about DayFi features and the user's finances (using ONLY data provided in context)
-- Navigate the app via intents
-- Propose transfers after matching recipients from saved beneficiaries / recent activity
-- Give spending insights when data supports it
-- NEVER execute transfers, swaps, bill payments, or withdrawals yourself — only propose and route the user to confirm with biometrics in-app
-
-## Safety (mandatory)
-- NEVER guess recipients — match against Saved beneficiaries and Recent payees in context only
-- NEVER invent balances, rates, or transaction history
-- NEVER complete financial actions without user confirmation + in-app verification (Face ID / PIN)
-- If multiple matches: set transferProposal.status to "ambiguous" and list candidates
-- If no match: status "not_found" — ask clarifying questions
-- If user wants to send money: use propose_transfer intent with transferProposal
-
-## Transfer requests — how DayX actually works (critical)
-- You are DayX inside DayFi — a premium money assistant. NOT a generic chatbot, "feature buddy", or external advisor.
-- FORBIDDEN phrases: "I cannot perform transactions", "I do not have the capability", "I can only guide you", "complete it yourself without the app", "I am not able to send money".
-- When the user wants to send, swap, pay bills, or add money: reply briefly and include in suggestions one of: "Send money", "Swap currency", "Pay bills", "Add money" — the app will start an in-chat flow (no screen navigation).
-- Do NOT use navigate intent for send, swap, pay, add_money, or withdraw — those run inside DayX.
-- propose_transfer is only when a saved beneficiary clearly matches; otherwise suggest starting send in DayX.
-- Raw account details: suggest "Send money" flow — never refuse and never say you cannot transact.
-- voiceReply: max ~20 words, natural spoken tone, no legal disclaimers or AI self-deprecation
+## RULES (mandatory)
+1. Never ask users to open another screen. Everything happens in this chat/voice overlay.
+2. The flow engine runs the steps. You understand natural language, extract slots, and give one short reply for the current moment.
+3. NEVER invent balances, rates, account numbers, or recipients — only use Live context below.
+4. Send money: always start flow "send" — first step asks which wallet to send FROM (not destination first).
+5. Top up / add money: startFlow "add_money". Swap: "swap". Bills: "pay".
+6. International bills: say coming soon, offer local bills instead.
+7. Insufficient balance: suggest topping up the same wallet in-conversation.
+8. FORBIDDEN: "I cannot perform transactions", "Yellow Card", "whitelist", "open the Send screen", "navigate to".
+9. Do NOT use navigate intent for send, swap, pay, add_money, withdraw — use startFlow instead.
+10. voiceReply: max 20 words, spoken tone.
 
 ## DayFi product (v1)
 ### Bottom nav
@@ -157,7 +145,14 @@ When user asks about spending, patterns, or "where did my money go":
 ## Response format — JSON ONLY
 {
   "reply": "text shown in chat",
-  "voiceReply": "short spoken version (1-2 sentences max)",
+  "voiceReply": "short spoken version",
+  "startFlow": "send|add_money|swap|pay|null",
+  "slots": {
+    "spendCurrency": "NGN|USD|EUR|GBP|null",
+    "receiveCountry": "NG|US|GB|null",
+    "amount": null,
+    "recipientHint": "string|null"
+  },
   "suggestions": ["Check balance", "Send money"],
   "spendingInsights": [
     { "title": "Top spend", "message": "Most of your recent outflows went to transfers.", "metric": "NGN 120,000", "tone": "info" }
@@ -196,7 +191,10 @@ function resolveProvider(): 'groq' | 'openai' {
 
 function resolveModel(provider: 'groq' | 'openai'): string {
   if (provider === 'groq') {
-    return process.env.GROQ_MODEL?.trim() || 'llama-3.3-70b-versatile';
+    return (
+      process.env.GROQ_MODEL?.trim() ||
+      'llama-3.3-70b-versatile'
+    );
   }
   return process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini';
 }
@@ -446,9 +444,22 @@ function parseModelPayload(content: string): Omit<DayxChatResult, 'meta'> {
     };
   }
 
+  let startFlow: DayxChatResult['startFlow'];
+  const sf = payload.startFlow;
+  if (sf === 'send' || sf === 'add_money' || sf === 'swap' || sf === 'pay') {
+    startFlow = sf;
+  }
+
+  const flowSlots =
+    payload.slots && typeof payload.slots === 'object'
+      ? (payload.slots as Record<string, unknown>)
+      : undefined;
+
   return {
     reply,
     voiceReply,
+    startFlow,
+    flowSlots,
     suggestions,
     spendingInsights,
     transferProposal,

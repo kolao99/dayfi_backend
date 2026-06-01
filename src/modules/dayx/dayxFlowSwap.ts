@@ -36,6 +36,34 @@ export async function handleSwapFlowTurn(
   }
 
   if (body.action === 'start' || session.step === 'idle') {
+    const preferred = String(
+      body.preferredFromCurrency ?? data(session).preferredFromCurrency ?? ''
+    ).toUpperCase();
+    if (
+      preferred &&
+      (['USD', 'NGN', 'GBP', 'EUR'] as const).includes(
+        preferred as 'USD' | 'NGN' | 'GBP' | 'EUR'
+      )
+    ) {
+      const others = SWAP_CURRENCIES.filter((c) => c !== preferred);
+      return {
+        reply: `Swap from your ${preferred} wallet. Which currency do you want?`,
+        session: withData(
+          { flow: 'swap', step: 'select_to', data: {} },
+          { fromCurrency: preferred }
+        ),
+        ui: {
+          step: 'select_to',
+          title: 'Swap to',
+          options: others.map((c) => {
+            const bal = balanceFor(ctx.balances, c);
+            return { id: c, label: c, subtitle: `Balance ${bal.toLocaleString()}` };
+          }),
+          showBack: true,
+        },
+      };
+    }
+
     return {
       reply: 'Which wallet are you swapping from? You have NGN, USD, EUR, and GBP.',
       session: { flow: 'swap', step: 'select_from', data: {} },

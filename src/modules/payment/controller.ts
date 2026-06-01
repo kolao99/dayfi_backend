@@ -566,7 +566,7 @@ class PaymentController {
       const payload = req.body;
       const { user } = req;
 
-      const data = await this.paymentService.createWallet(
+      const data = await this.paymentService.ensureWalletForCurrency(
         user?.user_id,
         payload.currency
       );

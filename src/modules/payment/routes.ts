@@ -174,7 +174,6 @@ Router.post(
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
   paymentValidator.createWallet,
-  paymentMiddleware.checkUserWalletExists,
   paymentController.createWallet
 );
 
