@@ -1,5 +1,6 @@
 import PaymentService from '../payment/services';
 import type { DayxFlowContext } from './dayxFlowContext';
+import { buildPinSubmitTurn } from './dayxFlowPin';
 import { buildSlotAck, slotsToSessionData } from './dayxFlowSlots';
 import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
@@ -282,19 +283,12 @@ export async function handleSwapFlowTurn(
     if (pin.length < 4) {
       return { reply: 'Enter your 4-digit PIN.', session };
     }
-    return {
-      reply: 'Processing swap…',
-      session: null,
-      awaitingPin: true,
-      execute: {
-        type: 'swap',
-        fromCurrency: String(d.fromCurrency),
-        toCurrency: String(d.toCurrency),
-        amount: Number(d.amount),
-        pin,
-      },
-      completed: true,
-    };
+    return buildPinSubmitTurn(session, {
+      type: 'swap',
+      fromCurrency: String(d.fromCurrency),
+      toCurrency: String(d.toCurrency),
+      amount: Number(d.amount),
+    }, pin);
   }
 
   return advanceSwap(session, ctx);

@@ -73,6 +73,12 @@ export function billCategoryToCode(
   return CATEGORY_CODES[cat];
 }
 
+/** Nigerian bank account numbers are 10 digits — not transfer amounts. */
+export function isNgAccountNumber(raw: string): boolean {
+  const digits = raw.replace(/\D/g, '');
+  return digits.length === 10;
+}
+
 function parseAmount(q: string): number | undefined {
   const patterns = [
     /(?:₦|ngn\s*)([\d,]+(?:\.\d+)?)/i,
@@ -257,7 +263,18 @@ export function slotsToSessionData(
 ): Record<string, unknown> {
   const d: Record<string, unknown> = {};
 
-  if (slots.amount != null) d.amount = slots.amount;
+  if (slots.amount != null) {
+    const recip = String(slots.recipient_raw ?? '').replace(/\D/g, '');
+    const amtDigits = String(slots.amount).replace(/\D/g, '');
+    const looksLikeAccount =
+      flow === 'send' &&
+      slots.method === 'bank' &&
+      isNgAccountNumber(recip) &&
+      recip === amtDigits;
+    if (!looksLikeAccount) {
+      d.amount = slots.amount;
+    }
+  }
 
   if (flow === 'send') {
     if (slots.spendCurrency) d.spendCurrency = slots.spendCurrency;

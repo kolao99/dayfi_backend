@@ -7,7 +7,7 @@ import {
   methodStepReply,
 } from './dayxFlowDelivery';
 import { countryReply } from './dayxFlowNlu';
-import { buildSlotAck, isRecipientResolved } from './dayxFlowSlots';
+import { buildSlotAck, isNgAccountNumber, isRecipientResolved } from './dayxFlowSlots';
 import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
   DayxFlowExecutePayload,
@@ -336,6 +336,22 @@ function askBankPicker(
   });
 }
 
+function bankAccountCollectUi(): DayxFlowUi {
+  return {
+    step: 'collect_recipient',
+    title: 'Account number',
+    input: {
+      type: 'text',
+      field: 'accountNumber',
+      label: 'Account number',
+      placeholder: '10 digits',
+      keyboard: 'number',
+    },
+    hint: NG_BANK_HINT,
+    showBack: true,
+  };
+}
+
 function askRecipient(
   session: DayxFlowSession,
   method: string,
@@ -366,19 +382,7 @@ function askRecipient(
     return {
       reply: `${prefix}Enter their account number.`,
       session: withData({ ...session, step: 'collect_recipient' }, {}),
-      ui: {
-        step: 'collect_recipient',
-        title: 'Account number',
-        input: {
-          type: 'text',
-          field: 'accountNumber',
-          label: 'Account number',
-          placeholder: '10 digits',
-          keyboard: 'number',
-        },
-        hint: NG_BANK_HINT,
-        showBack: true,
-      },
+      ui: bankAccountCollectUi(),
     };
   }
 
@@ -483,7 +487,10 @@ async function resolveRecipient(
           e instanceof Error
             ? e.message
             : 'Could not verify account. Check the number and try again.',
-        session,
+        session: withData({ ...session, step: 'collect_recipient' }, {
+          recipient_resolved: false,
+        }),
+        ui: bankAccountCollectUi(),
       };
     }
   }
@@ -661,7 +668,11 @@ export async function handleRecipientFieldSubmit(
 
   let next = session;
   const utterance = body.utterance ?? value;
-  if (utterance.split(/\s+/).length >= 4) {
+  const structuredFields = new Set(['accountNumber', 'dayfiId', 'cryptoAddress', 'amount']);
+  if (
+    !structuredFields.has(field) &&
+    utterance.split(/\s+/).length >= 4
+  ) {
     next = await mergeSlotsIntoSendSession(session, utterance);
   }
 
@@ -675,11 +686,24 @@ export async function handleRecipientFieldSubmit(
   }
 
   if (field === 'accountNumber') {
-    next = withData(next, {
-      accountNumber: value,
-      recipient_raw: value,
-    });
-    return advanceSend(next, ctx);
+    const digits = value.replace(/\D/g, '');
+    if (!isNgAccountNumber(digits)) {
+      return {
+        reply: 'Enter a valid 10-digit Nigerian account number.',
+        session: withData(session, { step: 'collect_recipient' }),
+        ui: bankAccountCollectUi(),
+      };
+    }
+    const merged: Record<string, unknown> = {
+      ...data(session),
+      accountNumber: digits,
+      recipient_raw: digits,
+    };
+    if (Number(merged.amount) === Number(digits)) {
+      delete merged.amount;
+    }
+    next = { ...session, step: 'collect_recipient', data: merged };
+    return resolveRecipient(next, ctx, '');
   }
 
   if (field === 'cryptoAddress') {

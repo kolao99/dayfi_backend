@@ -7,6 +7,8 @@ import {
 
 const SLOT_EXTRACTION_PROMPT = `You are a slot extractor for a fintech app. Given a user utterance, extract all financial transaction slots you can infer. Be liberal — if the user says "opay" that implies bank transfer method AND bank_name=opay. If they give a 10-digit number that looks like a Nigerian phone/account, store it as recipient_raw. If they say "naira" or "NGN" or "my naira wallet", that is spendCurrency=NGN.
 
+Never set "amount" from a bare 10-digit Nigerian account or phone number — that belongs in recipient_raw only.
+
 Return ONLY valid JSON, no prose, no markdown:
 {
   "intent": "send | top_up | swap | pay_bills | balance | other",

@@ -12,6 +12,7 @@ import {
   submitAmountForReview,
   withData,
 } from './dayxFlowSendAdvance';
+import { buildPinSubmitTurn } from './dayxFlowPin';
 import type {
   DayxFlowExecutePayload,
   DayxFlowSession,
@@ -52,7 +53,39 @@ export async function handleSendFlowTurn(
     return advanceSend(session, ctx);
   }
 
-  if (body.action === 'submit' && body.utterance?.trim()) {
+  if (session.step === 'collect_recipient' && body.action === 'submit') {
+    return handleRecipientFieldSubmit(session, body, ctx);
+  }
+
+  if (session.step === 'input_amount' && body.action === 'submit') {
+    return submitAmountForReview(session, ctx, Number(body.value));
+  }
+
+  if (session.step === 'collect_pin' && body.action === 'submit') {
+    const pin = String(body.value ?? '').trim();
+    if (pin.length < 4) {
+      return { reply: 'Enter your 4-digit transaction PIN.', session };
+    }
+    const d = data(session);
+    const exec = buildExecutePayload(d) as DayxFlowExecutePayload | null;
+    if (!exec) {
+      return { reply: 'Session expired. Please start again.', session: null };
+    }
+    return buildPinSubmitTurn(session, exec, pin, (s) =>
+      withData(s, { executeDraft: exec })
+    );
+  }
+
+  const structuredSubmitSteps = new Set([
+    'collect_recipient',
+    'input_amount',
+    'collect_pin',
+  ]);
+  if (
+    body.action === 'submit' &&
+    body.utterance?.trim() &&
+    !structuredSubmitSteps.has(session.step)
+  ) {
     session = await mergeSlotsIntoSendSession(session, body.utterance);
     return advanceSend(session, ctx);
   }
@@ -77,14 +110,6 @@ export async function handleSendFlowTurn(
 
   if (session.step === 'select_crypto_network' && body.action === 'select') {
     return handleCryptoNetworkSelect(session, body.optionId ?? 'stellar', ctx);
-  }
-
-  if (session.step === 'collect_recipient' && body.action === 'submit') {
-    return handleRecipientFieldSubmit(session, body, ctx);
-  }
-
-  if (session.step === 'input_amount' && body.action === 'submit') {
-    return submitAmountForReview(session, ctx, Number(body.value));
   }
 
   if (body.action === 'select' && body.optionId === 'top_up') {
@@ -132,25 +157,6 @@ export async function handleSendFlowTurn(
         },
       };
     }
-  }
-
-  if (session.step === 'collect_pin' && body.action === 'submit') {
-    const pin = String(body.value ?? '').trim();
-    if (pin.length < 4) {
-      return { reply: 'Enter your 4-digit transaction PIN.', session };
-    }
-    const d = data(session);
-    const exec = buildExecutePayload(d) as DayxFlowExecutePayload | null;
-    if (!exec) {
-      return { reply: 'Session expired. Please start again.', session: null };
-    }
-    return {
-      reply: 'Processing your transfer…',
-      session: null,
-      awaitingPin: true,
-      execute: { ...exec, pin } as DayxFlowExecutePayload,
-      completed: true,
-    };
   }
 
   if (session.step === 'advance' || !session.step) {

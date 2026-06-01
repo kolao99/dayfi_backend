@@ -1,5 +1,6 @@
 import { BillsService } from '../payment/billsService';
 import type { DayxFlowContext } from './dayxFlowContext';
+import { buildPinSubmitTurn } from './dayxFlowPin';
 import { buildSlotAck, slotsToSessionData } from './dayxFlowSlots';
 import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
@@ -543,23 +544,16 @@ export async function handlePayFlowTurn(
     if (pin.length < 4) {
       return { reply: 'Enter your 4-digit PIN.', session };
     }
-    return {
-      reply: 'Processing payment…',
-      session: null,
-      awaitingPin: true,
-      execute: {
-        type: 'pay_bill',
-        categoryCode: String(d.categoryCode),
-        billerCode: String(d.billerCode),
-        itemCode: String(d.itemCode),
-        customerId: String(d.customerId),
-        amount: Number(d.amount),
-        billerName: String(d.billerName ?? ''),
-        itemName: String(d.itemName ?? ''),
-        pin,
-      },
-      completed: true,
-    };
+    return buildPinSubmitTurn(session, {
+      type: 'pay_bill',
+      categoryCode: String(d.categoryCode),
+      billerCode: String(d.billerCode),
+      itemCode: String(d.itemCode),
+      customerId: String(d.customerId),
+      amount: Number(d.amount),
+      billerName: String(d.billerName ?? ''),
+      itemName: String(d.itemName ?? ''),
+    }, pin);
   }
 
   return advancePay(session);
