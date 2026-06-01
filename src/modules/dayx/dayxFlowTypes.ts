@@ -6,7 +6,8 @@ export type DayxFlowInputType =
   | 'none'
   | 'text'
   | 'amount'
-  | 'multiline';
+  | 'multiline'
+  | 'pin';
 
 export type DayxFlowOption = {
   id: string;
@@ -27,6 +28,26 @@ export type DayxFlowReviewLine = {
   value: string;
 };
 
+/** Inline add-money / receive details (no navigation). */
+export type DayxFlowDepositPanel = {
+  currency: string;
+  tabs: Array<'username' | 'bank' | 'crypto'>;
+  dayfiId?: string;
+  bankDetails?: {
+    bankName?: string;
+    accountNumber?: string;
+    iban?: string;
+    routingNumber?: string;
+    accountName?: string;
+    isDemo?: boolean;
+  };
+  cryptoDetails?: {
+    coinLabel: string;
+    stellarAddress?: string;
+    ethAddress?: string;
+  };
+};
+
 export type DayxFlowUi = {
   step: string;
   title?: string;
@@ -34,11 +55,23 @@ export type DayxFlowUi = {
   input?: DayxFlowInput;
   review?: DayxFlowReviewLine[];
   showBack?: boolean;
+  /** Rich panel rendered in overlay instead of navigating. */
+  panel?: 'deposit' | 'insufficient_balance';
+  deposit?: DayxFlowDepositPanel;
+  /** Shown on review / amount steps */
+  rateLine?: string;
+  hint?: string;
 };
 
 export type DayxFlowExecutePayload = {
   type: string;
   [key: string]: unknown;
+};
+
+export type DayxFlowWalletBalance = {
+  currency: string;
+  balance: number;
+  symbol?: string;
 };
 
 export type DayxFlowSession = {
@@ -54,6 +87,10 @@ export type DayxFlowTurnBody = {
   optionId?: string;
   field?: string;
   value?: string | number;
+  /** Natural-language kickoff (voice/chat). */
+  utterance?: string;
+  /** Client wallet hub snapshot for balance checks & spend wallet list. */
+  walletBalances?: DayxFlowWalletBalance[];
 };
 
 export type DayxFlowTurnResult = {
@@ -63,5 +100,6 @@ export type DayxFlowTurnResult = {
   awaitingPin?: boolean;
   execute?: DayxFlowExecutePayload;
   completed?: boolean;
+  /** Deprecated — avoid for money flows; kept for support-only. */
   navigateTarget?: string;
 };

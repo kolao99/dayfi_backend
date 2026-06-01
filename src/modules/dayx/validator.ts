@@ -60,6 +60,17 @@ class DayxValidator {
       value: Joi.alternatives()
         .try(Joi.string().max(500), Joi.number())
         .optional(),
+      utterance: Joi.string().trim().max(2000).optional(),
+      walletBalances: Joi.array()
+        .items(
+          Joi.object({
+            currency: Joi.string().trim().uppercase().max(8).required(),
+            balance: Joi.number().required(),
+            symbol: Joi.string().trim().max(8).optional(),
+          })
+        )
+        .max(12)
+        .optional(),
     });
     return this.validateRequestBody(req, res, next, schema);
   };

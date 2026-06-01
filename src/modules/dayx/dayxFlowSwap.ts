@@ -1,9 +1,13 @@
+import PaymentService from '../payment/services';
+import type { DayxFlowContext } from './dayxFlowContext';
 import type {
   DayxFlowSession,
   DayxFlowTurnBody,
   DayxFlowTurnResult,
 } from './dayxFlowTypes';
+import { balanceFor, walletOptionsFromBalances } from './dayxFlowWallets';
 
+const paymentService = new PaymentService();
 const SWAP_CURRENCIES = ['USD', 'NGN', 'GBP', 'EUR'] as const;
 
 function data(session: DayxFlowSession): Record<string, unknown> {
@@ -17,7 +21,10 @@ function withData(
   return { ...session, data: { ...data(session), ...patch } };
 }
 
-export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
+export async function handleSwapFlowTurn(
+  body: DayxFlowTurnBody,
+  ctx: DayxFlowContext
+): Promise<DayxFlowTurnResult> {
   const session: DayxFlowSession = body.session ?? {
     flow: 'swap',
     step: 'idle',
@@ -30,16 +37,12 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
 
   if (body.action === 'start' || session.step === 'idle') {
     return {
-      reply: 'Which wallet are you swapping from?',
+      reply: 'Which wallet are you swapping from? You have NGN, USD, EUR, and GBP.',
       session: { flow: 'swap', step: 'select_from', data: {} },
       ui: {
         step: 'select_from',
-        title: 'From',
-        options: SWAP_CURRENCIES.map((c) => ({
-          id: c,
-          label: c,
-          subtitle: 'Your balance',
-        })),
+        title: 'Swap from',
+        options: walletOptionsFromBalances(ctx.balances),
       },
     };
   }
@@ -52,8 +55,15 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
       session: withData({ ...session, step: 'select_to' }, { fromCurrency: from }),
       ui: {
         step: 'select_to',
-        title: 'To',
-        options: others.map((c) => ({ id: c, label: c })),
+        title: 'Swap to',
+        options: others.map((c) => {
+          const bal = balanceFor(ctx.balances, c);
+          return {
+            id: c,
+            label: c,
+            subtitle: `Balance ${bal.toLocaleString()}`,
+          };
+        }),
         showBack: true,
       },
     };
@@ -62,6 +72,15 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
   if (session.step === 'select_to' && body.action === 'select') {
     const to = (body.optionId ?? 'NGN').toUpperCase();
     const from = String(data(session).fromCurrency ?? 'USD');
+    let rateLine = '';
+    try {
+      const rate = await paymentService.getExchangeRate(from, to);
+      if (rate > 0) {
+        rateLine = `1 ${from} ≈ ${rate.toFixed(4)} ${to}`;
+      }
+    } catch {
+      rateLine = 'Live rate loads at review';
+    }
     return {
       reply: `How much ${from} do you want to swap to ${to}?`,
       session: withData({ ...session, step: 'input_amount' }, { toCurrency: to }),
@@ -75,6 +94,7 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
           placeholder: '0.00',
           keyboard: 'number',
         },
+        rateLine,
         showBack: true,
       },
     };
@@ -87,7 +107,50 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
     }
     const from = String(data(session).fromCurrency ?? 'USD');
     const to = String(data(session).toCurrency ?? 'NGN');
-    const next = withData({ ...session, step: 'review' }, { amount });
+    const available = balanceFor(ctx.balances, from);
+
+    if (amount > available) {
+      return {
+        reply: `Insufficient ${from} balance. You have ${available.toLocaleString()}.`,
+        session,
+        ui: {
+          step: 'review',
+          title: 'Insufficient balance',
+          panel: 'insufficient_balance',
+          review: [
+            { label: 'Needed', value: `${from} ${amount}` },
+            { label: 'Available', value: `${from} ${available}` },
+          ],
+          options: [
+            { id: 'top_up', label: 'Top up wallet' },
+            { id: 'cancel', label: 'Cancel' },
+          ],
+        },
+      };
+    }
+
+    let rate = 0;
+    let estimatedTo = '';
+    try {
+      rate = await paymentService.getExchangeRate(from, to);
+      if (rate > 0) {
+        estimatedTo = (amount * rate).toFixed(2);
+      }
+    } catch {
+      /* rate optional */
+    }
+
+    const next = withData({ ...session, step: 'review' }, { amount, rate });
+    const review = [
+      { label: 'From', value: `${amount} ${from}` },
+      { label: 'To', value: to },
+      ...(estimatedTo
+        ? [{ label: 'You receive ≈', value: `${estimatedTo} ${to}` }]
+        : []),
+      ...(rate > 0
+        ? [{ label: 'Rate', value: `1 ${from} = ${rate.toFixed(4)} ${to}` }]
+        : []),
+    ];
 
     return {
       reply: `Swap ${amount} ${from} → ${to}. Confirm with your PIN.`,
@@ -95,20 +158,12 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
       ui: {
         step: 'review',
         title: 'Review swap',
-        review: [
-          { label: 'From', value: `${amount} ${from}` },
-          { label: 'To', value: to },
-        ],
+        review,
+        rateLine: rate > 0 ? `1 ${from} ≈ ${rate.toFixed(4)} ${to}` : undefined,
         options: [
           { id: 'confirm', label: 'Confirm & enter PIN' },
           { id: 'cancel', label: 'Cancel' },
         ],
-      },
-      execute: {
-        type: 'swap',
-        fromCurrency: from,
-        toCurrency: to,
-        amount,
       },
     };
   }
@@ -121,7 +176,7 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
       const d = data(session);
       return {
         reply: 'Enter your transaction PIN to swap.',
-        session,
+        session: { ...session, step: 'collect_pin' },
         awaitingPin: true,
         execute: {
           type: 'swap',
@@ -129,8 +184,39 @@ export function handleSwapFlowTurn(body: DayxFlowTurnBody): DayxFlowTurnResult {
           toCurrency: String(d.toCurrency),
           amount: Number(d.amount),
         },
+        ui: {
+          step: 'collect_pin',
+          title: 'Transaction PIN',
+          input: {
+            type: 'pin',
+            field: 'pin',
+            label: '4-digit PIN',
+            keyboard: 'number',
+          },
+        },
       };
     }
+  }
+
+  if (session.step === 'collect_pin' && body.action === 'submit') {
+    const pin = String(body.value ?? '').trim();
+    const d = data(session);
+    if (pin.length < 4) {
+      return { reply: 'Enter your 4-digit PIN.', session };
+    }
+    return {
+      reply: 'Processing swap…',
+      session: null,
+      awaitingPin: true,
+      execute: {
+        type: 'swap',
+        fromCurrency: String(d.fromCurrency),
+        toCurrency: String(d.toCurrency),
+        amount: Number(d.amount),
+        pin,
+      },
+      completed: true,
+    };
   }
 
   return { reply: 'Choose an option to continue.', session };
