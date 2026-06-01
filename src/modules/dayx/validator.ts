@@ -47,7 +47,7 @@ class DayxValidator {
         .valid('send', 'swap', 'pay', 'add_money')
         .required(),
       action: Joi.string()
-        .valid('start', 'select', 'submit', 'cancel')
+        .valid('start', 'select', 'submit', 'cancel', 'utterance')
         .required(),
       session: Joi.object({
         flow: Joi.string().required(),

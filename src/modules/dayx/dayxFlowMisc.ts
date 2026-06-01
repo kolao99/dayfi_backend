@@ -1,5 +1,7 @@
 import { BillsService } from '../payment/billsService';
 import type { DayxFlowContext } from './dayxFlowContext';
+import { buildSlotAck, slotsToSessionData } from './dayxFlowSlots';
+import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
   DayxFlowSession,
   DayxFlowTurnBody,
@@ -18,6 +20,235 @@ const LOCAL_BILL_CATEGORIES = [
 
 function data(session: DayxFlowSession): Record<string, unknown> {
   return session.data ?? {};
+}
+
+function withData(
+  session: DayxFlowSession,
+  patch: Record<string, unknown>
+): DayxFlowSession {
+  return { ...session, data: { ...data(session), ...patch } };
+}
+
+async function mergePaySlots(
+  session: DayxFlowSession,
+  utterance?: string
+): Promise<DayxFlowSession> {
+  const slots = await extractFlowSlots(utterance);
+  return withData(session, slotsToSessionData(slots, 'pay'));
+}
+
+async function pickBiller(
+  categoryCode: string,
+  hint?: string
+): Promise<{ code: string; name: string } | null> {
+  const billers = await billsService.getBillers(categoryCode);
+  const list = Array.isArray(billers) ? billers : [];
+  if (!list.length) return null;
+  if (hint) {
+    const h = hint.toLowerCase();
+    const row = (list as Record<string, unknown>[]).find((b) =>
+      String(b.name ?? b.short_name ?? '')
+        .toLowerCase()
+        .includes(h)
+    );
+    if (row) {
+      return {
+        code: String(row.biller_code ?? row.code ?? ''),
+        name: String(row.name ?? row.short_name ?? 'Biller'),
+      };
+    }
+  }
+  const first = list[0] as Record<string, unknown>;
+  return {
+    code: String(first.biller_code ?? first.code ?? ''),
+    name: String(first.name ?? first.short_name ?? 'Biller'),
+  };
+}
+
+async function pickDefaultItem(
+  billerCode: string
+): Promise<{ itemCode: string; itemName?: string; amount?: number } | null> {
+  const items = await billsService.getItems(billerCode);
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return null;
+  const item = list[0] as Record<string, unknown>;
+  const amt = Number(item.amount ?? 0);
+  return {
+    itemCode: String(item.item_code ?? item.code ?? ''),
+    itemName: String(item.short_name ?? item.name ?? ''),
+    amount: amt > 0 ? amt : undefined,
+  };
+}
+
+async function advancePay(
+  session: DayxFlowSession,
+  ack?: string
+): Promise<DayxFlowTurnResult> {
+  const d = data(session);
+  const prefix = ack ?? buildSlotAck(d, 'pay');
+
+  if (d.scope === 'international') {
+    return {
+      reply:
+        'International bill payments are coming soon. Would you like to pay a local bill instead?',
+      session: { flow: 'pay', step: 'select_scope', data: { scope: 'local' } },
+      ui: {
+        step: 'select_scope',
+        title: 'Bill type',
+        options: [
+          { id: 'local', label: 'Pay local bill instead', subtitle: 'NGN' },
+          { id: 'cancel', label: 'Cancel' },
+        ],
+      },
+    };
+  }
+
+  if (d.categoryCode && !d.scope) {
+    session = withData(session, { scope: 'local' });
+  }
+  const dScoped = data(session);
+  if (!dScoped.categoryCode) {
+    return {
+      reply: prefix
+        ? `${prefix} What kind of bill?`
+        : 'Pay a local bill in Nigeria, or choose international (coming soon).',
+      session: { flow: 'pay', step: 'select_scope', data: { scope: dScoped.scope ?? 'local' } },
+      ui: {
+        step: 'select_scope',
+        title: 'Bill type',
+        options: [
+          { id: 'local', label: 'Local bill (Nigeria)', subtitle: 'NGN' },
+          {
+            id: 'international',
+            label: 'International bill',
+            subtitle: 'Coming soon',
+          },
+        ],
+      },
+    };
+  }
+
+  const categoryCode = String(dScoped.categoryCode);
+  let working = session;
+  const dWork = () => data(working);
+
+  if (!dWork().billerCode) {
+    const biller = await pickBiller(
+      categoryCode,
+      dWork().provider_hint ? String(dWork().provider_hint) : undefined
+    );
+    if (!biller) {
+      return {
+        reply: 'No billers found for that category. Try another.',
+        session: working,
+      };
+    }
+    const item = await pickDefaultItem(biller.code);
+    working = withData(working, {
+      billerCode: biller.code,
+      billerName: biller.name,
+      scope: 'local',
+    });
+    if (item) {
+      working = withData(working, {
+        itemCode: item.itemCode,
+        itemName: item.itemName,
+        presetAmount: item.amount,
+      });
+    }
+    return advancePay(working, prefix);
+  }
+
+  const cat = categoryCode.toUpperCase();
+  const skipPlan =
+    cat === 'AIRTIME' ||
+    (dWork().amount && Number(dWork().amount) > 0) ||
+    Boolean(dWork().itemCode);
+
+  if (!dWork().itemCode && !skipPlan) {
+    const items = await billsService.getItems(String(dWork().billerCode));
+    const list = Array.isArray(items) ? items : [];
+    if (list.length > 1) {
+      const options = (list as Record<string, unknown>[])
+        .slice(0, 12)
+        .map((item) => ({
+          id: String(item.item_code ?? item.code ?? ''),
+          label: String(item.short_name ?? item.name ?? item.item_code ?? 'Plan'),
+          subtitle: item.amount
+            ? `₦${Number(item.amount).toLocaleString()}`
+            : undefined,
+        }));
+      return {
+        reply: prefix ? `${prefix} Pick a package.` : 'Pick a package or plan.',
+        session: { ...working, step: 'select_item' },
+        ui: {
+          step: 'select_item',
+          title: 'Package',
+          options,
+          showBack: true,
+        },
+      };
+    }
+    if (list.length === 1) {
+      const item = list[0] as Record<string, unknown>;
+      working = withData(working, {
+        itemCode: String(item.item_code ?? item.code ?? ''),
+        itemName: item.short_name ?? item.name,
+        presetAmount: Number(item.amount ?? 0) || undefined,
+      });
+      return advancePay(working, prefix);
+    }
+  }
+
+  if (!dWork().customerId) {
+    return {
+      reply: prefix
+        ? `${prefix} ${customerIdPrompt(categoryCode)}`
+        : customerIdPrompt(categoryCode),
+      session: { ...working, step: 'input_customer' },
+      ui: {
+        step: 'input_customer',
+        title: 'Customer ID',
+        input: {
+          type: 'text',
+          field: 'customerId',
+          label: customerIdLabel(categoryCode),
+          placeholder: customerIdPlaceholder(categoryCode),
+          keyboard: 'default',
+        },
+        showBack: true,
+      },
+    };
+  }
+
+  const amount = Number(dWork().amount ?? dWork().presetAmount ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    if (cat === 'AIRTIME' || cat === 'UTILITYBILLS') {
+      return {
+        reply: prefix
+          ? `${prefix} How much (NGN)?`
+          : 'How much are you paying (NGN)?',
+        session: { ...working, step: 'input_amount' },
+        ui: {
+          step: 'input_amount',
+          title: 'Amount (NGN)',
+          input: {
+            type: 'amount',
+            field: 'amount',
+            label: 'Amount',
+            keyboard: 'number',
+          },
+          showBack: true,
+        },
+      };
+    }
+    return advancePayReview(working, {
+      ...dWork(),
+      amount: Number(dWork().presetAmount ?? 0),
+    });
+  }
+
+  return advancePayReview(working, { ...dWork(), amount });
 }
 
 export function depositTabsFor(currency: string): Array<'username' | 'bank' | 'crypto'> {
@@ -40,11 +271,23 @@ export function depositPanel(currency: string): DayxFlowDepositPanel {
   };
 }
 
+function categoryCodeToBillCategory(
+  code: string
+): 'airtime' | 'data' | 'electricity' | 'cable' | 'internet' | undefined {
+  const c = code.toUpperCase();
+  if (c === 'AIRTIME') return 'airtime';
+  if (c === 'MOBILEDATA') return 'data';
+  if (c === 'UTILITYBILLS') return 'electricity';
+  if (c === 'CABLEBILLS') return 'cable';
+  if (c === 'INTERNET') return 'internet';
+  return undefined;
+}
+
 export async function handlePayFlowTurn(
   body: DayxFlowTurnBody,
   _ctx: DayxFlowContext
 ): Promise<DayxFlowTurnResult> {
-  const session: DayxFlowSession = body.session ?? {
+  let session: DayxFlowSession = body.session ?? {
     flow: 'pay',
     step: 'idle',
     data: {},
@@ -54,88 +297,58 @@ export async function handlePayFlowTurn(
     return { reply: 'Bill payment cancelled.', session: null };
   }
 
+  if (body.action === 'utterance' && body.utterance?.trim()) {
+    const s = await mergePaySlots(session, body.utterance);
+    return advancePay(s);
+  }
+
   if (body.action === 'start' || session.step === 'idle') {
-    return {
-      reply:
-        'Pay a bill in Nigeria, or choose international (coming soon).',
-      session: { flow: 'pay', step: 'select_scope', data: {} },
-      ui: {
-        step: 'select_scope',
-        title: 'Bill type',
-        options: [
-          { id: 'local', label: 'Local bill (Nigeria)', subtitle: 'NGN' },
-          {
-            id: 'international',
-            label: 'International bill',
-            subtitle: 'Coming soon',
-          },
-        ],
-      },
-    };
+    const s = await mergePaySlots(
+      { flow: 'pay', step: 'advance', data: {} },
+      body.utterance ?? _ctx.utterance
+    );
+    return advancePay(s);
+  }
+
+  if (body.action === 'submit' && body.utterance?.trim()) {
+    const s = await mergePaySlots(session, body.utterance);
+    return advancePay(s);
   }
 
   if (session.step === 'select_scope' && body.action === 'select') {
     if (body.optionId === 'international') {
+      return advancePay(withData(session, { scope: 'international' }));
+    }
+    if (body.optionId === 'cancel') {
+      return { reply: 'Bill payment cancelled.', session: null };
+    }
+    session = withData(session, { scope: 'local' });
+    if (!data(session).categoryCode) {
       return {
-        reply:
-          'International bill pay is coming soon. You can pay local airtime, data, electricity, cable, and internet bills now.',
-        session: { flow: 'pay', step: 'select_scope', data: {} },
+        reply: 'What kind of bill? Airtime, data, electricity, cable, or internet.',
+        session: { ...session, step: 'select_category' },
         ui: {
-          step: 'select_scope',
-          title: 'Bill type',
-          options: [
-            { id: 'local', label: 'Pay local bill instead', subtitle: 'NGN' },
-            { id: 'cancel', label: 'Cancel' },
-          ],
+          step: 'select_category',
+          title: 'Bill category',
+          options: LOCAL_BILL_CATEGORIES,
+          showBack: true,
         },
       };
     }
-
-    return {
-      reply: 'What kind of bill? Airtime, data, electricity, cable, or internet.',
-      session: { flow: 'pay', step: 'select_category', data: { scope: 'local' } },
-      ui: {
-        step: 'select_category',
-        title: 'Bill category',
-        options: LOCAL_BILL_CATEGORIES,
-        showBack: true,
-      },
-    };
+    return advancePay(session);
   }
 
   if (session.step === 'select_category' && body.action === 'select') {
     const categoryCode = body.optionId ?? '';
-    const billers = await billsService.getBillers(categoryCode);
-    const list = Array.isArray(billers) ? billers : [];
-    if (!list.length) {
-      return {
-        reply: 'No billers found for that category. Try another.',
-        session,
-      };
-    }
-
-    const options = (list as Record<string, unknown>[])
-      .slice(0, 20)
-      .map((b) => ({
-        id: String(b.biller_code ?? b.code ?? ''),
-        label: String(b.name ?? b.short_name ?? 'Biller'),
-        subtitle: String(b.biller_code ?? ''),
-      }));
-
-    return {
-      reply: 'Choose a provider.',
-      session: {
-        flow: 'pay',
-        step: 'select_biller',
-        data: { ...session.data, categoryCode },
-      },
-      ui: {
-        step: 'select_biller',
-        title: 'Provider',
-        options,
-        showBack: true,
-      },
-    };
+    session = withData(
+      { ...session, step: 'advance' },
+      {
+        categoryCode,
+        bill_category: categoryCodeToBillCategory(categoryCode),
+        scope: 'local',
+      }
+    );
+    return advancePay(session);
   }
 
   if (session.step === 'select_biller' && body.action === 'select') {
@@ -349,7 +562,7 @@ export async function handlePayFlowTurn(
     };
   }
 
-  return { reply: 'Choose an option.', session };
+  return advancePay(session);
 }
 
 function advancePayReview(

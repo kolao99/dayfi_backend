@@ -1,5 +1,7 @@
 import PaymentService from '../payment/services';
 import type { DayxFlowContext } from './dayxFlowContext';
+import { buildSlotAck, slotsToSessionData } from './dayxFlowSlots';
+import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
   DayxFlowSession,
   DayxFlowTurnBody,
@@ -21,52 +23,41 @@ function withData(
   return { ...session, data: { ...data(session), ...patch } };
 }
 
-export async function handleSwapFlowTurn(
-  body: DayxFlowTurnBody,
-  ctx: DayxFlowContext
+async function mergeSwapSlots(
+  session: DayxFlowSession,
+  utterance?: string
+): Promise<DayxFlowSession> {
+  const slots = await extractFlowSlots(utterance);
+  return withData(session, slotsToSessionData(slots, 'swap'));
+}
+
+async function advanceSwap(
+  session: DayxFlowSession,
+  ctx: DayxFlowContext,
+  ack?: string
 ): Promise<DayxFlowTurnResult> {
-  const session: DayxFlowSession = body.session ?? {
-    flow: 'swap',
-    step: 'idle',
-    data: {},
-  };
+  const d = data(session);
+  const prefix = ack ?? buildSlotAck(d, 'swap');
 
-  if (body.action === 'cancel') {
-    return { reply: 'Swap cancelled.', session: null };
-  }
-
-  if (body.action === 'start' || session.step === 'idle') {
+  if (!d.fromCurrency) {
     const preferred = String(
-      body.preferredFromCurrency ?? data(session).preferredFromCurrency ?? ''
+      d.preferredFromCurrency ?? ''
     ).toUpperCase();
     if (
       preferred &&
-      (['USD', 'NGN', 'GBP', 'EUR'] as const).includes(
-        preferred as 'USD' | 'NGN' | 'GBP' | 'EUR'
-      )
+      (SWAP_CURRENCIES as readonly string[]).includes(preferred)
     ) {
-      const others = SWAP_CURRENCIES.filter((c) => c !== preferred);
-      return {
-        reply: `Swap from your ${preferred} wallet. Which currency do you want?`,
-        session: withData(
-          { flow: 'swap', step: 'select_to', data: {} },
-          { fromCurrency: preferred }
-        ),
-        ui: {
-          step: 'select_to',
-          title: 'Swap to',
-          options: others.map((c) => {
-            const bal = balanceFor(ctx.balances, c);
-            return { id: c, label: c, subtitle: `Balance ${bal.toLocaleString()}` };
-          }),
-          showBack: true,
-        },
-      };
+      return advanceSwap(
+        withData({ ...session, step: 'advance' }, { fromCurrency: preferred }),
+        ctx,
+        prefix
+      );
     }
-
     return {
-      reply: 'Which wallet are you swapping from? You have NGN, USD, EUR, and GBP.',
-      session: { flow: 'swap', step: 'select_from', data: {} },
+      reply: prefix
+        ? `${prefix} Which wallet are you swapping from?`
+        : 'Which wallet are you swapping from? You have NGN, USD, EUR, and GBP.',
+      session: { ...session, step: 'select_from' },
       ui: {
         step: 'select_from',
         title: 'Swap from',
@@ -75,43 +66,43 @@ export async function handleSwapFlowTurn(
     };
   }
 
-  if (session.step === 'select_from' && body.action === 'select') {
-    const from = (body.optionId ?? 'USD').toUpperCase();
+  const from = String(d.fromCurrency).toUpperCase();
+
+  if (!d.toCurrency) {
     const others = SWAP_CURRENCIES.filter((c) => c !== from);
     return {
-      reply: `Swap from ${from}. Which currency do you want?`,
-      session: withData({ ...session, step: 'select_to' }, { fromCurrency: from }),
+      reply: prefix
+        ? `${prefix} Which currency do you want?`
+        : `Swap from ${from}. Which currency do you want?`,
+      session: { ...session, step: 'select_to' },
       ui: {
         step: 'select_to',
         title: 'Swap to',
         options: others.map((c) => {
           const bal = balanceFor(ctx.balances, c);
-          return {
-            id: c,
-            label: c,
-            subtitle: `Balance ${bal.toLocaleString()}`,
-          };
+          return { id: c, label: c, subtitle: `Balance ${bal.toLocaleString()}` };
         }),
         showBack: true,
       },
     };
   }
 
-  if (session.step === 'select_to' && body.action === 'select') {
-    const to = (body.optionId ?? 'NGN').toUpperCase();
-    const from = String(data(session).fromCurrency ?? 'USD');
+  const to = String(d.toCurrency).toUpperCase();
+
+  if (!d.amount) {
     let rateLine = '';
     try {
       const rate = await paymentService.getExchangeRate(from, to);
-      if (rate > 0) {
-        rateLine = `1 ${from} ≈ ${rate.toFixed(4)} ${to}`;
-      }
+      if (rate > 0) rateLine = `1 ${from} ≈ ${rate.toFixed(4)} ${to}`;
     } catch {
       rateLine = 'Live rate loads at review';
     }
+    const available = balanceFor(ctx.balances, from);
     return {
-      reply: `How much ${from} do you want to swap to ${to}?`,
-      session: withData({ ...session, step: 'input_amount' }, { toCurrency: to }),
+      reply: prefix
+        ? `${prefix} How much ${from}? Available: ${available.toLocaleString()}.`
+        : `How much ${from} do you want to swap? Available: ${available.toLocaleString()}.`,
+      session: { ...session, step: 'input_amount' },
       ui: {
         step: 'input_amount',
         title: 'Amount',
@@ -128,72 +119,131 @@ export async function handleSwapFlowTurn(
     };
   }
 
-  if (session.step === 'input_amount' && body.action === 'submit') {
-    const amount = Number(body.value);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return { reply: 'Enter a valid amount.', session };
-    }
-    const from = String(data(session).fromCurrency ?? 'USD');
-    const to = String(data(session).toCurrency ?? 'NGN');
-    const available = balanceFor(ctx.balances, from);
+  return buildSwapReview(session, ctx, Number(d.amount), prefix);
+}
 
-    if (amount > available) {
-      return {
-        reply: `Insufficient ${from} balance. You have ${available.toLocaleString()}.`,
-        session,
-        ui: {
-          step: 'review',
-          title: 'Insufficient balance',
-          panel: 'insufficient_balance',
-          review: [
-            { label: 'Needed', value: `${from} ${amount}` },
-            { label: 'Available', value: `${from} ${available}` },
-          ],
-          options: [
-            { id: 'top_up', label: 'Top up wallet' },
-            { id: 'cancel', label: 'Cancel' },
-          ],
-        },
-      };
-    }
+async function buildSwapReview(
+  session: DayxFlowSession,
+  ctx: DayxFlowContext,
+  amount: number,
+  prefix?: string
+): Promise<DayxFlowTurnResult> {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { reply: 'Enter a valid amount.', session };
+  }
 
-    let rate = 0;
-    let estimatedTo = '';
-    try {
-      rate = await paymentService.getExchangeRate(from, to);
-      if (rate > 0) {
-        estimatedTo = (amount * rate).toFixed(2);
-      }
-    } catch {
-      /* rate optional */
-    }
+  const from = String(data(session).fromCurrency ?? 'USD');
+  const to = String(data(session).toCurrency ?? 'NGN');
+  const available = balanceFor(ctx.balances, from);
 
-    const next = withData({ ...session, step: 'review' }, { amount, rate });
-    const review = [
-      { label: 'From', value: `${amount} ${from}` },
-      { label: 'To', value: to },
-      ...(estimatedTo
-        ? [{ label: 'You receive ≈', value: `${estimatedTo} ${to}` }]
-        : []),
-      ...(rate > 0
-        ? [{ label: 'Rate', value: `1 ${from} = ${rate.toFixed(4)} ${to}` }]
-        : []),
-    ];
-
+  if (amount > available) {
     return {
-      reply: `Swap ${amount} ${from} → ${to}. Confirm with your PIN.`,
-      session: next,
+      reply: `Insufficient ${from} balance. You have ${available.toLocaleString()}.`,
+      session,
       ui: {
         step: 'review',
-        title: 'Review swap',
-        review,
-        rateLine: rate > 0 ? `1 ${from} ≈ ${rate.toFixed(4)} ${to}` : undefined,
+        title: 'Insufficient balance',
+        panel: 'insufficient_balance',
+        review: [
+          { label: 'Needed', value: `${from} ${amount}` },
+          { label: 'Available', value: `${from} ${available}` },
+        ],
         options: [
-          { id: 'confirm', label: 'Confirm & enter PIN' },
+          { id: 'top_up', label: 'Top up wallet' },
           { id: 'cancel', label: 'Cancel' },
         ],
       },
     };
+  }
+
+  let rate = 0;
+  let estimatedTo = '';
+  try {
+    rate = await paymentService.getExchangeRate(from, to);
+    if (rate > 0) estimatedTo = (amount * rate).toFixed(2);
+  } catch {
+    /* optional */
+  }
+
+  const next = withData({ ...session, step: 'review' }, { amount, rate });
+  const review = [
+    { label: 'From', value: `${amount} ${from}` },
+    { label: 'To', value: to },
+    ...(estimatedTo
+      ? [{ label: 'You receive ≈', value: `${estimatedTo} ${to}` }]
+      : []),
+    ...(rate > 0
+      ? [{ label: 'Rate', value: `1 ${from} = ${rate.toFixed(4)} ${to}` }]
+      : []),
+  ];
+
+  const lead = prefix ? `${prefix} ` : '';
+  return {
+    reply: `${lead}Swap ${amount} ${from} → ${to}. Rate valid ~30 seconds. Confirm with your PIN.`.trim(),
+    session: next,
+    ui: {
+      step: 'review',
+      title: 'Review swap',
+      review,
+      rateLine: rate > 0 ? `1 ${from} ≈ ${rate.toFixed(4)} ${to}` : undefined,
+      options: [
+        { id: 'confirm', label: 'Confirm & enter PIN' },
+        { id: 'cancel', label: 'Cancel' },
+      ],
+    },
+  };
+}
+
+export async function handleSwapFlowTurn(
+  body: DayxFlowTurnBody,
+  ctx: DayxFlowContext
+): Promise<DayxFlowTurnResult> {
+  let session: DayxFlowSession = body.session ?? {
+    flow: 'swap',
+    step: 'idle',
+    data: {},
+  };
+
+  if (body.action === 'cancel') {
+    return { reply: 'Swap cancelled.', session: null };
+  }
+
+  if (body.action === 'utterance' && body.utterance?.trim()) {
+    session = await mergeSwapSlots(session, body.utterance);
+    return advanceSwap(session, ctx);
+  }
+
+  if (body.action === 'start' || session.step === 'idle') {
+    const preferred = String(body.preferredFromCurrency ?? '').toUpperCase();
+    let s: DayxFlowSession = { flow: 'swap', step: 'advance', data: {} };
+    if (preferred) {
+      s = withData(s, { preferredFromCurrency: preferred });
+    }
+    s = await mergeSwapSlots(s, body.utterance ?? ctx.utterance);
+    return advanceSwap(s, ctx);
+  }
+
+  if (body.action === 'submit' && body.utterance?.trim()) {
+    session = await mergeSwapSlots(session, body.utterance);
+    return advanceSwap(session, ctx);
+  }
+
+  if (session.step === 'select_from' && body.action === 'select') {
+    session = withData({ ...session, step: 'advance' }, {
+      fromCurrency: (body.optionId ?? 'USD').toUpperCase(),
+    });
+    return advanceSwap(session, ctx);
+  }
+
+  if (session.step === 'select_to' && body.action === 'select') {
+    session = withData({ ...session, step: 'advance' }, {
+      toCurrency: (body.optionId ?? 'NGN').toUpperCase(),
+    });
+    return advanceSwap(session, ctx);
+  }
+
+  if (session.step === 'input_amount' && body.action === 'submit') {
+    return buildSwapReview(session, ctx, Number(body.value));
   }
 
   if (session.step === 'review' && body.action === 'select') {
@@ -247,5 +297,5 @@ export async function handleSwapFlowTurn(
     };
   }
 
-  return { reply: 'Choose an option to continue.', session };
+  return advanceSwap(session, ctx);
 }

@@ -1,6 +1,11 @@
 export type DayxFlowId = 'send' | 'swap' | 'pay' | 'add_money';
 
-export type DayxFlowAction = 'start' | 'select' | 'submit' | 'cancel';
+export type DayxFlowAction =
+  | 'start'
+  | 'select'
+  | 'submit'
+  | 'cancel'
+  | 'utterance';
 
 export type DayxFlowInputType =
   | 'none'
