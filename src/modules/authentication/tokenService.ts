@@ -2,6 +2,33 @@ import jwt from 'jsonwebtoken';
 import dayjs from 'dayjs';
 import config from '../../config/env';
 
+/** Parse `DAYFI_JWT_TIME_TO_LIVE` (e.g. `30d`, `24h`, `7d`). Default: 30 days. */
+function resolveAccessTokenExpiry(): dayjs.Dayjs {
+  const raw = String(config?.JWT_TIME_TO_LIVE ?? '30d')
+    .trim()
+    .toLowerCase();
+  const match = /^(\d+)\s*([dhms])$/.exec(raw);
+  if (!match) {
+    return dayjs().add(30, 'day');
+  }
+  const amount = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return dayjs().add(30, 'day');
+  }
+  switch (match[2]) {
+    case 'd':
+      return dayjs().add(amount, 'day');
+    case 'h':
+      return dayjs().add(amount, 'hour');
+    case 'm':
+      return dayjs().add(amount, 'minute');
+    case 's':
+      return dayjs().add(amount, 'second');
+    default:
+      return dayjs().add(30, 'day');
+  }
+}
+
 class TokenService {
   // constructor() {}
 
@@ -34,7 +61,7 @@ class TokenService {
       );
     }
     try {
-      const timeToLive = dayjs().add(6, 'hours');
+      const timeToLive = resolveAccessTokenExpiry();
       const data = {
         user_id: user.user_id,
         email: user.email,
