@@ -432,7 +432,7 @@ class PaymentValidator {
   fetchBeneficiaries = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       page: Joi.number().integer().min(1).default(1),
-      limit: Joi.number().integer().min(1).max(100).default(10),
+      limit: Joi.number().integer().min(1).max(200).default(100),
     });
 
     const { error, value } = schema.validate(req.query);
@@ -447,6 +447,32 @@ class PaymentValidator {
 
     req.validatedBody = value;
     next();
+  };
+
+  saveBeneficiary = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      name: Joi.string().trim().min(1).max(200).required(),
+      country: Joi.string().trim().min(2).max(10).required(),
+      phone: Joi.string().allow('').optional(),
+      ledgerCurrency: Joi.string().trim().min(3).max(10).required(),
+      source: Joi.object({
+        accountType: Joi.string()
+          .valid(
+            'dayfi',
+            'crypto',
+            'bank',
+            'mobile',
+            'phone',
+            'mobile_money',
+            'momo'
+          )
+          .required(),
+        accountNumber: Joi.string().trim().min(1).max(255).required(),
+        networkId: Joi.string().allow('').optional(),
+      }).required(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'saveBeneficiary');
   };
 
   fetchExchangeRates = (req: Request, res: Response, next: NextFunction) => {

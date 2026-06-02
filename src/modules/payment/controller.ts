@@ -46,6 +46,10 @@ import {
   renameDayEarnPot,
   withdrawFromDayEarnPot,
 } from './dayearnService';
+import {
+  listSavedRecipients,
+  upsertSavedRecipient,
+} from './savedRecipientService';
 import { db } from '../../config/database';
 
 class PaymentController {
@@ -504,12 +508,12 @@ class PaymentController {
   getUserBeneficiaries = async (req: Request, res: Response): Promise<any> => {
     try {
       const { user } = req;
-      const { limit = 10, page = 1 } = req.query;
+      const { limit = 100, page = 1 } = req.query;
 
-      const limitNum = Math.max(1, Number(limit));
+      const limitNum = Math.max(1, Math.min(200, Number(limit)));
       const offset = (Math.max(1, Number(page)) - 1) * limitNum;
 
-      const beneficiaries = await this.paymentService.getUserBeneficiaries(
+      const result = await listSavedRecipients(
         user?.user_id,
         limitNum,
         offset
@@ -519,10 +523,42 @@ class PaymentController {
         res,
         enums.FETCHED_SUCCESSFULLY('Beneficiaries'),
         enums.HTTP_OK,
-        beneficiaries
+        result
       );
-    } catch (err) {
+    } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    }
+  };
+
+  saveBeneficiary = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const { user } = req;
+      const body = req.validatedBody as {
+        name: string;
+        country: string;
+        phone?: string;
+        ledgerCurrency: string;
+        source: {
+          accountType: string;
+          accountNumber: string;
+          networkId?: string;
+        };
+      };
+
+      const recipient = await upsertSavedRecipient(user?.user_id, body);
+
+      return success(
+        res,
+        enums.CREATED_SUCCESSFULLY('Beneficiary'),
+        enums.HTTP_CREATED,
+        recipient
+      );
+    } catch (err: any) {
+      return errorResponse(
+        res,
+        err.message,
+        enums.HTTP_UNPROCESSABLE_ENTITY
+      );
     }
   };
 

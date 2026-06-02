@@ -170,6 +170,14 @@ Router.get(
 );
 
 Router.post(
+  '/beneficiaries',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.saveBeneficiary,
+  paymentController.saveBeneficiary
+);
+
+Router.post(
   '/wallets',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
