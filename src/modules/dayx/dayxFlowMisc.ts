@@ -576,7 +576,7 @@ function advancePayReview(
         { label: 'Biller', value: String(d.billerName ?? d.billerCode ?? '') },
       ],
       options: [
-        { id: 'confirm', label: 'Confirm & enter PIN' },
+        { id: 'confirm', label: 'Confirm' },
         { id: 'cancel', label: 'Cancel' },
       ],
     },

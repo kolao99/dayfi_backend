@@ -16,6 +16,8 @@ export type DayxExtractedSlots = {
   bank_name?: string;
   recipient_raw?: string;
   amount?: number;
+  /** User wants full wallet balance (e.g. "total balance", "swap all USD"). */
+  amountMode?: 'max';
   bill_category?: 'airtime' | 'data' | 'electricity' | 'cable' | 'internet';
   scope?: 'local' | 'international';
   provider_hint?: string;
@@ -102,6 +104,31 @@ function parseAmount(q: string): number | undefined {
   return undefined;
 }
 
+/** Detect "total / all / full balance" — resolve amount from live wallet in the flow engine. */
+export function parseAmountMode(q: string): 'max' | undefined {
+  const patterns = [
+    /\b(total|all|everything|entire|full|whole|max(?:imum)?)\b.*\b(balance|wallet|funds?|money)\b/,
+    /\b(total|all|everything|entire|full|whole)\s+(?:of\s+)?(?:my\s+)?(?:usd|ngn|gbp|eur|dollars?|naira|pounds?|euros?)\b/,
+    /\b(?:swap|convert|send|transfer)\s+(?:all|everything|(?:my\s+)?total)\b/,
+    /\ball\s+(?:of\s+)?(?:my\s+)?(?:usd|ngn|gbp|eur|dollars?|naira)\b/,
+    /\bmy\s+total\s+(?:usd|ngn|gbp|eur|dollar|naira|pound|euro)?\s*balance\b/,
+  ];
+  return patterns.some((re) => re.test(q)) ? 'max' : undefined;
+}
+
+/** Prefer explicit amount; otherwise use max wallet balance when amountMode is max. */
+export function resolveAmountFromSessionData(
+  d: Record<string, unknown>,
+  availableBalance: number
+): number | undefined {
+  const amt = Number(d.amount);
+  if (Number.isFinite(amt) && amt > 0) return amt;
+  if (d.amountMode === 'max' && availableBalance > 0) {
+    return availableBalance;
+  }
+  return undefined;
+}
+
 function parseCurrency(q: string, role: 'spend' | 'receive'): string | undefined {
   const spendRe =
     /\b(from\s+)?(my\s+)?(naira|ngn|dollar|dollars|usd|euro|euros|eur|pound|pounds|gbp)\b/i;
@@ -162,6 +189,9 @@ export function parseExtendedSlots(utterance: string): DayxExtractedSlots {
 
   const amt = parseAmount(utterance) ?? base.amount;
   if (amt != null) slots.amount = amt;
+
+  const amountMode = parseAmountMode(q);
+  if (amountMode) slots.amountMode = amountMode;
 
   const tag = utterance.match(/@([a-zA-Z0-9_.-]+)/);
   if (tag) {
@@ -250,6 +280,7 @@ export function mergeExtractedSlots(
     if (p.amount != null && Number.isFinite(Number(p.amount))) {
       out.amount = Number(p.amount);
     }
+    if (p.amountMode === 'max') out.amountMode = 'max';
     if (p.bill_category) out.bill_category = p.bill_category;
     if (p.scope) out.scope = p.scope;
     if (p.provider_hint) out.provider_hint = p.provider_hint;
@@ -274,6 +305,9 @@ export function slotsToSessionData(
     if (!looksLikeAccount) {
       d.amount = slots.amount;
     }
+  }
+  if (slots.amountMode === 'max') {
+    d.amountMode = 'max';
   }
 
   if (flow === 'send') {
@@ -306,6 +340,7 @@ export function slotsToSessionData(
     if (slots.spendCurrency) d.fromCurrency = slots.spendCurrency;
     if (slots.receiveCurrency) d.toCurrency = slots.receiveCurrency;
     if (slots.amount != null) d.amount = slots.amount;
+    if (slots.amountMode === 'max') d.amountMode = 'max';
   }
 
   if (flow === 'add_money') {
@@ -368,6 +403,9 @@ export function buildSlotAck(
     if (d.spendCurrency) bits.push(`from your ${d.spendCurrency} wallet`);
     if (d.bank_name) bits.push(`via ${String(d.bank_name)}`);
     if (d.amount) bits.push(`for ${formatAmt(d.amount, d.spendCurrency)}`);
+    else if (d.amountMode === 'max') {
+      bits.push(`for all ${d.spendCurrency ?? 'balance'}`);
+    }
     if (d.accountName) bits.push(`to ${d.accountName}`);
     else if (d.dayfiId) bits.push(`to @${d.dayfiId}`);
     else if (d.recipient_raw) bits.push(`to ${d.recipient_raw}`);
@@ -377,6 +415,9 @@ export function buildSlotAck(
       bits.push(`${d.fromCurrency} → ${d.toCurrency}`);
     }
     if (d.amount) bits.push(formatAmt(d.amount, d.fromCurrency));
+    else if (d.amountMode === 'max') {
+      bits.push(`all ${d.fromCurrency ?? 'balance'}`);
+    }
   }
   if (flow === 'add_money') {
     if (d.currency) bits.push(`your ${d.currency} wallet`);

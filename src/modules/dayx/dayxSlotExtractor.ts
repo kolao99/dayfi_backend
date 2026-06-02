@@ -9,6 +9,8 @@ const SLOT_EXTRACTION_PROMPT = `You are a slot extractor for a fintech app. Give
 
 Never set "amount" from a bare 10-digit Nigerian account or phone number — that belongs in recipient_raw only.
 
+If the user says total/all/full/entire/max balance, everything in a wallet, or "swap all USD", set amountMode to "max" and leave amount null unless they also give an explicit number.
+
 Return ONLY valid JSON, no prose, no markdown:
 {
   "intent": "send | top_up | swap | pay_bills | balance | other",
@@ -18,6 +20,7 @@ Return ONLY valid JSON, no prose, no markdown:
   "bank_name": "opay | palmpay | gtb | zenith | ... | null",
   "recipient_raw": "account number, username @..., or address | null",
   "amount": number | null,
+  "amountMode": "max | null",
   "bill_category": "airtime | data | electricity | cable | internet | null",
   "scope": "local | international | null",
   "provider_hint": "mtn | glo | dstv | null"
@@ -64,6 +67,11 @@ function groqSlotsToExtracted(raw: Record<string, unknown>): DayxExtractedSlots 
   const amt = raw.amount;
   if (amt != null && Number.isFinite(Number(amt)) && Number(amt) > 0) {
     slots.amount = Number(amt);
+  }
+
+  const mode = String(raw.amountMode ?? '').toLowerCase();
+  if (mode === 'max') {
+    slots.amountMode = 'max';
   }
 
   const cat = String(raw.bill_category ?? '').toLowerCase();

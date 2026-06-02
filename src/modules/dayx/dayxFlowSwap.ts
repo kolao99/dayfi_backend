@@ -1,7 +1,7 @@
 import PaymentService from '../payment/services';
 import type { DayxFlowContext } from './dayxFlowContext';
 import { buildPinSubmitTurn } from './dayxFlowPin';
-import { buildSlotAck, slotsToSessionData } from './dayxFlowSlots';
+import { buildSlotAck, slotsToSessionData, resolveAmountFromSessionData } from './dayxFlowSlots';
 import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
   DayxFlowSession,
@@ -89,8 +89,19 @@ async function advanceSwap(
   }
 
   const to = String(d.toCurrency).toUpperCase();
+  const available = balanceFor(ctx.balances, from);
+  const resolved = resolveAmountFromSessionData(d, available);
 
-  if (!d.amount) {
+  if (resolved == null) {
+    if (d.amountMode === 'max') {
+      return {
+        reply: prefix
+          ? `${prefix} You have no ${from} balance to swap.`
+          : `You have no ${from} balance to swap.`,
+        session,
+      };
+    }
+
     let rateLine = '';
     try {
       const rate = await paymentService.getExchangeRate(from, to);
@@ -98,7 +109,6 @@ async function advanceSwap(
     } catch {
       rateLine = 'Live rate loads at review';
     }
-    const available = balanceFor(ctx.balances, from);
     return {
       reply: prefix
         ? `${prefix} How much ${from}? Available: ${available.toLocaleString()}.`
@@ -120,7 +130,7 @@ async function advanceSwap(
     };
   }
 
-  return buildSwapReview(session, ctx, Number(d.amount), prefix);
+  return buildSwapReview(session, ctx, resolved, prefix);
 }
 
 async function buildSwapReview(
@@ -188,7 +198,7 @@ async function buildSwapReview(
       review,
       rateLine: rate > 0 ? `1 ${from} ≈ ${rate.toFixed(4)} ${to}` : undefined,
       options: [
-        { id: 'confirm', label: 'Confirm & enter PIN' },
+        { id: 'confirm', label: 'Confirm' },
         { id: 'cancel', label: 'Cancel' },
       ],
     },
@@ -244,7 +254,23 @@ export async function handleSwapFlowTurn(
   }
 
   if (session.step === 'input_amount' && body.action === 'submit') {
-    return buildSwapReview(session, ctx, Number(body.value));
+    const raw = body.value ?? body.utterance;
+    const text = String(raw ?? '').trim();
+    const num = Number(String(body.value ?? '').replace(/,/g, ''));
+    if (Number.isFinite(num) && num > 0) {
+      return buildSwapReview(session, ctx, num);
+    }
+    if (text) {
+      session = await mergeSwapSlots(session, text);
+      const d = data(session);
+      const from = String(d.fromCurrency ?? 'USD');
+      const available = balanceFor(ctx.balances, from);
+      const resolved = resolveAmountFromSessionData(d, available);
+      if (resolved != null) {
+        return buildSwapReview(session, ctx, resolved);
+      }
+    }
+    return { reply: 'Enter a valid amount, or say "all" to swap your full balance.', session };
   }
 
   if (session.step === 'review' && body.action === 'select') {

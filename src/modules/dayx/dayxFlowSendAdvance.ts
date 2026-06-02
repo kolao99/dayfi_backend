@@ -7,7 +7,7 @@ import {
   methodStepReply,
 } from './dayxFlowDelivery';
 import { countryReply } from './dayxFlowNlu';
-import { buildSlotAck, isNgAccountNumber, isRecipientResolved } from './dayxFlowSlots';
+import { buildSlotAck, isNgAccountNumber, isRecipientResolved, resolveAmountFromSessionData } from './dayxFlowSlots';
 import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
   DayxFlowExecutePayload,
@@ -293,8 +293,18 @@ export async function advanceSend(
   }
 
   const d4 = data(working);
-  if (!d4.amount) {
-    const available = balanceFor(ctx.balances, spend);
+  const available = balanceFor(ctx.balances, spend);
+  const resolved = resolveAmountFromSessionData(d4, available);
+
+  if (resolved == null) {
+    if (d4.amountMode === 'max') {
+      return {
+        reply: ack
+          ? `${ack} You have no ${spend} balance to send.`
+          : `You have no ${spend} balance to send.`,
+        session: working,
+      };
+    }
     return {
       reply: ack
         ? `${ack} How much? You have ${available.toLocaleString()} ${spend} available.`
@@ -307,7 +317,7 @@ export async function advanceSend(
     };
   }
 
-  return submitAmountForReview(working, ctx, Number(d4.amount), ack);
+  return submitAmountForReview(working, ctx, resolved, ack);
 }
 
 function askBankPicker(
@@ -566,7 +576,7 @@ export async function submitAmountForReview(
       title: 'Review transfer',
       review,
       options: [
-        { id: 'confirm', label: 'Confirm & enter PIN' },
+        { id: 'confirm', label: 'Confirm' },
         { id: 'cancel', label: 'Cancel' },
       ],
     },
@@ -715,7 +725,24 @@ export async function handleRecipientFieldSubmit(
   }
 
   if (field === 'amount') {
-    return submitAmountForReview(next, ctx, Number(value));
+    const num = Number(String(value).replace(/,/g, ''));
+    if (Number.isFinite(num) && num > 0) {
+      return submitAmountForReview(next, ctx, num);
+    }
+    if (utterance.trim()) {
+      next = await mergeSlotsIntoSendSession(next, utterance);
+      const spend = String(data(next).spendCurrency ?? 'NGN');
+      const available = balanceFor(ctx.balances, spend);
+      const resolved = resolveAmountFromSessionData(data(next), available);
+      if (resolved != null) {
+        return submitAmountForReview(next, ctx, resolved);
+      }
+    }
+    return {
+      reply: 'Enter a valid amount, or say "all" to send your full balance.',
+      session: next,
+      ui: amountUi(String(data(next).spendCurrency ?? 'NGN')),
+    };
   }
 
   return advanceSend(next, ctx);

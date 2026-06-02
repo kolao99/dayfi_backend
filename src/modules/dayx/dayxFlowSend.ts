@@ -12,6 +12,8 @@ import {
   submitAmountForReview,
   withData,
 } from './dayxFlowSendAdvance';
+import { resolveAmountFromSessionData } from './dayxFlowSlots';
+import { balanceFor } from './dayxFlowWallets';
 import { buildPinSubmitTurn } from './dayxFlowPin';
 import type {
   DayxFlowExecutePayload,
@@ -58,7 +60,25 @@ export async function handleSendFlowTurn(
   }
 
   if (session.step === 'input_amount' && body.action === 'submit') {
-    return submitAmountForReview(session, ctx, Number(body.value));
+    const raw = body.value ?? body.utterance;
+    const text = String(raw ?? '').trim();
+    const num = Number(String(body.value ?? '').replace(/,/g, ''));
+    if (Number.isFinite(num) && num > 0) {
+      return submitAmountForReview(session, ctx, num);
+    }
+    if (text) {
+      session = await mergeSlotsIntoSendSession(session, text);
+      const spend = String(data(session).spendCurrency ?? 'NGN');
+      const available = balanceFor(ctx.balances, spend);
+      const resolved = resolveAmountFromSessionData(data(session), available);
+      if (resolved != null) {
+        return submitAmountForReview(session, ctx, resolved);
+      }
+    }
+    return {
+      reply: 'Enter a valid amount, or say "all" to send your full balance.',
+      session,
+    };
   }
 
   if (session.step === 'collect_pin' && body.action === 'submit') {
@@ -140,7 +160,7 @@ export async function handleSendFlowTurn(
         return { reply: 'Something is missing. Please start again.', session: null };
       }
       return {
-        reply: 'Enter your transaction PIN below to confirm.',
+        reply: 'Enter your 4-digit PIN.',
         session: withData({ ...session, step: 'collect_pin' }, { executeDraft: exec }),
         awaitingPin: true,
         execute: exec as DayxFlowTurnResult['execute'],
