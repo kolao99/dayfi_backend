@@ -14,6 +14,8 @@ import {
   getActivePlan,
   getDayflowDashboard,
   getPendingIncome,
+  getPlanTemplate,
+  savePlanTemplate,
   upsertActivePlan,
 } from './dayflowPlanService';
 
@@ -71,6 +73,48 @@ class DayflowController {
         return errorResponse(
           res,
           'DayFlow plans table not migrated yet. Run npm run migrate up.',
+          enums.HTTP_SERVICE_UNAVAILABLE
+        );
+      }
+      return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  getTemplate = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const template = await getPlanTemplate(userId);
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('DayBudget template'),
+        enums.HTTP_OK,
+        { template }
+      );
+    } catch (err: any) {
+      return errorResponse(
+        res,
+        String(err?.message ?? err),
+        enums.HTTP_BAD_REQUEST
+      );
+    }
+  };
+
+  saveTemplate = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const template = await savePlanTemplate(userId, req.body);
+      return success(
+        res,
+        enums.CREATED_SUCCESSFULLY('DayBudget template'),
+        enums.HTTP_OK,
+        { template }
+      );
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      if (msg === 'DAYFLOW_TEMPLATE_TABLE_MISSING') {
+        return errorResponse(
+          res,
+          'DayBudget template table not migrated yet. Run npm run migrate up.',
           enums.HTTP_SERVICE_UNAVAILABLE
         );
       }

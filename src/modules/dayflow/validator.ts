@@ -71,6 +71,39 @@ class DayflowValidator {
     return this.validateRequestBody(req, res, next, schema);
   };
 
+  saveTemplate = (req: Request, res: Response, next: NextFunction) => {
+    const paymentSchema = Joi.object({
+      title: Joi.string().trim().min(1).max(120).required(),
+      amount: Joi.number().min(0).required(),
+      dueLabel: Joi.string().allow('', null).optional(),
+      recipientHint: Joi.string().allow('', null).optional(),
+      autoSend: Joi.boolean().optional(),
+    });
+
+    const schema = Joi.object({
+      title: Joi.string().trim().max(120).optional(),
+      periodLabel: Joi.string().trim().max(80).optional(),
+      budgetType: Joi.string()
+        .valid('weekly', 'monthly', 'annual', 'custom')
+        .optional(),
+      totalBudget: Joi.number().min(0).required(),
+      categories: Joi.array()
+        .items(
+          Joi.object({
+            name: Joi.string().required(),
+            allocated: Joi.number().min(0).required(),
+          })
+        )
+        .optional(),
+      payments: Joi.array().items(paymentSchema).optional(),
+      goals: Joi.array().optional(),
+      leftover: Joi.number().min(0).optional(),
+      sweepToDayEarn: Joi.boolean().optional(),
+      readyToApprove: Joi.boolean().optional(),
+    });
+    return this.validateRequestBody(req, res, next, schema);
+  };
+
   createFlow = (req: Request, res: Response, next: NextFunction) => {
     const scheduleSchema = Joi.object({
       id: Joi.string().optional(),

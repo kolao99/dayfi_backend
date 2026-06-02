@@ -35,6 +35,21 @@ Router.put(
 );
 
 Router.get(
+  '/template',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowController.getTemplate
+);
+
+Router.put(
+  '/template',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowValidator.saveTemplate,
+  dayflowController.saveTemplate
+);
+
+Router.get(
   '/income/pending',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,

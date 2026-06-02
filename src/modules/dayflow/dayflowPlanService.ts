@@ -452,6 +452,46 @@ export async function upsertActivePlan(userId: string, input: DayflowPlanInput) 
   return formatPlan(row);
 }
 
+async function templateTableReady(): Promise<boolean> {
+  const row = await db.oneOrNone<{ exists: boolean }>(
+    `SELECT to_regclass('public.dayflow_plan_templates') IS NOT NULL AS exists`
+  );
+  return row?.exists === true;
+}
+
+export async function getPlanTemplate(
+  userId: string
+): Promise<Record<string, unknown> | null> {
+  if (!(await templateTableReady())) return null;
+  const row = await db.oneOrNone<{ template: unknown; updated_at: Date }>(
+    `SELECT template, updated_at FROM dayflow_plan_templates WHERE user_id = $1`,
+    [userId]
+  );
+  if (!row?.template || typeof row.template !== 'object') return null;
+  return {
+    ...(row.template as Record<string, unknown>),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+export async function savePlanTemplate(
+  userId: string,
+  template: Record<string, unknown>
+): Promise<Record<string, unknown> | null> {
+  if (!(await templateTableReady())) {
+    throw new Error('DAYFLOW_TEMPLATE_TABLE_MISSING');
+  }
+  await db.none(
+    `INSERT INTO dayflow_plan_templates (user_id, template, updated_at)
+     VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+     ON CONFLICT (user_id) DO UPDATE SET
+       template = EXCLUDED.template,
+       updated_at = CURRENT_TIMESTAMP`,
+    [userId, JSON.stringify(template)]
+  );
+  return getPlanTemplate(userId);
+}
+
 export async function getDayflowDashboard(userId: string) {
   const { getFlowsDashboard, sumActiveHeldAmount } = await import(
     './dayflowFlowService'
