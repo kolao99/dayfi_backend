@@ -50,6 +50,11 @@ async function main(app: Express): Promise<void> {
   await syncWalletExchangeRatesFromMarket();
   startWalletFxSyncScheduler();
 
+  const { startDayflowAutopayScheduler } = await import(
+    './modules/dayflow/dayflowAutomationService'
+  );
+  startDayflowAutopayScheduler();
+
   const server = http.createServer(app);
 
   const preferredPort = Number(Env.get('PORT') ?? 3000);

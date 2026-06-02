@@ -12,6 +12,9 @@ import {
 import { convertAmountToUsd } from '../payment/fxService';
 import { createBudget, computeNextRunAt } from '../payment/budgetService';
 import type { BudgetFrequency } from '../payment/budgetService';
+import PaymentService from '../payment/services';
+import { transferByDayfiTag } from '../payment/p2pService';
+import { billsService } from '../payment/billsService';
 import {
   buildSmartFlowTitle,
   inferFlowType,
@@ -37,6 +40,21 @@ export type DayflowFlowSchedule = {
   autoPay?: boolean;
   budgetId?: string | null;
   nextRunAt?: string | null;
+  execution?: {
+    toCurrency?: string;
+    bill?: {
+      categoryCode: string;
+      billerCode: string;
+      itemCode: string;
+      customerId: string;
+      billerName?: string;
+      itemName?: string;
+    };
+  };
+  lastRunAt?: string | null;
+  lastStatus?: 'success' | 'failed' | null;
+  lastError?: string | null;
+  runCount?: number;
 };
 
 export type CreateFlowInput = {
@@ -187,6 +205,100 @@ async function cancelLinkedBudgets(flowId: string): Promise<void> {
      WHERE metadata->>'dayflowFlowId' = $1 AND status NOT IN ('cancelled', 'completed')`,
     [flowId]
   );
+}
+
+const paymentService = new PaymentService();
+
+function parseScheduleNextRunAt(s: DayflowFlowSchedule): Date | null {
+  if (!s.nextRunAt) return null;
+  const d = new Date(s.nextRunAt);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function computeScheduleNextRunAfterExecution(
+  schedule: DayflowFlowSchedule
+): Date | null {
+  const freq = schedule.frequency ?? 'monthly';
+  if (freq === 'once') return null;
+  return computeNextRunAt(freq, new Date());
+}
+
+async function executeSchedulePayment(params: {
+  userId: string;
+  walletId: string;
+  flowId: string;
+  flowTitle: string;
+  schedule: DayflowFlowSchedule;
+}): Promise<void> {
+  const { userId, walletId, flowId, flowTitle, schedule } = params;
+  const amount = Number(schedule.amount ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Invalid schedule amount');
+  }
+
+  const paymentType = schedule.paymentType ?? 'send';
+
+  // release from DayFlow envelope into NGN wallet immediately before execution.
+  const releaseRef = newReference('dayflow-exec-release');
+  const { usdAmount } = await convertAmountToUsd(amount, 'NGN');
+  await creditWalletBalance({
+    userId,
+    walletId,
+    amount,
+    currency: 'NGN',
+    usdEquivalent: usdAmount,
+    source: 'dayflow',
+    idempotencyKey: `dayflow-exec-release:${flowId}:${schedule.id ?? schedule.title}`,
+    externalReference: releaseRef,
+    metadata: {
+      dayflowAction: 'execution_release',
+      flowId,
+      flowTitle,
+      scheduleId: schedule.id ?? null,
+      scheduleTitle: schedule.title,
+      paymentType,
+    },
+  });
+
+  if (paymentType === 'savings') {
+    const toCurrency = String(schedule.execution?.toCurrency ?? 'USD').toUpperCase();
+    await paymentService.swapCurrency(userId, 'NGN', toCurrency, amount);
+    return;
+  }
+
+  if (paymentType === 'bill') {
+    const bill = schedule.execution?.bill;
+    if (!bill?.categoryCode || !bill?.billerCode || !bill?.itemCode || !bill?.customerId) {
+      throw new Error('Bill autopay requires biller, item and customer details');
+    }
+    await billsService.payBill({
+      userId,
+      categoryCode: bill.categoryCode,
+      billerCode: bill.billerCode,
+      itemCode: bill.itemCode,
+      customerId: bill.customerId,
+      amount,
+      billerName: bill.billerName,
+      itemName: bill.itemName ?? schedule.title,
+    });
+    return;
+  }
+
+  const recipientTag =
+    (schedule.recipientId && String(schedule.recipientId).trim()) ||
+    (schedule.recipientHint && String(schedule.recipientHint).trim());
+
+  if (!recipientTag) {
+    throw new Error('Send autopay requires recipientId or recipientHint');
+  }
+
+  await transferByDayfiTag({
+    senderUserId: userId,
+    senderWalletId: walletId,
+    recipientDayfiId: recipientTag,
+    amount,
+    currency: 'NGN',
+  });
 }
 
 export async function listFlows(userId: string, status?: string) {
@@ -413,6 +525,168 @@ export async function cancelFlow(userId: string, flowId: string) {
     flow: formatFlow(updated),
     refundedAmount: refund,
   };
+}
+
+export async function runDueSchedulesForUser(userId: string) {
+  if (!(await flowsTableReady())) {
+    return {
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      results: [] as Array<Record<string, unknown>>,
+    };
+  }
+
+  const wallet = await loadNgnWallet(userId);
+  if (!wallet) {
+    return {
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      results: [] as Array<Record<string, unknown>>,
+    };
+  }
+
+  const dueFlows = await db.manyOrNone<FlowRow>(
+    `SELECT * FROM dayflow_flows
+     WHERE user_id = $1
+       AND status = 'active'
+       AND next_run_at IS NOT NULL
+       AND next_run_at <= CURRENT_TIMESTAMP
+     ORDER BY next_run_at ASC`,
+    [userId]
+  );
+
+  const results: Array<Record<string, unknown>> = [];
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const flow of dueFlows) {
+    const schedules = (Array.isArray(flow.schedules)
+      ? flow.schedules
+      : []) as DayflowFlowSchedule[];
+    let changed = false;
+    let flowSpentDelta = 0;
+
+    for (const schedule of schedules) {
+      if (!schedule?.autoPay) continue;
+      const dueAt = parseScheduleNextRunAt(schedule);
+      if (!dueAt || dueAt > new Date()) continue;
+
+      const amount = Number(schedule.amount ?? 0);
+      const remainingInFlow = Math.max(
+        0,
+        Number(flow.held_amount) - Number(flow.spent_amount) - flowSpentDelta
+      );
+
+      if (!Number.isFinite(amount) || amount <= 0 || remainingInFlow < amount) {
+        schedule.lastStatus = 'failed';
+        schedule.lastError =
+          remainingInFlow < amount
+            ? 'Insufficient DayFlow held balance for schedule'
+            : 'Invalid schedule amount';
+        schedule.lastRunAt = new Date().toISOString();
+        schedule.runCount = (schedule.runCount ?? 0) + 1;
+        changed = true;
+        failed += 1;
+        results.push({
+          flowId: flow.id,
+          scheduleId: schedule.id ?? null,
+          title: schedule.title,
+          status: 'failed',
+          error: schedule.lastError,
+        });
+        continue;
+      }
+
+      try {
+        await executeSchedulePayment({
+          userId,
+          walletId: wallet.wallet_id,
+          flowId: flow.id,
+          flowTitle: flow.title,
+          schedule,
+        });
+        const next = computeScheduleNextRunAfterExecution(schedule);
+        schedule.nextRunAt = next?.toISOString() ?? null;
+        if (!next) {
+          schedule.autoPay = false;
+        }
+        schedule.lastStatus = 'success';
+        schedule.lastError = null;
+        schedule.lastRunAt = new Date().toISOString();
+        schedule.runCount = (schedule.runCount ?? 0) + 1;
+        flowSpentDelta += amount;
+        changed = true;
+        succeeded += 1;
+        results.push({
+          flowId: flow.id,
+          scheduleId: schedule.id ?? null,
+          title: schedule.title,
+          status: 'success',
+          amount,
+        });
+      } catch (err) {
+        schedule.lastStatus = 'failed';
+        schedule.lastError = String(err instanceof Error ? err.message : err);
+        schedule.lastRunAt = new Date().toISOString();
+        schedule.runCount = (schedule.runCount ?? 0) + 1;
+        changed = true;
+        failed += 1;
+        results.push({
+          flowId: flow.id,
+          scheduleId: schedule.id ?? null,
+          title: schedule.title,
+          status: 'failed',
+          error: schedule.lastError,
+        });
+      }
+    }
+
+    if (!changed) continue;
+
+    const nextRun = earliestNextRun(schedules);
+    await db.none(
+      `UPDATE dayflow_flows SET
+         schedules = $2::jsonb,
+         spent_amount = spent_amount + $3,
+         next_run_at = $4,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [flow.id, JSON.stringify(schedules), flowSpentDelta, nextRun]
+    );
+  }
+
+  return {
+    processed: succeeded + failed,
+    succeeded,
+    failed,
+    results,
+  };
+}
+
+export async function runDueSchedulesForAllUsers() {
+  if (!(await flowsTableReady())) return { users: 0, processed: 0, succeeded: 0, failed: 0 };
+  const rows = await db.manyOrNone<{ user_id: string }>(
+    `SELECT DISTINCT user_id
+     FROM dayflow_flows
+     WHERE status = 'active'
+       AND next_run_at IS NOT NULL
+       AND next_run_at <= CURRENT_TIMESTAMP`
+  );
+
+  let processed = 0;
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    const outcome = await runDueSchedulesForUser(row.user_id);
+    processed += outcome.processed;
+    succeeded += outcome.succeeded;
+    failed += outcome.failed;
+  }
+
+  return { users: rows.length, processed, succeeded, failed };
 }
 
 export async function sumActiveHeldAmount(userId: string): Promise<number> {

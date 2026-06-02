@@ -7,6 +7,7 @@ import {
   createAndActivateFlow,
   getFlow,
   listFlows,
+  runDueSchedulesForUser,
 } from './dayflowFlowService';
 import {
   acknowledgeIncome,
@@ -177,6 +178,20 @@ class DayflowController {
         return errorResponse(res, msg, enums.HTTP_NOT_FOUND);
       }
       return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  runDueSchedules = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const result = await runDueSchedulesForUser(userId);
+      return success(res, 'DayFlow schedules executed', enums.HTTP_OK, result);
+    } catch (err: any) {
+      return errorResponse(
+        res,
+        String(err?.message ?? err),
+        enums.HTTP_BAD_REQUEST
+      );
     }
   };
 

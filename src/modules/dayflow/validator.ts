@@ -84,6 +84,17 @@ class DayflowValidator {
       recipientId: Joi.string().trim().max(255).allow(null).optional(),
       paymentType: Joi.string().valid('send', 'bill', 'savings').optional(),
       autoPay: Joi.boolean().optional(),
+      execution: Joi.object({
+        toCurrency: Joi.string().trim().valid('USD', 'NGN', 'GBP', 'EUR').optional(),
+        bill: Joi.object({
+          categoryCode: Joi.string().trim().required(),
+          billerCode: Joi.string().trim().required(),
+          itemCode: Joi.string().trim().required(),
+          customerId: Joi.string().trim().required(),
+          billerName: Joi.string().trim().max(120).optional(),
+          itemName: Joi.string().trim().max(120).optional(),
+        }).optional(),
+      }).optional(),
     });
 
     const schema = Joi.object({

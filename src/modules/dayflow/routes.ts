@@ -80,6 +80,13 @@ Router.post(
 );
 
 Router.post(
+  '/flows/run-due',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowController.runDueSchedules
+);
+
+Router.post(
   '/flows/:flowId/cancel',
   authMiddleware.getAuthToken,
   authMiddleware.validateUserAuthToken,
