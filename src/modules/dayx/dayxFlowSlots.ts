@@ -106,6 +106,10 @@ function parseAmount(q: string): number | undefined {
 
 /** Detect "total / all / full balance" — resolve amount from live wallet in the flow engine. */
 export function parseAmountMode(q: string): 'max' | undefined {
+  const trimmed = q.trim().toLowerCase();
+  if (/^(all|max|maximum|everything|total|full)$/i.test(trimmed)) {
+    return 'max';
+  }
   const patterns = [
     /\b(total|all|everything|entire|full|whole|max(?:imum)?)\b.*\b(balance|wallet|funds?|money)\b/,
     /\b(total|all|everything|entire|full|whole)\s+(?:of\s+)?(?:my\s+)?(?:usd|ngn|gbp|eur|dollars?|naira|pounds?|euros?)\b/,

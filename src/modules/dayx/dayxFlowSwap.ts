@@ -1,7 +1,7 @@
 import PaymentService from '../payment/services';
 import type { DayxFlowContext } from './dayxFlowContext';
 import { buildPinSubmitTurn } from './dayxFlowPin';
-import { buildSlotAck, slotsToSessionData, resolveAmountFromSessionData } from './dayxFlowSlots';
+import { buildSlotAck, slotsToSessionData, resolveAmountFromSessionData, parseAmountMode } from './dayxFlowSlots';
 import { extractFlowSlots } from './dayxSlotExtractor';
 import type {
   DayxFlowSession,
@@ -268,6 +268,16 @@ export async function handleSwapFlowTurn(
       const resolved = resolveAmountFromSessionData(d, available);
       if (resolved != null) {
         return buildSwapReview(session, ctx, resolved);
+      }
+      if (parseAmountMode(text) === 'max') {
+        session = withData(session, { amountMode: 'max' });
+        const resolvedMax = resolveAmountFromSessionData(
+          data(session),
+          available
+        );
+        if (resolvedMax != null) {
+          return buildSwapReview(session, ctx, resolvedMax);
+        }
       }
     }
     return { reply: 'Enter a valid amount, or say "all" to swap your full balance.', session };
