@@ -496,6 +496,10 @@ export async function getDayflowDashboard(userId: string) {
   const { getFlowsDashboard, sumActiveHeldAmount } = await import(
     './dayflowFlowService'
   );
+  const {
+    collectScheduleInstances,
+    computeFreeToSpend,
+  } = await import('./dayflowScheduleInstances');
 
   const [ngnBalance, plan, recentSpend, pendingIncome, flowsDash, flowHeld] =
     await Promise.all([
@@ -511,11 +515,50 @@ export async function getDayflowDashboard(userId: string) {
       sumActiveHeldAmount(userId).catch(() => 0),
     ]);
 
+  const activeFlows = (flowsDash.flows ?? []).filter(
+    (f: { status?: string }) => f.status === 'active'
+  );
+
+  const flowsForInstances =
+    activeFlows.length > 0
+      ? activeFlows
+      : plan
+        ? [
+            {
+              id: plan.id,
+              title: plan.title,
+              periodLabel: plan.periodLabel,
+              budgetType: plan.budgetType,
+              categories: plan.categories as { name: string; allocated: number }[],
+              schedules: (plan.upcoming as { title?: string; amount?: number; dueLabel?: string; autoSend?: boolean }[]).map(
+                (u, i) => ({
+                  id: `plan-upcoming-${i}`,
+                  title: u.title ?? 'Payment',
+                  amount: Number(u.amount ?? 0),
+                  dueLabel: u.dueLabel,
+                  frequency: (plan.budgetType ?? 'monthly') as import('../payment/budgetService').BudgetFrequency,
+                  autoPay: u.autoSend !== false,
+                  paymentType: 'send' as const,
+                })
+              ),
+            },
+          ]
+        : [];
+
+  const scheduleInstances = collectScheduleInstances({
+    flows: flowsForInstances,
+  });
+
   const planSafe = computeSafeToSpend(ngnBalance, plan);
-  const safeToSpend =
-    flowsDash.activeCount > 0
-      ? Math.max(0, ngnBalance)
-      : planSafe;
+  const planReserved = Math.max(0, ngnBalance - planSafe);
+  const committedThisPeriod = scheduleInstances.committedThisPeriod;
+  const freeToSpend = computeFreeToSpend(
+    ngnBalance,
+    committedThisPeriod,
+    activeFlows.length > 0 ? 0 : planReserved
+  );
+  const safeToSpend = freeToSpend;
+
   const healthScore = computeHealthScore(plan);
   const forecast = computeForecast(ngnBalance, plan);
   const insights = buildInsights(plan, recentSpend);
@@ -523,6 +566,13 @@ export async function getDayflowDashboard(userId: string) {
   return {
     ngnBalance,
     safeToSpend,
+    freeToSpend,
+    committedThisPeriod,
+    budgetPeriodLabel: scheduleInstances.periodLabel,
+    scheduleInstances: {
+      upcoming: scheduleInstances.upcoming,
+      past: scheduleInstances.past,
+    },
     healthScore,
     forecast,
     insights,
@@ -533,5 +583,6 @@ export async function getDayflowDashboard(userId: string) {
     flows: flowsDash.flows,
     activeFlowCount: flowsDash.activeCount,
     totalFlowHeld: flowHeld,
+    payOnDue: true,
   };
 }

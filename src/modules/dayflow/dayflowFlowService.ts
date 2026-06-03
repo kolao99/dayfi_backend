@@ -1,12 +1,7 @@
 import crypto from 'node:crypto';
 import { db } from '../../config/database';
 import {
-  buildWalletActivityTxId,
-  recordWalletActivity,
-} from '../payment/walletActivityService';
-import {
   creditWalletBalance,
-  debitWalletBalance,
   newReference,
 } from '../payment/balanceService';
 import { convertAmountToUsd } from '../payment/fxService';
@@ -223,14 +218,24 @@ function computeScheduleNextRunAfterExecution(
   return computeNextRunAt(freq, new Date());
 }
 
+function isPayOnDueFlow(row: FlowRow): boolean {
+  const meta =
+    row.metadata && typeof row.metadata === 'object'
+      ? (row.metadata as Record<string, unknown>)
+      : {};
+  if (meta.payOnDue === true) return true;
+  return !row.hold_movement_id;
+}
+
 async function executeSchedulePayment(params: {
   userId: string;
   walletId: string;
   flowId: string;
   flowTitle: string;
   schedule: DayflowFlowSchedule;
+  payOnDue?: boolean;
 }): Promise<void> {
-  const { userId, walletId, flowId, flowTitle, schedule } = params;
+  const { userId, walletId, flowId, flowTitle, schedule, payOnDue } = params;
   const amount = Number(schedule.amount ?? 0);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error('Invalid schedule amount');
@@ -238,27 +243,28 @@ async function executeSchedulePayment(params: {
 
   const paymentType = schedule.paymentType ?? 'send';
 
-  // release from DayFlow envelope into NGN wallet immediately before execution.
-  const releaseRef = newReference('dayflow-exec-release');
-  const { usdAmount } = await convertAmountToUsd(amount, 'NGN');
-  await creditWalletBalance({
-    userId,
-    walletId,
-    amount,
-    currency: 'NGN',
-    usdEquivalent: usdAmount,
-    source: 'dayflow',
-    idempotencyKey: `dayflow-exec-release:${flowId}:${schedule.id ?? schedule.title}`,
-    externalReference: releaseRef,
-    metadata: {
-      dayflowAction: 'execution_release',
-      flowId,
-      flowTitle,
-      scheduleId: schedule.id ?? null,
-      scheduleTitle: schedule.title,
-      paymentType,
-    },
-  });
+  if (!payOnDue) {
+    const releaseRef = newReference('dayflow-exec-release');
+    const { usdAmount } = await convertAmountToUsd(amount, 'NGN');
+    await creditWalletBalance({
+      userId,
+      walletId,
+      amount,
+      currency: 'NGN',
+      usdEquivalent: usdAmount,
+      source: 'dayflow',
+      idempotencyKey: `dayflow-exec-release:${flowId}:${schedule.id ?? schedule.title}`,
+      externalReference: releaseRef,
+      metadata: {
+        dayflowAction: 'execution_release',
+        flowId,
+        flowTitle,
+        scheduleId: schedule.id ?? null,
+        scheduleTitle: schedule.title,
+        paymentType,
+      },
+    });
+  }
 
   if (paymentType === 'savings') {
     const toCurrency = String(schedule.execution?.toCurrency ?? 'USD').toUpperCase();
@@ -327,7 +333,7 @@ export async function getFlow(userId: string, flowId: string) {
 }
 
 /**
- * Create a flow: debit NGN wallet for the full envelope, optionally link recurring budgets.
+ * Create a flow: register schedules and pay from NGN wallet when each is due.
  */
 export async function createAndActivateFlow(
   userId: string,
@@ -338,7 +344,7 @@ export async function createAndActivateFlow(
   }
 
   const categories = input.categories ?? [];
-  const schedules = (input.schedules ?? []).map((s) => ({
+  let schedules = (input.schedules ?? []).map((s) => ({
     ...s,
     id: s.id ?? crypto.randomUUID(),
   }));
@@ -370,48 +376,8 @@ export async function createAndActivateFlow(
   if (!wallet) {
     throw new Error('NGN wallet not found');
   }
-  if (Number(wallet.balance) < total) {
-    throw new Error(
-      `Insufficient NGN balance. You need ₦${total.toLocaleString('en-NG')} but have ₦${Number(wallet.balance).toLocaleString('en-NG')}.`
-    );
-  }
 
-  const flowRef = newReference('dayflow-hold');
-  const debit = await debitWalletBalance({
-    userId,
-    walletId: wallet.wallet_id,
-    amount: total,
-    currency: 'NGN',
-    source: 'dayflow',
-    idempotencyKey: `dayflow-hold:${flowRef}`,
-    externalReference: flowRef,
-    metadata: {
-      dayflowAction: 'hold',
-      flowTitle: title,
-      flowType,
-    },
-  });
-
-  try {
-    await recordWalletActivity({
-      userId,
-      id: buildWalletActivityTxId(flowRef),
-      direction: 'debit',
-      amount: total,
-      currency: 'NGN',
-      source: 'dayflow',
-      title: `DayFlow · ${title}`,
-      reason: `Set aside for ${title}`,
-      externalReference: flowRef,
-      channel: 'wallet',
-      beneficiaryName: 'DayFlow',
-      accountType: 'dayflow',
-      accountNumber: title,
-    });
-  } catch {
-    /* non-fatal */
-  }
-
+  const flowRef = newReference('dayflow-commit');
   const nextRunAt = earliestNextRun(schedules);
 
   const row = await db.one<FlowRow>(
@@ -420,8 +386,8 @@ export async function createAndActivateFlow(
       currency, categories, schedules, metadata, hold_movement_id,
       period_label, budget_type, summary_line, next_run_at
     ) VALUES (
-      $1, $2, $3, 'active', $4, $4, 0, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9,
-      $10, $11, $12, $13
+      $1, $2, $3, 'active', $4, $4, 0, $5, $6::jsonb, $7::jsonb, $8::jsonb, NULL,
+      $9, $10, $11, $12
     ) RETURNING *`,
     [
       userId,
@@ -431,8 +397,7 @@ export async function createAndActivateFlow(
       currency,
       JSON.stringify(categories),
       JSON.stringify(schedules),
-      JSON.stringify({ holdRef: flowRef }),
-      debit.movementId,
+      JSON.stringify({ payOnDue: true, commitRef: flowRef }),
       input.periodLabel ?? null,
       input.budgetType ?? 'monthly',
       input.summaryLine ?? null,
@@ -479,7 +444,8 @@ export async function cancelFlow(userId: string, flowId: string) {
 
   const held = Number(row.held_amount);
   const spent = Number(row.spent_amount);
-  const refund = Math.max(0, held - spent);
+  const payOnDue = isPayOnDueFlow(row);
+  const refund = payOnDue ? 0 : Math.max(0, held - spent);
 
   let releaseMovementId: string | null = null;
 
@@ -567,6 +533,8 @@ export async function runDueSchedulesForUser(userId: string) {
       : []) as DayflowFlowSchedule[];
     let changed = false;
     let flowSpentDelta = 0;
+    const payOnDue = isPayOnDueFlow(flow);
+    const walletBalance = Number(wallet.balance);
 
     for (const schedule of schedules) {
       if (!schedule?.autoPay) continue;
@@ -574,17 +542,10 @@ export async function runDueSchedulesForUser(userId: string) {
       if (!dueAt || dueAt > new Date()) continue;
 
       const amount = Number(schedule.amount ?? 0);
-      const remainingInFlow = Math.max(
-        0,
-        Number(flow.held_amount) - Number(flow.spent_amount) - flowSpentDelta
-      );
 
-      if (!Number.isFinite(amount) || amount <= 0 || remainingInFlow < amount) {
+      if (!Number.isFinite(amount) || amount <= 0) {
         schedule.lastStatus = 'failed';
-        schedule.lastError =
-          remainingInFlow < amount
-            ? 'Insufficient DayFlow held balance for schedule'
-            : 'Invalid schedule amount';
+        schedule.lastError = 'Invalid schedule amount';
         schedule.lastRunAt = new Date().toISOString();
         schedule.runCount = (schedule.runCount ?? 0) + 1;
         changed = true;
@@ -599,6 +560,48 @@ export async function runDueSchedulesForUser(userId: string) {
         continue;
       }
 
+      if (payOnDue) {
+        if (walletBalance < amount) {
+          schedule.lastStatus = 'failed';
+          schedule.lastError = 'Insufficient NGN wallet balance for autopay';
+          schedule.lastRunAt = new Date().toISOString();
+          schedule.runCount = (schedule.runCount ?? 0) + 1;
+          changed = true;
+          failed += 1;
+          results.push({
+            flowId: flow.id,
+            scheduleId: schedule.id ?? null,
+            title: schedule.title,
+            status: 'failed',
+            error: schedule.lastError,
+          });
+          continue;
+        }
+      } else {
+        const remainingInFlow = Math.max(
+          0,
+          Number(flow.held_amount) - Number(flow.spent_amount) - flowSpentDelta
+        );
+
+        if (remainingInFlow < amount) {
+          schedule.lastStatus = 'failed';
+          schedule.lastError =
+            'Insufficient DayFlow held balance for schedule';
+          schedule.lastRunAt = new Date().toISOString();
+          schedule.runCount = (schedule.runCount ?? 0) + 1;
+          changed = true;
+          failed += 1;
+          results.push({
+            flowId: flow.id,
+            scheduleId: schedule.id ?? null,
+            title: schedule.title,
+            status: 'failed',
+            error: schedule.lastError,
+          });
+          continue;
+        }
+      }
+
       try {
         await executeSchedulePayment({
           userId,
@@ -606,6 +609,7 @@ export async function runDueSchedulesForUser(userId: string) {
           flowId: flow.id,
           flowTitle: flow.title,
           schedule,
+          payOnDue,
         });
         const next = computeScheduleNextRunAfterExecution(schedule);
         schedule.nextRunAt = next?.toISOString() ?? null;
