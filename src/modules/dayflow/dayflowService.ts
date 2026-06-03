@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { db } from '../../config/database';
+import { buildConversationSummary } from '../dayx/dayxConversationSummary';
 import { getActivePlan } from './dayflowPlanService';
 
 export type DayFlowHistoryMessage = {
@@ -139,13 +140,20 @@ async function loadNgnBalance(userId: string): Promise<number> {
   return row ? Number(row.balance) : 0;
 }
 
-function buildSystemPrompt(ngnBalance: number, activePlanSummary: string): string {
+function buildSystemPrompt(
+  ngnBalance: number,
+  activePlanSummary: string,
+  conversationSummary?: string
+): string {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
   const monthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const dayOfMonth = now.getDate();
   const daysLeftInMonth = daysInMonth - dayOfMonth;
+  const summaryBlock = conversationSummary
+    ? `\n\n## ${conversationSummary}`
+    : '';
 
   return `${DAYFLOW_SYSTEM}
 
@@ -154,7 +162,8 @@ Context (authoritative):
 - Days left in this calendar month: ${daysLeftInMonth}
 - User NGN wallet balance (ledger): ₦${ngnBalance.toLocaleString('en-NG', { maximumFractionDigits: 2 })}
 - Active DayFlow plan: ${activePlanSummary}
-- All DayFlow plans must use NGN only. If budget exceeds NGN balance, mention insufficient NGN wallet and set suggestSwap: true.`;
+- All DayFlow plans must use NGN only. If budget exceeds NGN balance, mention insufficient NGN wallet and set suggestSwap: true.
+- Remember prior turns in this chat — do not re-ask for information the user already gave (amounts, categories, item names).${summaryBlock}`;
 }
 
 function parsePlanDraft(raw: unknown): DayFlowPlanDraft | undefined {
@@ -242,8 +251,9 @@ export async function chatWithDayflow(params: {
   const planSummary = activePlan
     ? `${activePlan.periodLabel} — ₦${activePlan.totalBudget} budget, ₦${activePlan.spent} spent, safe categories: ${(activePlan.categories as { name: string }[]).map((c) => c.name).join(', ')}`
     : 'None yet';
-  const system = buildSystemPrompt(ngnBalance, planSummary);
   const history = (params.history ?? []).slice(-16);
+  const conversationSummary = buildConversationSummary(history);
+  const system = buildSystemPrompt(ngnBalance, planSummary, conversationSummary);
 
   const messages: { role: string; content: string }[] = [
     { role: 'system', content: system },

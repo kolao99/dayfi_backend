@@ -1,5 +1,11 @@
 import axios from 'axios';
 import { db } from '../../config/database';
+import { formatMoney } from '../payment/walletModel';
+import {
+  buildTotalNgnBalanceReply,
+  detectTotalInNairaQuery,
+} from './dayxBalanceReply';
+import { buildConversationSummary } from './dayxConversationSummary';
 
 export type DayxHistoryMessage = {
   role: 'user' | 'assistant';
@@ -231,7 +237,7 @@ async function loadWalletSummary(userId: string): Promise<string> {
   );
   if (!rows.length) return 'No wallet balances on file yet.';
   return rows
-    .map((r) => `${r.currency} ${Number(r.balance).toFixed(2)}`)
+    .map((r) => `${r.currency}: ${formatMoney(Number(r.balance), r.currency)}`)
     .join(', ');
 }
 
@@ -295,15 +301,23 @@ function buildSystemPrompt(ctx: {
   walletSummary: string;
   beneficiaries: string;
   recentPayees: string;
+  conversationSummary?: string;
 }): string {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
+  const summaryBlock = ctx.conversationSummary
+    ? `\n\n## ${ctx.conversationSummary}`
+    : '';
   return `${DAYX_SYSTEM_PROMPT}
 
 ## Live context (${dateStr}) — authoritative, do not invent beyond this
 Wallet balances: ${ctx.walletSummary}
 Saved beneficiaries: ${ctx.beneficiaries}
-Recent activity: ${ctx.recentPayees}`;
+Recent activity: ${ctx.recentPayees}
+
+## Balance questions
+- If user asks total balance in naira/NGN, convert ALL wallet balances to NGN using reasonable FX — give one total in ₦ plus per-wallet breakdown.
+- Never repeat only the USD total when they asked for naira.${summaryBlock}`;
 }
 
 function parseTransferProposal(raw: unknown): DayxTransferProposal | undefined {
@@ -506,6 +520,16 @@ export async function chatWithDayx(params: {
     throw new Error('DAYX_AI_UNAVAILABLE');
   }
 
+  if (detectTotalInNairaQuery(message)) {
+    const reply = await buildTotalNgnBalanceReply(params.userId);
+    return {
+      reply,
+      intent: { action: 'show_balance', confidence: 0.95 },
+      ui: { type: 'balance_card', title: 'Total in NGN' },
+      meta: { provider: 'rules', mode: 'full' },
+    };
+  }
+
   const provider = resolveProvider();
   const [walletSummary, beneficiaries, recentPayees] = await Promise.all([
     loadWalletSummary(params.userId),
@@ -513,12 +537,15 @@ export async function chatWithDayx(params: {
     loadRecentPayeesSummary(params.userId),
   ]);
 
+  const history = (params.history ?? []).slice(-16);
+  const conversationSummary = buildConversationSummary(history);
+
   const system = buildSystemPrompt({
     walletSummary,
     beneficiaries,
     recentPayees,
+    conversationSummary,
   });
-  const history = (params.history ?? []).slice(-16);
 
   const messages: { role: string; content: string }[] = [
     { role: 'system', content: system },

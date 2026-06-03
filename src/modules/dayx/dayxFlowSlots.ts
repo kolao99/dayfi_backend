@@ -134,10 +134,6 @@ export function resolveAmountFromSessionData(
 }
 
 function parseCurrency(q: string, role: 'spend' | 'receive'): string | undefined {
-  const spendRe =
-    /\b(from\s+)?(my\s+)?(naira|ngn|dollar|dollars|usd|euro|euros|eur|pound|pounds|gbp)\b/i;
-  const swapRe =
-    /\b(?:to|into)\s+(naira|ngn|dollar|dollars|usd|euro|euros|eur|pound|pounds|gbp)\b/i;
   const map: Record<string, string> = {
     naira: 'NGN',
     ngn: 'NGN',
@@ -151,11 +147,32 @@ function parseCurrency(q: string, role: 'spend' | 'receive'): string | undefined
     pounds: 'GBP',
     gbp: 'GBP',
   };
-  const re = role === 'receive' ? swapRe : spendRe;
-  const m = q.match(re);
-  if (!m) return undefined;
-  const word = (m[m.length - 1] ?? '').toLowerCase();
-  return map[word];
+  const wordToCur = (word: string) => map[word.toLowerCase()];
+
+  if (role === 'receive') {
+    const swapRe =
+      /\b(?:to|into)\s+(naira|ngn|dollar|dollars|usd|euro|euros|eur|pound|pounds|gbp)\b/i;
+    const m = q.match(swapRe);
+    if (!m) return undefined;
+    return wordToCur(m[m.length - 1] ?? '');
+  }
+
+  const fromRe =
+    /\b(?:from|using|with)\s+(?:my\s+)?(naira|ngn|dollar|dollars|usd|euro|euros|eur|pound|pounds|gbp)\b/i;
+  const fromMatch = q.match(fromRe);
+  if (fromMatch) return wordToCur(fromMatch[1] ?? '');
+
+  const myWalletRe =
+    /\bmy\s+(naira|ngn|dollar|dollars|usd|euro|euros|eur|pound|pounds|gbp)\s+wallet\b/i;
+  const myMatch = q.match(myWalletRe);
+  if (myMatch) return wordToCur(myMatch[1] ?? '');
+
+  const swapFromRe =
+    /\b(?:swap|convert|exchange)\s+(?:my\s+)?(naira|ngn|dollar|dollars|usd|euro|euros|eur|pound|pounds|gbp)\s+(?:to|into)\b/i;
+  const swapFromMatch = q.match(swapFromRe);
+  if (swapFromMatch) return wordToCur(swapFromMatch[1] ?? '');
+
+  return undefined;
 }
 
 /** Rule-based slot extraction (always available, no API). */

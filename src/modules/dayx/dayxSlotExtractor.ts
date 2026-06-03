@@ -107,6 +107,12 @@ export async function extractFlowSlots(
 
   const rules = parseExtendedSlots(text);
 
+  // 4-digit PIN-like input must never become a transaction amount.
+  if (/^\d{4}$/.test(text)) {
+    delete rules.amount;
+    delete rules.amountMode;
+  }
+
   if (!isDayxAiConfigured()) {
     return rules;
   }
@@ -118,7 +124,12 @@ export async function extractFlowSlots(
       maxTokens: 350,
     });
     const groq = groqSlotsToExtracted(raw);
-    return mergeExtractedSlots(rules, groq);
+    const merged = mergeExtractedSlots(rules, groq);
+    if (/^\d{4}$/.test(text)) {
+      delete merged.amount;
+      delete merged.amountMode;
+    }
+    return merged;
   } catch {
     return rules;
   }
