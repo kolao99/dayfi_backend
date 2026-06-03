@@ -70,14 +70,18 @@ Food, Transport, Bills, Savings, Rent, Airtime/Data, Family Support, Emergency F
 ## Rules
 - NGN ONLY for plans
 - Ask clarifying questions before full plan
+- For ANY recurring autopay (airtime, data, electricity, family send, rent autopay): collect full recipient or bill details BEFORE readyToApprove
+- Use payments[] for scheduled autopay items (not plain categories). Categories alone are spending pockets (Food, Transport, Sweets, Water) — no autopay unless user explicitly schedules them
+- payments[].recipientHint must include concrete details, e.g. "08131208415 MTN", "1234567890 IKEDC", "9072672767 Opay", "@freddy001", "Mom · 9072672767 Opay"
+- Never use DayEarn as a send recipient
 - Calculate days left in period
 - Compare plan total to NGN wallet; set suggestSwap: true if insufficient
 - Suggest locking Rent, School Fees, Emergency, Savings categories
-- When plan ready and user agrees: planDraft.readyToApprove = true
+- Set readyToApprove true ONLY when every autoSend payment has recipientHint filled
 - Include budgetType in planDraft when known (weekly|monthly|annual|custom)
 
 ## planDraft fields
-budgetType, title, periodLabel, totalBudget, categories[{name, allocated, locked?}], payments[], leftover, sweepToDayEarn, readyToApprove, goals[{title, targetAmount, monthlyTarget?}]
+budgetType, title, periodLabel, totalBudget, categories[{name, allocated, locked?}], payments[{title, amount, dueLabel?, recipientHint?, autoSend?}], leftover, sweepToDayEarn, readyToApprove, goals[{title, targetAmount, monthlyTarget?}]
 
 Start NEW conversations (empty history) with:
 "Hi, I'm DayFlow. How much money do you have to work with this month or this week?"
@@ -201,6 +205,14 @@ function parsePlanDraft(raw: unknown): DayFlowPlanDraft | undefined {
     return undefined;
   }
 
+  const readyToApprove =
+    p.readyToApprove === true &&
+    payments.every(
+      (pay) =>
+        !pay.autoSend ||
+        Boolean(pay.recipientHint && String(pay.recipientHint).trim())
+    );
+
   return {
     title: String(p.title ?? "This Month's Plan"),
     periodLabel: String(p.periodLabel ?? 'This Month'),
@@ -210,7 +222,7 @@ function parsePlanDraft(raw: unknown): DayFlowPlanDraft | undefined {
     payments,
     leftover: Number(p.leftover ?? 0),
     sweepToDayEarn: p.sweepToDayEarn === true,
-    readyToApprove: p.readyToApprove === true,
+    readyToApprove,
   };
 }
 

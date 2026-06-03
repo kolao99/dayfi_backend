@@ -693,6 +693,79 @@ export async function runDueSchedulesForAllUsers() {
   return { users: rows.length, processed, succeeded, failed };
 }
 
+export type UpdateFlowScheduleInput = Partial<
+  Pick<
+    DayflowFlowSchedule,
+    | 'title'
+    | 'amount'
+    | 'recipientHint'
+    | 'recipientId'
+    | 'paymentType'
+    | 'execution'
+  >
+>;
+
+function scheduleKey(schedule: DayflowFlowSchedule): string {
+  return String(schedule.id ?? schedule.title);
+}
+
+function mergeSchedulePatch(
+  current: DayflowFlowSchedule,
+  patch: UpdateFlowScheduleInput
+): DayflowFlowSchedule {
+  const next: DayflowFlowSchedule = { ...current, ...patch };
+  if (patch.execution) {
+    next.execution = {
+      ...current.execution,
+      ...patch.execution,
+      bill: patch.execution.bill
+        ? { ...current.execution?.bill, ...patch.execution.bill }
+        : current.execution?.bill,
+    };
+  }
+  return next;
+}
+
+export async function updateFlowSchedule(
+  userId: string,
+  flowId: string,
+  scheduleId: string,
+  patch: UpdateFlowScheduleInput
+) {
+  if (!(await flowsTableReady())) {
+    throw new Error('DAYFLOW_FLOWS_TABLE_MISSING');
+  }
+
+  const row = await db.oneOrNone<FlowRow>(
+    `SELECT * FROM dayflow_flows WHERE user_id = $1 AND id = $2 FOR UPDATE`,
+    [userId, flowId]
+  );
+  if (!row) throw new Error('Flow not found');
+  if (row.status === 'cancelled') throw new Error('Flow is cancelled');
+
+  const schedules = (
+    Array.isArray(row.schedules) ? row.schedules : []
+  ) as DayflowFlowSchedule[];
+
+  const idx = schedules.findIndex((s) => scheduleKey(s) === scheduleId);
+  if (idx < 0) throw new Error('Schedule not found');
+
+  schedules[idx] = mergeSchedulePatch(schedules[idx], patch);
+
+  const nextRunAt = earliestNextRun(schedules);
+  const updated = await db.one<FlowRow>(
+    `UPDATE dayflow_flows SET
+      schedules = $3::jsonb,
+      next_run_at = $4,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $1 AND user_id = $2
+    RETURNING *`,
+    [flowId, userId, JSON.stringify(schedules), nextRunAt]
+  );
+
+  return formatFlow(updated);
+}
+
 export async function sumActiveHeldAmount(userId: string): Promise<number> {
   if (!(await flowsTableReady())) return 0;
   const row = await db.oneOrNone<{ total: string }>(

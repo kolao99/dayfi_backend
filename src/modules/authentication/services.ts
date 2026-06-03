@@ -7,7 +7,7 @@ import config from '../../config/env';
 import Twilio from 'twilio';
 import HashText from '../../shared/services/hashing';
 import { verifyAppleIdentityToken } from './appleVerify';
-import { verifyGoogleAccessToken } from './googleVerify';
+import { verifyGoogleAuthToken } from './googleVerify';
 import {
   fallbackFirstNameFromEmail,
   namesFromAppleClient,
@@ -512,7 +512,7 @@ class AuthService {
     action: SocialAuthAction;
     authProvider: 'google';
   }> => {
-    const profile = await verifyGoogleAccessToken(input.accessToken);
+    const profile = await verifyGoogleAuthToken(input.accessToken);
     const { sub, email: emailFromGoogle } = profile;
     const { firstName: gFirst, lastName: gLast } = namesFromGoogleUserinfo(
       profile as Record<string, unknown>

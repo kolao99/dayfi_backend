@@ -170,12 +170,15 @@ function scheduleNeedsSetup(schedule: DayflowFlowSchedule): boolean {
   if (paymentType === 'savings') return false;
   if (paymentType === 'bill') {
     const bill = schedule.execution?.bill;
-    return !(
+    if (
       bill?.categoryCode &&
       bill?.billerCode &&
       bill?.itemCode &&
       bill?.customerId
-    );
+    ) {
+      return false;
+    }
+    return !(schedule.recipientHint && String(schedule.recipientHint).trim());
   }
   const tag =
     (schedule.recipientId && String(schedule.recipientId).trim()) ||

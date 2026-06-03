@@ -14,6 +14,56 @@ export type GoogleUserinfo = {
   name?: string;
 };
 
+export async function verifyGoogleIdToken(
+  idToken: string
+): Promise<GoogleUserinfo> {
+  const token = idToken?.trim();
+  if (!token) {
+    throw new Error('Missing Google ID token');
+  }
+
+  let status: number;
+  let data: any;
+  try {
+    const res = await axios.get('https://oauth2.googleapis.com/tokeninfo', {
+      params: { id_token: token },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+    status = res.status;
+    data = res.data;
+  } catch (e: any) {
+    const msg =
+      e?.response?.data?.error_description ||
+      e?.response?.data?.error ||
+      e?.message ||
+      'Google sign-in verification failed';
+    throw new Error(String(msg));
+  }
+
+  if (status !== 200 || data == null || typeof data !== 'object') {
+    const err =
+      typeof data?.error_description === 'string'
+        ? data.error_description
+        : 'Invalid or expired Google token';
+    throw new Error(err);
+  }
+
+  const sub = typeof data.sub === 'string' ? data.sub : '';
+  if (!sub) {
+    throw new Error('Invalid Google token response');
+  }
+
+  return {
+    sub,
+    email: typeof data.email === 'string' ? data.email : undefined,
+    given_name: typeof data.given_name === 'string' ? data.given_name : undefined,
+    family_name:
+      typeof data.family_name === 'string' ? data.family_name : undefined,
+    name: typeof data.name === 'string' ? data.name : undefined,
+  };
+}
+
 export async function verifyGoogleAccessToken(
   accessToken: string
 ): Promise<GoogleUserinfo> {
@@ -61,4 +111,25 @@ export async function verifyGoogleAccessToken(
     typeof data.family_name === 'string' ? data.family_name : undefined;
   const name = typeof data.name === 'string' ? data.name : undefined;
   return { sub, email, given_name, family_name, name };
+}
+
+/** Accepts either OAuth access token or OpenID id_token from mobile clients. */
+export async function verifyGoogleAuthToken(
+  authToken: string
+): Promise<GoogleUserinfo> {
+  const token = authToken?.trim();
+  if (!token) throw new Error('Missing Google auth token');
+  const looksLikeJwt = token.split('.').length === 3;
+  if (looksLikeJwt) {
+    try {
+      return await verifyGoogleIdToken(token);
+    } catch {
+      return verifyGoogleAccessToken(token);
+    }
+  }
+  try {
+    return await verifyGoogleAccessToken(token);
+  } catch {
+    return verifyGoogleIdToken(token);
+  }
 }

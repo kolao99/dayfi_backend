@@ -154,6 +154,32 @@ class DayflowValidator {
     return this.validateRequestBody(req, res, next, schema);
   };
 
+  patchSchedule = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      title: Joi.string().trim().min(1).max(120).optional(),
+      amount: Joi.number().positive().optional(),
+      recipientHint: Joi.string().trim().max(200).allow('', null).optional(),
+      recipientId: Joi.string().trim().max(255).allow(null, '').optional(),
+      paymentType: Joi.string().valid('send', 'bill', 'savings').optional(),
+      execution: Joi.object({
+        toCurrency: Joi.string()
+          .trim()
+          .valid('USD', 'NGN', 'GBP', 'EUR')
+          .optional(),
+        bill: Joi.object({
+          categoryCode: Joi.string().trim().required(),
+          billerCode: Joi.string().trim().required(),
+          itemCode: Joi.string().trim().required(),
+          customerId: Joi.string().trim().required(),
+          billerName: Joi.string().trim().max(120).optional(),
+          itemName: Joi.string().trim().max(120).optional(),
+        }).optional(),
+      }).optional(),
+    }).min(1);
+
+    return this.validateRequestBody(req, res, next, schema);
+  };
+
   ackIncome = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       transactionIds: Joi.array().items(Joi.string().trim().min(1)).min(1).max(20).required(),

@@ -108,4 +108,12 @@ Router.post(
   dayflowController.cancelFlow
 );
 
+Router.patch(
+  '/flows/:flowId/schedules/:scheduleId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayflowValidator.patchSchedule,
+  dayflowController.updateSchedule
+);
+
 export const dayflowRouter = Router;

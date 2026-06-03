@@ -8,6 +8,7 @@ import {
   getFlow,
   listFlows,
   runDueSchedulesForUser,
+  updateFlowSchedule,
 } from './dayflowFlowService';
 import {
   acknowledgeIncome,
@@ -199,6 +200,34 @@ class DayflowController {
       });
     } catch (err: any) {
       const msg = String(err?.message ?? err);
+      if (msg === 'DAYFLOW_FLOWS_TABLE_MISSING') {
+        return errorResponse(
+          res,
+          'DayFlow flows table not migrated yet. Run npm run migrate up.',
+          enums.HTTP_SERVICE_UNAVAILABLE
+        );
+      }
+      return errorResponse(res, msg, enums.HTTP_BAD_REQUEST);
+    }
+  };
+
+  updateSchedule = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const flowId = String(req.params.flowId ?? '');
+      const scheduleId = String(req.params.scheduleId ?? '');
+      const flow = await updateFlowSchedule(
+        userId,
+        flowId,
+        scheduleId,
+        req.body
+      );
+      return success(res, 'DayFlow schedule updated', enums.HTTP_OK, { flow });
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      if (msg === 'Flow not found' || msg === 'Schedule not found') {
+        return errorResponse(res, msg, enums.HTTP_NOT_FOUND);
+      }
       if (msg === 'DAYFLOW_FLOWS_TABLE_MISSING') {
         return errorResponse(
           res,
