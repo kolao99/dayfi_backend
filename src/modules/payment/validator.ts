@@ -634,6 +634,7 @@ class PaymentValidator {
       billerName: Joi.string().optional(),
       itemName: Joi.string().optional(),
       spendCurrency: Joi.string().valid('NGN').default('NGN'),
+      pin: Joi.string().required(),
     });
     this.validateRequestBody(req, res, next, schema, 'payBill');
   };
