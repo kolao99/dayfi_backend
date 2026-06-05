@@ -1,0 +1,5 @@
+# API hostname on dayfi.co — Caddy obtains TLS via Let's Encrypt.
+
+api.dayfi.co {
+	reverse_proxy api:3000
+}

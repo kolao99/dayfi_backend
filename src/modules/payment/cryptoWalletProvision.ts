@@ -8,9 +8,9 @@ import StellarSdk from '@stellar/stellar-sdk';
 import { ethers } from 'ethers';
 import {
   buildReceiveTrustlineAssets,
-  isStellarTestnet,
   resolveEthTokenContracts,
 } from '../../config/stellarIssuers';
+import { getStellarConfig } from '../../config/stellarConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const StellarHDWallet = require('stellar-hd-wallet') as {
@@ -26,6 +26,9 @@ const StellarHDWallet = require('stellar-hd-wallet') as {
 const ALGORITHM = 'aes-256-gcm';
 const DEV_ENCRYPTION_KEY_HEX = 'a'.repeat(64);
 
+type StellarKeypair = ReturnType<typeof StellarSdk.Keypair.fromSecret>;
+type StellarHorizonServer = InstanceType<typeof StellarSdk.Horizon.Server>;
+
 type JobStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
 type JobRecord = {
@@ -40,14 +43,11 @@ type JobRecord = {
 const jobs = new Map<string, JobRecord>();
 const provisionLocks = new Map<string, Promise<void>>();
 
-const horizonUrl = () =>
-  process.env.STELLAR_HORIZON_URL ||
-  (isStellarTestnet()
-    ? 'https://horizon-testnet.stellar.org'
-    : 'https://horizon.stellar.org');
+const horizonUrl = () => getStellarConfig().horizonUrl;
 
-const networkPassphrase = () =>
-  isStellarTestnet() ? StellarSdk.Networks.TESTNET : StellarSdk.Networks.PUBLIC;
+const networkPassphrase = () => getStellarConfig().networkPassphrase;
+
+const isStellarTestnet = () => getStellarConfig().isTestnet;
 
 function getEncryptionKey(): Buffer {
   const keyHex = (process.env.WALLET_ENCRYPTION_KEY || '').trim();
@@ -76,8 +76,8 @@ function encryptSecret(plain: string): string {
   return `${iv.toString('hex')}:${cipher.getAuthTag().toString('hex')}:${enc}`;
 }
 
-function decryptSecret(encText: string): string {
-  const key = getEncryptionKey();
+function decryptWithKey(keyHex: string, encText: string): string {
+  const key = Buffer.from(keyHex, 'hex');
   const [ivHex, tagHex, enc] = encText.split(':');
   if (!ivHex || !tagHex || !enc) return encText;
   const decipher = crypto.createDecipheriv(
@@ -91,6 +91,23 @@ function decryptSecret(encText: string): string {
   return dec;
 }
 
+function getMasterEncryptionKeyHex(): string | null {
+  const fromMaster = process.env.MASTER_WALLET_ENCRYPTION_KEY?.trim();
+  if (fromMaster && fromMaster.length === 64 && /^[0-9a-fA-F]+$/.test(fromMaster)) {
+    return fromMaster;
+  }
+  const fromWallet = process.env.WALLET_ENCRYPTION_KEY?.trim();
+  if (fromWallet && fromWallet.length === 64 && /^[0-9a-fA-F]+$/.test(fromWallet)) {
+    return fromWallet;
+  }
+  return null;
+}
+
+function decryptSecret(encText: string): string {
+  const key = getEncryptionKey();
+  return decryptWithKey(key.toString('hex'), encText);
+}
+
 function decryptMasterSecret(secretValue: string): string {
   const value = String(secretValue || '').trim();
   const parts = value.split(':');
@@ -101,7 +118,15 @@ function decryptMasterSecret(secretValue: string): string {
     /^[0-9a-f]+$/i.test(parts[2]) &&
     parts[0].length === 32 &&
     parts[1].length === 32;
-  if (looksEncrypted) return decryptSecret(value);
+  if (looksEncrypted) {
+    const keyHex = getMasterEncryptionKeyHex();
+    if (!keyHex) {
+      throw new Error(
+        'MASTER_WALLET_ENCRYPTION_KEY or WALLET_ENCRYPTION_KEY required to decrypt MASTER_ENCRYPTED_SECRET_KEY'
+      );
+    }
+    return decryptWithKey(keyHex, value);
+  }
   return value;
 }
 
@@ -160,6 +185,35 @@ async function persistCryptoWallet(params: {
   );
 }
 
+function resolveFundingAmountXlm(): string {
+  const raw =
+    process.env.STELLAR_FUNDING_AMOUNT_XLM?.trim() ||
+    process.env.FUNDING_AMOUNT?.trim();
+  return raw && raw.length > 0 ? raw : '1';
+}
+
+function resolveMasterKeypair(): StellarKeypair | null {
+  const masterPublicKey = process.env.MASTER_WALLET_PUBLIC_KEY?.trim();
+  const masterSecretRaw =
+    process.env.MASTER_ENCRYPTED_SECRET_KEY?.trim() ||
+    process.env.MASTER_WALLET_SECRET_KEY?.trim();
+  if (!masterPublicKey || !masterSecretRaw) return null;
+  try {
+    const masterSecret = decryptMasterSecret(masterSecretRaw);
+    const masterKeypair = StellarSdk.Keypair.fromSecret(masterSecret);
+    if (masterKeypair.publicKey() !== masterPublicKey) {
+      console.warn(
+        '[cryptoWalletProvision] MASTER_WALLET_PUBLIC_KEY does not match secret'
+      );
+    }
+    return masterKeypair;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[cryptoWalletProvision] Could not load master wallet: ${msg}`);
+    return null;
+  }
+}
+
 async function fundWithFriendbot(publicKey: string): Promise<void> {
   const res = await fetch(
     `https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`
@@ -179,16 +233,13 @@ async function fundWithFriendbot(publicKey: string): Promise<void> {
 }
 
 async function fundFromMasterIfConfigured(userPublicKey: string): Promise<boolean> {
-  const masterPublicKey = process.env.MASTER_WALLET_PUBLIC_KEY?.trim();
-  const masterSecretEnc =
-    process.env.MASTER_ENCRYPTED_SECRET_KEY?.trim() ||
-    process.env.MASTER_WALLET_SECRET_KEY?.trim();
-  const fundingAmount = process.env.STELLAR_FUNDING_AMOUNT_XLM || '5';
-  if (!masterPublicKey || !masterSecretEnc) return false;
+  const masterKeypair = resolveMasterKeypair();
+  if (!masterKeypair) return false;
+
+  const masterPublicKey = masterKeypair.publicKey();
+  const fundingAmount = resolveFundingAmountXlm();
 
   const server = new StellarSdk.Horizon.Server(horizonUrl());
-  const masterSecret = decryptMasterSecret(masterSecretEnc);
-  const masterKeypair = StellarSdk.Keypair.fromSecret(masterSecret);
   const masterAccount = await server.loadAccount(masterPublicKey);
 
   let destExists = true;
@@ -245,20 +296,61 @@ async function fundStellarAccount(publicKey: string): Promise<void> {
   }
 }
 
+async function addSponsoredTrustline(
+  server: StellarHorizonServer,
+  masterKeypair: StellarKeypair,
+  userKeypair: StellarKeypair,
+  asset: InstanceType<typeof StellarSdk.Asset>
+): Promise<void> {
+  const masterPublicKey = masterKeypair.publicKey();
+  const userPublicKey = userKeypair.publicKey();
+  const masterAccount = await server.loadAccount(masterPublicKey);
+  const fee = String(Number(StellarSdk.BASE_FEE) * 3);
+
+  const tx = new StellarSdk.TransactionBuilder(masterAccount, {
+    fee,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      StellarSdk.Operation.beginSponsoringFutureReserves(userPublicKey)
+    )
+    .addOperation(
+      StellarSdk.Operation.changeTrust({
+        asset,
+        limit: '10000000',
+        source: userPublicKey,
+      })
+    )
+    .addOperation(StellarSdk.Operation.endSponsoringFutureReserves())
+    .setTimeout(60)
+    .build();
+
+  tx.sign(masterKeypair);
+  tx.sign(userKeypair);
+  await server.submitTransaction(tx);
+  await new Promise((r) => setTimeout(r, 800));
+}
+
 async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
   const server = new StellarSdk.Horizon.Server(horizonUrl());
-  const keypair = StellarSdk.Keypair.fromSecret(stellarSecret);
-  const publicKey = keypair.publicKey();
+  const userKeypair = StellarSdk.Keypair.fromSecret(stellarSecret);
+  const userPublicKey = userKeypair.publicKey();
   const assets = buildReceiveTrustlineAssets();
+  const masterKeypair = resolveMasterKeypair();
 
   for (const asset of assets) {
-    const account = await server.loadAccount(publicKey);
+    const account = await server.loadAccount(userPublicKey);
     const already = (account.balances as { asset_code?: string; asset_issuer?: string }[]).some(
       (b) =>
         b.asset_code === asset.getCode() &&
         b.asset_issuer === asset.getIssuer()
     );
     if (already) continue;
+
+    if (masterKeypair) {
+      await addSponsoredTrustline(server, masterKeypair, userKeypair, asset);
+      continue;
+    }
 
     const nativeBalance = parseFloat(
       String(
@@ -269,7 +361,8 @@ async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
     );
     if (nativeBalance < 0.5) {
       throw new Error(
-        `Insufficient XLM (${nativeBalance}) on ${publicKey} to pay trustline fees`
+        `Insufficient XLM (${nativeBalance}) on ${userPublicKey} to pay trustline fees. ` +
+          'Configure MASTER_WALLET_* to sponsor trustlines when STELLAR_FUNDING_AMOUNT_XLM=1.'
       );
     }
 
@@ -285,7 +378,7 @@ async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
       )
       .setTimeout(60)
       .build();
-    tx.sign(keypair);
+    tx.sign(userKeypair);
     await server.submitTransaction(tx);
     await new Promise((r) => setTimeout(r, 800));
   }

@@ -14,17 +14,15 @@ import DBService from '../../shared/services/db.service';
 import enums from '../../shared/lib/enums';
 import config from '../../config/env';
 import {
-  DISPLAY_CURRENCIES,
   LOCAL_SPEND_CURRENCY,
   PRIMARY_CURRENCY,
   WALLET_PROVIDER,
   formatLedgerBalances,
   formatPrdWalletDetails,
 } from './walletModel';
-import { creditUsdInflow, creditWalletInflow } from './inflowService';
+import { creditUsdInflow } from './inflowService';
 import { normalizeDayfiId } from '../authentication/socialAuth';
 import {
-  sumBalancesToUsd,
   ensurePlatformExchangeRates,
   resolveExchangeRate,
   convertAmountBetween,
@@ -33,6 +31,8 @@ import {
 import {
   debitWalletBalance,
   creditWalletBalance,
+  debitUsdBalance,
+  creditUsdBalance,
   buildIdempotencyKey,
   newReference,
 } from './balanceService';
@@ -226,17 +226,13 @@ class PaymentService {
   }
 
   /**
-   * PRD V1: USD, GBP, EUR, NGN ledger wallets.
+   * Global wallet: USD ledger + NGN row for Flutterwave VA metadata only.
    */
   async ensureUserLedgerWallets(userId: string): Promise<Record<string, Wallet>> {
     await ensurePlatformExchangeRates();
-    const entries = await Promise.all(
-      DISPLAY_CURRENCIES.map(async (currency) => {
-        const wallet = await this.ensureWalletForCurrency(userId, currency);
-        return [currency, wallet] as const;
-      })
-    );
-    return Object.fromEntries(entries);
+    const usd = await this.ensureUsdWallet(userId);
+    const ngn = await this.ensureNgnWallet(userId);
+    return { USD: usd, NGN: ngn };
   }
 
   async getWalletByCurrency(
@@ -251,48 +247,32 @@ class PaymentService {
   }
 
   async sumWalletBalancesUsd(userId: string): Promise<number> {
-    const wallets = await this.getWalletsByUserId(userId);
-    return sumBalancesToUsd(
-      wallets.map((w: Wallet) => ({
-        currency: w.currency,
-        balance: Number(w.balance ?? 0),
-      }))
-    );
+    const usd = await this.getUsdWallet(userId);
+    return Number(usd?.balance ?? 0);
   }
 
-  formatPrdWalletResponse(wallets: Wallet[]) {
-    return formatPrdWalletDetails(
-      wallets as any,
-      0
-    );
+  async formatPrdWalletResponse(wallets: Wallet[]) {
+    return formatPrdWalletDetails(wallets as any);
   }
 
   /**
-   * Credit inbound funds to the wallet matching [targetCurrency] (PRD).
+   * Credit inbound funds to the unified USD ledger (FX at credit time).
    */
   async creditWalletInflow(
     userId: string,
     amount: number,
     fromCurrency: string,
-    targetCurrency: string,
+    _targetCurrency: string,
     source: 'grey' | 'stellar' | 'yellowcard' | 'flutterwave' | 'manual',
     externalReference: string
   ) {
-    const target = String(targetCurrency).toUpperCase();
-    await this.ensureWalletForCurrency(userId, target);
-    const wallet = await this.getWalletByCurrency(userId, target);
-    if (!wallet) {
-      throw new Error(`Wallet not found for ${target}`);
-    }
-    return creditWalletInflow({
+    return this.creditUnifiedUsdInflow(
       userId,
-      walletId: wallet.wallet_id,
-      targetCurrency: target,
       amount,
       fromCurrency,
-      source,
-      externalReference,
-    });
+      source === 'flutterwave' ? 'manual' : source,
+      externalReference
+    );
   }
 
   /** @deprecated Use [ensureUserLedgerWallets] or [ensureUsdWallet]. */
@@ -553,7 +533,7 @@ class PaymentService {
     bankName: string,
     fee: string,
     userId: string,
-    walletId: string,
+    _walletId: string,
     spendCurrency: string
   ): Promise<any> {
     const reference = `bank-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
@@ -568,23 +548,23 @@ class PaymentService {
     const feeNum = Number(fee) || 0;
     const totalDebit = amount + feeNum;
 
-    await db.tx(async (t) => {
-      const wallet = await t.oneOrNone<{ balance: string; currency: string }>(
-        `SELECT balance, currency FROM wallets WHERE wallet_id = $1 AND user_id = $2 FOR UPDATE`,
-        [walletId, userId]
-      );
-      if (!wallet || wallet.currency !== LOCAL_SPEND_CURRENCY) {
-        throw new Error('NGN wallet required for local bank transfer');
-      }
-      if (Number(wallet.balance) < totalDebit) {
-        throw new Error(
-          `Insufficient NGN balance. You need ₦${totalDebit.toLocaleString()} (₦${amount.toLocaleString()} + ₦${feeNum.toLocaleString()} fee).`
-        );
-      }
-      await t.none(
-        `UPDATE wallets SET balance = balance - $1, updated_at = CURRENT_TIMESTAMP WHERE wallet_id = $2`,
-        [totalDebit, walletId]
-      );
+    const usdWallet = await this.ensureUsdWallet(userId);
+    const { usdAmount } = await convertAmountToUsd(totalDebit, LOCAL_SPEND_CURRENCY);
+    const debitKey = buildIdempotencyKey('bank_out', reference);
+
+    await debitUsdBalance({
+      userId,
+      walletId: usdWallet.wallet_id,
+      amountUsd: usdAmount,
+      source: 'bank_out',
+      idempotencyKey: debitKey,
+      externalReference: reference,
+      metadata: {
+        payWithCurrency: LOCAL_SPEND_CURRENCY,
+        ngnAmount: totalDebit,
+        payoutAmount: amount,
+        fee: feeNum,
+      },
     });
 
     const narration = 'Bank Transfer';
@@ -629,11 +609,15 @@ class PaymentService {
         message: 'Transfer initiated successfully',
       };
     } catch (err: unknown) {
-      await db.tx(async (t) => {
-        await t.none(
-          `UPDATE wallets SET balance = balance + $1, updated_at = CURRENT_TIMESTAMP WHERE wallet_id = $2`,
-          [totalDebit, walletId]
-        );
+      await creditUsdBalance({
+        userId,
+        walletId: usdWallet.wallet_id,
+        amount: usdAmount,
+        fromCurrency: PRIMARY_CURRENCY,
+        source: 'manual',
+        idempotencyKey: `${debitKey}-reversal`,
+        externalReference: `${reference}-reversal`,
+        metadata: { reversal: true, reason: 'bank_transfer_failed' },
       });
       const msg = flutterwaveErrorMessage(err, 'Flutterwave bank transfer failed');
       console.error(
@@ -1345,6 +1329,198 @@ class PaymentService {
       page: currentPage,
       limit,
     };
+  }
+
+  /**
+   * Wallet-funded Yellow Card payout: debit unified USD ledger, then disburse locally.
+   * Skips external YC collection — user already holds balance in-app.
+   */
+  async walletFundedYellowCardSend(
+    params: {
+      userId: string;
+      sender: {
+        name: string;
+        email: string;
+        phone: string;
+        country: string;
+      };
+      sendAmount: number;
+      payWithCurrency: string;
+      feeUsd: number;
+      receiveAmount: number;
+      receiveCurrency: string;
+      country: string;
+      channelId: string;
+      networkId: string;
+      accountNumber: string;
+      accountName: string;
+      accountType: string;
+      reason: string;
+      recipient: {
+        name: string;
+        country: string;
+        phone: string;
+        address: string;
+        dob: string;
+        email: string;
+        idNumber: string;
+        idType: string;
+      };
+    },
+    yellowCardService: {
+      createPaymentRequest: (payload: Record<string, unknown>) => Promise<unknown>;
+      isConfigured: () => boolean;
+    }
+  ): Promise<{ collectionSequenceId: string; paymentSequenceId: string; payment: unknown }> {
+    if (!yellowCardService.isConfigured()) {
+      throw new Error('Yellow Card is not configured');
+    }
+
+    const payWith = String(params.payWithCurrency || PRIMARY_CURRENCY)
+      .trim()
+      .toUpperCase();
+    const feeUsd = Number(params.feeUsd) || 0;
+    const sendAmount = Number(params.sendAmount);
+    const receiveAmount = Number(params.receiveAmount);
+    const receiveCurrency = String(params.receiveCurrency).trim().toUpperCase();
+    const reason = String(params.reason || 'other').toLowerCase();
+
+    if (!Number.isFinite(sendAmount) || sendAmount <= 0) {
+      throw new Error('Invalid send amount');
+    }
+    if (!Number.isFinite(receiveAmount) || receiveAmount <= 0) {
+      throw new Error('Invalid receive amount');
+    }
+
+    const { usdAmount: sendUsd } = await convertAmountToUsd(sendAmount, payWith);
+    const totalUsd = Number((sendUsd + feeUsd).toFixed(8));
+    const usdWallet = await this.ensureUsdWallet(params.userId);
+    const collectionSequenceId = crypto.randomUUID();
+    const paymentSequenceId = crypto.randomUUID();
+    const debitKey = buildIdempotencyKey('yc_send', collectionSequenceId);
+
+    await debitUsdBalance({
+      userId: params.userId,
+      walletId: usdWallet.wallet_id,
+      amountUsd: totalUsd,
+      source: 'yellowcard',
+      idempotencyKey: debitKey,
+      externalReference: collectionSequenceId,
+      metadata: {
+        payWithCurrency: payWith,
+        sendAmount,
+        feeUsd,
+        receiveAmount,
+        receiveCurrency,
+        channelId: params.channelId,
+        networkId: params.networkId,
+      },
+    });
+
+    const beneficiary = await this.createBeneficiary(
+      params.recipient.name,
+      params.recipient.country,
+      params.recipient.phone,
+      params.recipient.address,
+      params.recipient.dob,
+      params.recipient.email,
+      params.recipient.idNumber,
+      params.recipient.idType,
+      params.userId
+    );
+
+    const savedSource = await this.createSource(
+      params.accountType,
+      params.accountNumber,
+      params.networkId,
+      beneficiary.id
+    );
+
+    await this.createWalletTransaction(
+      collectionSequenceId,
+      'success-collection',
+      reason,
+      sendAmount,
+      params.channelId,
+      params.networkId,
+      beneficiary.id,
+      params.userId,
+      savedSource.id
+    );
+
+    const ycPayload = {
+      sequenceId: paymentSequenceId,
+      channelId: params.channelId,
+      currency: receiveCurrency,
+      country: params.country,
+      localAmount: receiveAmount,
+      reason,
+      forceAccept: true,
+      destination: {
+        accountNumber: params.accountNumber,
+        accountType: params.accountType,
+        country: params.country,
+        networkId: params.networkId,
+        accountName: params.accountName,
+      },
+      sender: {
+        name: params.sender.name,
+        email: params.sender.email,
+        phone: params.sender.phone,
+        country: params.sender.country,
+      },
+      metadata: {
+        collectionSequenceId,
+        fundSource: 'dayfi_wallet',
+      },
+    };
+
+    try {
+      const payment = await yellowCardService.createPaymentRequest(ycPayload);
+
+      await this.updateTransactionToPayment(
+        collectionSequenceId,
+        paymentSequenceId,
+        params.channelId,
+        params.networkId,
+        receiveAmount,
+        reason
+      );
+
+      await recordWalletActivity({
+        userId: params.userId,
+        id: collectionSequenceId,
+        direction: 'debit',
+        amount: sendAmount,
+        currency: payWith,
+        source: 'yellowcard',
+        title: `Transfer to ${params.accountName}`,
+        reason,
+        channel: 'bank',
+        status: 'pending-payment',
+        beneficiaryName: params.accountName,
+        accountNumber: params.accountNumber,
+        networkId: params.networkId,
+        beneficiaryCountry: params.country,
+        externalReference: paymentSequenceId,
+      });
+
+      return { collectionSequenceId, paymentSequenceId, payment };
+    } catch (err: unknown) {
+      await creditUsdBalance({
+        userId: params.userId,
+        walletId: usdWallet.wallet_id,
+        amount: totalUsd,
+        fromCurrency: PRIMARY_CURRENCY,
+        source: 'manual',
+        idempotencyKey: `${debitKey}-reversal`,
+        externalReference: `${collectionSequenceId}-reversal`,
+      }).catch(() => undefined);
+      await this.updateTransactionStatus(collectionSequenceId, 'failed-collection').catch(
+        () => undefined
+      );
+      throw err;
+    }
   }
 }
 

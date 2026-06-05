@@ -535,6 +535,41 @@ class PaymentValidator {
     this.validateRequestBody(req, res, next, schema, 'createPaymentRequest');
   };
 
+  walletFundedYellowCardSend = (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+    const schema = Joi.object({
+      sendAmount: Joi.number().positive().required(),
+      receiveAmount: Joi.number().positive().required(),
+      receiveCurrency: Joi.string().required(),
+      country: Joi.string().required(),
+      channelId: Joi.string().required(),
+      networkId: Joi.string().required(),
+      accountNumber: Joi.string().required(),
+      accountName: Joi.string().required(),
+      accountType: Joi.string().default('bank'),
+      reason: Joi.string().default('other'),
+      fee: Joi.number().min(0).default(0.1),
+      spendCurrency: Joi.string().default('USD'),
+      debitCurrency: Joi.string().optional(),
+      pin: Joi.string().required(),
+      recipient: Joi.object({
+        name: Joi.string().required(),
+        country: Joi.string().required(),
+        phone: Joi.string().required(),
+        address: Joi.string().required(),
+        dob: Joi.string().required(),
+        email: Joi.string().email().required(),
+        idNumber: Joi.string().required(),
+        idType: Joi.string().required(),
+      }).optional(),
+    });
+
+    this.validateRequestBody(req, res, next, schema, 'walletFundedYellowCardSend');
+  };
+
   sendCrypto = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       to: Joi.string().trim().required(),

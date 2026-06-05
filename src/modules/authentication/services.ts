@@ -299,7 +299,7 @@ class AuthService {
           bvn: normalizedBvn,
           firstname,
           lastname,
-          redirect_url: 'https://dayfi.com',
+          redirect_url: 'https://dayfi.co',
         },
         { headers }
       );

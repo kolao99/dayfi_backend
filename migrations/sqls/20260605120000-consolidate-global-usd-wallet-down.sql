@@ -1,0 +1,1 @@
+-- Irreversible in production — balances were merged into USD. No automatic rollback.

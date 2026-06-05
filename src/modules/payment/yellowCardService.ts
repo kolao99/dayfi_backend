@@ -6,6 +6,29 @@ function normalizeBaseUrl(url: string): string {
   return String(url ?? '').trim().replace(/\/+$/, '');
 }
 
+/** Normalize GET /business/channels body to a flat array for mobile `{ channels: [...] }`. */
+export function parseYellowCardChannelList(raw: unknown): Record<string, unknown>[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((c) => c && typeof c === 'object') as Record<string, unknown>[];
+  }
+  if (raw && typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    if (Array.isArray(o.channels)) {
+      return o.channels.filter((c) => c && typeof c === 'object') as Record<
+        string,
+        unknown
+      >[];
+    }
+    if (Array.isArray(o.data)) {
+      return o.data.filter((c) => c && typeof c === 'object') as Record<
+        string,
+        unknown
+      >[];
+    }
+  }
+  return [];
+}
+
 function yellowCardAxiosDetail(err: unknown): string {
   if (!axios.isAxiosError(err)) {
     return err instanceof Error ? err.message : String(err);

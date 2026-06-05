@@ -10,9 +10,10 @@ import {
 } from './flutterwaveService';
 import {
   convertAmountToUsd,
-  creditWalletBalance,
-  debitWalletBalance,
+  debitUsdBalance,
+  creditUsdBalance,
 } from './balanceService';
+import { PRIMARY_CURRENCY } from './walletModel';
 import { recordWalletActivity } from './walletActivityService';
 
 const SKIP_VALIDATE_CATEGORIES = new Set(['AIRTIME', 'MOBILEDATA']);
@@ -68,20 +69,21 @@ export class BillsService {
       throw new Error('Invalid bill amount');
     }
 
-    const wallet = await db.oneOrNone<{
+    const usdWallet = await db.oneOrNone<{
       wallet_id: string;
       balance: string;
-      currency: string;
     }>(
-      `SELECT wallet_id, balance, currency FROM wallets
-       WHERE user_id = $1 AND currency = 'NGN' LIMIT 1`,
-      [userId]
+      `SELECT wallet_id, balance FROM wallets
+       WHERE user_id = $1 AND currency = $2 LIMIT 1`,
+      [userId, PRIMARY_CURRENCY]
     );
-    if (!wallet) {
-      throw new Error('NGN wallet required for bill payments');
+    if (!usdWallet) {
+      throw new Error('Wallet not found');
     }
-    if (Number(wallet.balance) < amount) {
-      throw new Error('Insufficient NGN balance');
+
+    const { usdAmount } = await convertAmountToUsd(amount, 'NGN');
+    if (Number(usdWallet.balance) < usdAmount) {
+      throw new Error('Insufficient balance');
     }
 
     const reference = `dayfi-bill-${crypto.randomUUID()}`;
@@ -96,15 +98,16 @@ export class BillsService {
       });
     }
 
-    await debitWalletBalance({
+    await debitUsdBalance({
       userId,
-      walletId: wallet.wallet_id,
-      amount,
-      currency: 'NGN',
+      walletId: usdWallet.wallet_id,
+      amountUsd: usdAmount,
       source: 'bill_pay',
       idempotencyKey,
       externalReference: reference,
       metadata: {
+        payWithCurrency: 'NGN',
+        ngnAmount: amount,
         categoryCode: params.categoryCode,
         billerCode: params.billerCode,
         itemCode: params.itemCode,
@@ -125,13 +128,11 @@ export class BillsService {
         country: 'NG',
       });
     } catch (err) {
-      const { usdAmount } = await convertAmountToUsd(amount, 'NGN');
-      await creditWalletBalance({
+      await creditUsdBalance({
         userId,
-        walletId: wallet.wallet_id,
-        amount,
-        currency: 'NGN',
-        usdEquivalent: usdAmount,
+        walletId: usdWallet.wallet_id,
+        amount: usdAmount,
+        fromCurrency: PRIMARY_CURRENCY,
         source: 'manual',
         idempotencyKey: `${idempotencyKey}-reversal`,
         externalReference: `${reference}-reversal`,
@@ -172,14 +173,16 @@ export class BillsService {
 
     const updated = await db.one<{ balance: string }>(
       `SELECT balance FROM wallets WHERE wallet_id = $1`,
-      [wallet.wallet_id]
+      [usdWallet.wallet_id]
     );
 
     return {
       reference,
       amount,
       currency: 'NGN',
+      debitedUsd: usdAmount,
       newBalance: Number(updated.balance),
+      newBalanceCurrency: PRIMARY_CURRENCY,
       flutterwave: fwResult,
       status: statusData,
       rechargeToken:

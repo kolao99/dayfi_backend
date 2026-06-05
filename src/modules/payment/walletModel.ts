@@ -1,9 +1,10 @@
 /**
- * PRD V1: four visible wallets (USD, GBP, EUR, NGN) + total in USD equivalent.
+ * Global wallet: one USD ledger balance; USD/GBP/EUR/NGN are display / pay-with views.
  * @see docs/PAYMENTS_ARCHITECTURE.md
  */
 
 import config from '../../config/env';
+import { convertAmountBetween } from './fxService';
 
 export const PRIMARY_CURRENCY = 'USD' as const;
 export const LOCAL_SPEND_CURRENCY = 'NGN' as const;
@@ -106,23 +107,63 @@ function walletBalance(wallets: WalletRow[], currency: string): number {
   return Number(row?.balance ?? 0);
 }
 
-/** Per-currency row for mobile home + add-money */
-export function formatWalletBalanceRows(wallets: WalletRow[]) {
-  return DISPLAY_CURRENCIES.map((currency) => {
-    const balance = walletBalance(wallets, currency);
-    const row = wallets.find(
-      (w) => String(w.currency).toUpperCase() === currency
+/** USD ledger balance (single source of truth). */
+export function usdLedgerBalance(wallets: WalletRow[]): number {
+  return walletBalance(wallets, PRIMARY_CURRENCY);
+}
+
+/** Display rows — same global balance shown in each pay/display currency. */
+export async function formatGlobalDisplayRows(
+  usdBalance: number,
+  wallets: WalletRow[] = []
+) {
+  const usdRow = wallets.find(
+    (w) => String(w.currency).toUpperCase() === PRIMARY_CURRENCY
+  );
+  const ngnRow = wallets.find(
+    (w) => String(w.currency).toUpperCase() === LOCAL_SPEND_CURRENCY
+  );
+
+  const rows = [];
+  for (const currency of DISPLAY_CURRENCIES) {
+    const { amount } = await convertAmountBetween(
+      usdBalance,
+      PRIMARY_CURRENCY,
+      currency
     );
-    return {
+    rows.push({
       currency,
       name: WALLET_LABELS[currency] ?? currency,
-      balance,
-      formattedBalance: formatMoney(balance, currency),
-      walletId: row?.wallet_id ?? null,
-      accountNumber: row?.account_number ?? null,
-      bankName: row?.bank_name ?? null,
-    };
-  });
+      balance: amount,
+      formattedBalance: formatMoney(amount, currency),
+      walletId: usdRow?.wallet_id ?? null,
+      displayOnly: true,
+      accountNumber:
+        currency === LOCAL_SPEND_CURRENCY
+          ? ngnRow?.account_number ?? null
+          : null,
+      bankName:
+        currency === LOCAL_SPEND_CURRENCY ? ngnRow?.bank_name ?? null : null,
+    });
+  }
+  return rows;
+}
+
+/** @deprecated Use [formatGlobalDisplayRows]. Kept for legacy callers. */
+export function formatWalletBalanceRows(wallets: WalletRow[]) {
+  const usd = usdLedgerBalance(wallets);
+  return DISPLAY_CURRENCIES.map((currency) => ({
+    currency,
+    name: WALLET_LABELS[currency] ?? currency,
+    balance: usd,
+    formattedBalance: formatMoney(usd, PRIMARY_CURRENCY),
+    walletId:
+      wallets.find((w) => String(w.currency).toUpperCase() === PRIMARY_CURRENCY)
+        ?.wallet_id ?? null,
+    displayOnly: true,
+    accountNumber: null,
+    bankName: null,
+  }));
 }
 
 /** Legacy shape — kept for older clients */
@@ -147,23 +188,30 @@ export function formatLedgerBalances(wallets: WalletRow[]) {
 }
 
 /**
- * PRD home response: sum of all wallet balances in USD equivalent.
+ * Global wallet hub response — USD ledger total + display-currency views.
  */
-export function formatPrdWalletDetails(
+export async function formatPrdWalletDetails(
   wallets: WalletRow[],
-  totalUsdEquivalent: number
+  totalUsdEquivalent?: number
 ) {
-  const walletBalances = formatWalletBalanceRows(wallets);
+  const usdBalance =
+    totalUsdEquivalent != null
+      ? Number(totalUsdEquivalent)
+      : usdLedgerBalance(wallets);
+  const walletBalances = await formatGlobalDisplayRows(usdBalance, wallets);
   const ledger = formatLedgerBalances(wallets);
 
   return {
+    globalWallet: {
+      ledgerCurrency: PRIMARY_CURRENCY,
+      balanceUsd: usdBalance,
+    },
     totalAvailableBalance: {
       currency: PRIMARY_CURRENCY,
-      amount: totalUsdEquivalent,
-      formatted: formatMoney(totalUsdEquivalent, PRIMARY_CURRENCY),
+      amount: usdBalance,
+      formatted: formatMoney(usdBalance, PRIMARY_CURRENCY),
     },
     walletBalances,
-    /** Alias for PRD GET /wallets/balances */
     balances: walletBalances.reduce(
       (acc, w) => {
         acc[w.currency] = w.balance;
@@ -235,8 +283,7 @@ export function formatGreyAccountForUi(
     request_bank_account: 'Request bank account',
   };
 
-  const balance =
-    ledgerBalance != null ? ledgerBalance : 0;
+  const balance = ledgerBalance != null ? ledgerBalance : 0;
 
   const hasDisplayDetails = Boolean(accountNumber || iban);
 
@@ -257,7 +304,7 @@ export function formatGreyAccountForUi(
     routingNumber,
     rails: meta.rails ?? [],
     provider: currency === 'NGN' ? 'flutterwave' : 'grey',
-    creditsTo: currency,
+    creditsTo: PRIMARY_CURRENCY,
   };
 }
 
@@ -270,9 +317,6 @@ export function formatGreyAccountsList(
     (a, b) =>
       order.indexOf(String(a.currency)) - order.indexOf(String(b.currency))
   );
-  return sorted.map((row) => {
-    const c = String(row.currency ?? '').toUpperCase();
-    const bal = walletBalance(wallets, c);
-    return formatGreyAccountForUi(row, bal);
-  });
+  const globalUsd = usdLedgerBalance(wallets);
+  return sorted.map((row) => formatGreyAccountForUi(row, globalUsd));
 }

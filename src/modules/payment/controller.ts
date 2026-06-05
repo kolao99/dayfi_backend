@@ -2,15 +2,17 @@ import { Request, Response } from 'express';
 import PaymentService from './services';
 import { errorResponse, success } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
-import YellowCardService from './yellowCardService';
+import YellowCardService, {
+  parseYellowCardChannelList,
+} from './yellowCardService';
 import GreyService from './greyService';
 import config from '../../config/env';
 import {
   PRIMARY_CURRENCY,
   formatGreyAccountsList,
   formatPrdWalletDetails,
+  usdLedgerBalance,
 } from './walletModel';
-import { sumBalancesToUsd } from './fxService';
 import {
   enqueueCryptoWalletProvision,
   provisionCryptoWalletsForUser,
@@ -267,14 +269,9 @@ class PaymentController {
         userId
       );
 
-      const totalUsd = await sumBalancesToUsd(
-        wallets.map((w: any) => ({
-          currency: w.currency,
-          balance: Number(w.balance ?? 0),
-        }))
-      );
+      const totalUsd = usdLedgerBalance(wallets as any);
       const data = {
-        ...formatPrdWalletDetails(wallets as any, totalUsd),
+        ...(await formatPrdWalletDetails(wallets as any, totalUsd)),
         stellarReceive: {
           address: stellarDepositAddress,
           network: process.env.STELLAR_NETWORK || 'testnet',
@@ -678,69 +675,55 @@ class PaymentController {
     }
   };
 
-  swapCurrency = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const { fromCurrency, toCurrency, amount } = req.body;
-      const { user } = req;
-
-      const result = await this.paymentService.swapCurrency(
-        user?.user_id,
-        fromCurrency,
-        toCurrency,
-        Number(amount)
-      );
-
-      console.log(
-        `${enums.CURRENT_TIME_STAMP}, Info: Currency swap successful`
-      );
-      success(res, 'Currency swapped successfully', enums.HTTP_OK, result);
-    } catch (err: any) {
-      console.error(`Error occurred while swapping currency: ${err.message}`);
-      errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
-    }
+  swapCurrency = async (_req: Request, res: Response): Promise<void> => {
+    errorResponse(
+      res,
+      'Currency swap is no longer available. You have one global balance — pick a pay-with currency when you send.',
+      enums.HTTP_GONE
+    );
   };
 
   fetchChannels = async (_req: Request, res: Response): Promise<any> => {
     try {
-      const channels = await this.yellowCardService.fetchChannels();
+      if (!this.yellowCardService.isConfigured()) {
+        return success(
+          res,
+          enums.FETCHED_SUCCESSFULLY('Channels'),
+          enums.HTTP_OK,
+          { channels: [] }
+        );
+      }
+      const raw = await this.yellowCardService.fetchChannels();
+      const channels = parseYellowCardChannelList(raw);
       return success(
         res,
         enums.FETCHED_SUCCESSFULLY('Channels'),
         enums.HTTP_OK,
-        channels
+        { channels }
       );
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
   };
 
+  /**
+   * Yellow Card networks only (ZA, KE, GH, …).
+   * Nigerian banks: GET /payments/banks/ng (Flutterwave).
+   */
   fetchNetworks = async (_req: Request, res: Response): Promise<any> => {
     try {
-      // NGN bank payouts use Flutterwave — prefer FW bank list; Yellow Card as fallback.
-      let networks: unknown[] = [];
-      try {
-        networks = await this.paymentService.fetchNigerianBankNetworks();
-      } catch (fwErr: unknown) {
-        console.warn(
-          `[fetchNetworks] Flutterwave banks unavailable: ${
-            fwErr instanceof Error ? fwErr.message : String(fwErr)
-          }`
+      if (!this.yellowCardService.isConfigured()) {
+        return success(
+          res,
+          enums.FETCHED_SUCCESSFULLY('Networks'),
+          enums.HTTP_OK,
+          { networks: [] }
         );
       }
 
-      if (!networks.length) {
-        try {
-          const yc = await this.yellowCardService.fetchNetworks();
-          const raw = (yc as { networks?: unknown[] })?.networks ?? yc;
-          if (Array.isArray(raw)) networks = raw;
-        } catch (ycErr: unknown) {
-          console.warn(
-            `[fetchNetworks] Yellow Card unavailable: ${
-              ycErr instanceof Error ? ycErr.message : String(ycErr)
-            }`
-          );
-        }
-      }
+      const yc = await this.yellowCardService.fetchNetworks();
+      const raw = (yc as { networks?: unknown[] })?.networks ?? yc;
+      const networks = Array.isArray(raw) ? raw : [];
 
       return success(
         res,
@@ -748,8 +731,18 @@ class PaymentController {
         enums.HTTP_OK,
         { networks }
       );
-    } catch (err: any) {
-      return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
+    } catch (ycErr: unknown) {
+      console.warn(
+        `[fetchNetworks] Yellow Card unavailable: ${
+          ycErr instanceof Error ? ycErr.message : String(ycErr)
+        }`
+      );
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Networks'),
+        enums.HTTP_OK,
+        { networks: [] }
+      );
     }
   };
 
@@ -852,14 +845,7 @@ class PaymentController {
       }
 
       const raw = await this.yellowCardService.fetchChannels();
-      let list: any[] = [];
-      if (Array.isArray(raw)) {
-        list = raw;
-      } else if (raw && typeof raw === 'object' && Array.isArray((raw as any).channels)) {
-        list = (raw as any).channels;
-      } else if (raw && typeof raw === 'object' && Array.isArray((raw as any).data)) {
-        list = (raw as any).data;
-      }
+      const list = parseYellowCardChannelList(raw);
 
       return success(
         res,
@@ -1020,7 +1006,7 @@ class PaymentController {
       const { accountNumber, networkId, bankCode } = req.body;
       const fwBankCode = String(bankCode || networkId || '').trim();
 
-      // Nigeria domestic: Flutterwave V3 account resolve (primary for NGN bank transfers).
+      // Nigeria domestic: Flutterwave only (NGN bank transfers).
       if (fwBankCode && /^\d{3,6}$/.test(fwBankCode)) {
         const resolved = await this.paymentService.resolveBankAccount(
           accountNumber,
@@ -1039,7 +1025,7 @@ class PaymentController {
         );
       }
 
-      // Yellow Card fallback when Flutterwave bank code is unavailable.
+      // Cross-border corridors: Yellow Card account resolve (non-NGN numeric codes).
       try {
         const bankDetails = await this.yellowCardService.resolveBankDetailsYC(
           accountNumber,
@@ -1132,10 +1118,126 @@ class PaymentController {
   };
 
   fetchFees = async (_req: Request, res: Response): Promise<any> => {
+    const feeUsd = Number(process.env.DAYFI_TRANSFER_FEE_USD ?? 0.1);
     return success(res, enums.FETCHED_SUCCESSFULLY('Fees'), enums.HTTP_OK, {
-      transfer: { dayfi_to_dayfi: 0, dayfi_to_bank: 10 },
+      currency: 'USD',
+      transfer: {
+        dayfi_to_dayfi: 0,
+        dayfi_to_bank:
+          Number.isFinite(feeUsd) && feeUsd >= 0 ? feeUsd : 0.1,
+      },
       withdrawal: { local: 0, international: 0 },
     });
+  };
+
+  walletFundedYellowCardSend = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
+    try {
+      const user = req.user;
+      const userId = user?.user_id as string;
+      const {
+        sendAmount,
+        receiveAmount,
+        receiveCurrency,
+        country,
+        channelId,
+        networkId,
+        accountNumber,
+        accountName,
+        accountType = 'bank',
+        reason = 'other',
+        fee = 0.1,
+        spendCurrency = PRIMARY_CURRENCY,
+        recipient,
+      } = req.body;
+
+      const senderName =
+        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() ||
+        'Dayfi User';
+      const recipientPayload = recipient ?? {
+        name: accountName,
+        country,
+        phone: user?.phone_number ?? '+2340000000000',
+        address: 'Not provided',
+        dob: '1990-01-01',
+        email: user?.email ?? 'user@dayfi.co',
+        idNumber: 'A00000000',
+        idType: 'passport',
+      };
+
+      const result = await this.paymentService.walletFundedYellowCardSend(
+        {
+          userId,
+          sender: {
+            name: senderName,
+            email: user?.email ?? '',
+            phone: user?.phone_number ?? '',
+            country: String(spendCurrency).toUpperCase() === 'NGN' ? 'NG' : 'US',
+          },
+          sendAmount: Number(sendAmount),
+          payWithCurrency: String(spendCurrency).toUpperCase(),
+          feeUsd: Number(fee),
+          receiveAmount: Number(receiveAmount),
+          receiveCurrency: String(receiveCurrency).toUpperCase(),
+          country: String(country).toUpperCase(),
+          channelId: String(channelId),
+          networkId: String(networkId),
+          accountNumber: String(accountNumber),
+          accountName: String(accountName),
+          accountType: String(accountType),
+          reason: String(reason).toLowerCase(),
+          recipient: recipientPayload,
+        },
+        this.yellowCardService
+      );
+
+      return success(
+        res,
+        enums.CREATED_SUCCESSFULLY('Transfer'),
+        enums.HTTP_CREATED,
+        {
+          collectionSequenceId: result.collectionSequenceId,
+          paymentSequenceId: result.paymentSequenceId,
+          sequenceId: result.paymentSequenceId,
+          id: result.paymentSequenceId,
+          payment: result.payment,
+        }
+      );
+    } catch (err: any) {
+      const msg = err?.message ?? 'Unable to initiate transfer';
+      const status = /insufficient|yellow card|invalid|configure/i.test(msg)
+        ? enums.HTTP_BAD_REQUEST
+        : enums.HTTP_INTERNAL_SERVER_ERROR;
+      return errorResponse(res, msg, status);
+    }
+  };
+
+  getCollectionStatus = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id as string;
+      const { sequenceId } = req.params;
+      const row = await db.oneOrNone<{ status: string }>(
+        `SELECT status FROM wallet_transactions WHERE id = $1 AND user_id = $2`,
+        [sequenceId, userId]
+      );
+      if (!row) {
+        return errorResponse(res, 'Transaction not found', enums.HTTP_NOT_FOUND);
+      }
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Collection status'),
+        enums.HTTP_OK,
+        { status: row.status, sequenceId }
+      );
+    } catch (err: any) {
+      return errorResponse(
+        res,
+        err?.message ?? 'Unable to read status',
+        enums.HTTP_INTERNAL_SERVER_ERROR
+      );
+    }
   };
 
   startWalletProvision = async (req: Request, res: Response): Promise<any> => {
@@ -1276,12 +1378,7 @@ class PaymentController {
       );
       const wallets = await this.paymentService.getWalletsByUserId(user?.user_id);
       const accounts = formatGreyAccountsList(accountsRaw, wallets as any);
-      const totalUsd = await sumBalancesToUsd(
-        wallets.map((w: any) => ({
-          currency: w.currency,
-          balance: Number(w.balance ?? 0),
-        }))
-      );
+      const totalUsd = usdLedgerBalance(wallets as any);
 
       let providerSnapshot: unknown = null;
       if (this.greyService.isConfigured()) {
@@ -1301,17 +1398,17 @@ class PaymentController {
           totalAvailableBalance: {
             currency: PRIMARY_CURRENCY,
             amount: totalUsd,
-            formatted: formatPrdWalletDetails(wallets as any, totalUsd)
+            formatted: (await formatPrdWalletDetails(wallets as any, totalUsd))
               .totalAvailableBalance.formatted,
           },
           operatingAccounts: accounts,
           accounts,
           providerSnapshot,
           inflowPolicy: {
-            USD: 'Credits USD wallet',
-            EUR: 'Credits EUR wallet',
-            GBP: 'Credits GBP wallet',
-            NGN: 'Credits NGN wallet (Flutterwave)',
+            USD: 'Credits global balance (USD ledger)',
+            EUR: 'Credits global balance (USD ledger)',
+            GBP: 'Credits global balance (USD ledger)',
+            NGN: 'Credits global balance (USD ledger)',
           },
         }
       );
@@ -1454,12 +1551,7 @@ class PaymentController {
         walletsByCurrency,
       });
       const wallets = await this.paymentService.getWalletsByUserId(userId);
-      const totalUsd = await sumBalancesToUsd(
-        wallets.map((w: any) => ({
-          currency: w.currency,
-          balance: Number(w.balance ?? 0),
-        }))
-      );
+      const totalUsd = usdLedgerBalance(wallets as any);
 
       return success(
         res,
@@ -1467,7 +1559,7 @@ class PaymentController {
         enums.HTTP_OK,
         {
           sync,
-          walletDetails: formatPrdWalletDetails(wallets as any, totalUsd),
+          walletDetails: await formatPrdWalletDetails(wallets as any, totalUsd),
         }
       );
     } catch (err: any) {

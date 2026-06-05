@@ -1,14 +1,14 @@
 /**
- * Wipes users and related app data for a clean signup test.
+ * Wipes users and related app data for a clean signup / prod reset.
  *
- * Local:
+ * Local Docker:
  *   npm run db:clear-users
  *
- * Railway (destructive — all users on that DB):
+ * Production Railway Postgres (destructive):
  *   CONFIRM_RAILWAY_CLEAR=yes DAYFI_DATABASE_URL='postgresql://...' npm run db:clear-users
  *
- * Or after `railway login` && `railway link`:
- *   CONFIRM_RAILWAY_CLEAR=yes railway run npm run db:clear-users
+ * From VPS deploy/.env (api.dayfi.co → Railway DB):
+ *   CONFIRM_RAILWAY_CLEAR=yes $(grep ^DAYFI_DATABASE_URL= deploy/.env | xargs) npm run db:clear-users
  */
 import { db } from '../src/config/database';
 
@@ -51,10 +51,24 @@ async function main() {
   const hostHint = connectionString.replace(/:[^:@]+@/, ':***@');
   console.log(`Clearing users and related data on: ${hostHint}`);
   if (onRailway) {
-    console.log('⚠️  RAILWAY / PRODUCTION DATABASE');
+    console.log('⚠️  REMOTE / PRODUCTION DATABASE (Railway)');
   }
 
+  const userCountBefore = await db.oneOrNone<{ n: string }>(
+    'SELECT COUNT(*)::text AS n FROM users'
+  );
+  console.log(`  users before: ${userCountBefore?.n ?? '?'}`);
+
+  // Child tables first (FK order). exchange_rates is global — not cleared.
   const tables = [
+    'dayearn_movements',
+    'dayearn_pots',
+    'dayflow_flows',
+    'dayflow_plans',
+    'dayflow_income_ack',
+    'dayflow_plan_templates',
+    'budgets',
+    'user_notifications',
     'investment_movements',
     'investment_positions',
     'investment_pockets',
@@ -64,8 +78,8 @@ async function main() {
     'source',
     'beneficiaries',
     'grey_virtual_accounts',
-    'wallets',
     'wallet_currency_swaps',
+    'wallets',
     'blacklisted_jwt_tokens',
     'users',
   ];
@@ -87,8 +101,12 @@ async function main() {
   const userCount = await db.oneOrNone<{ n: string }>(
     'SELECT COUNT(*)::text AS n FROM users'
   );
+  const txCount = await db.oneOrNone<{ n: string }>(
+    'SELECT COUNT(*)::text AS n FROM wallet_transactions'
+  );
   console.log(`  users remaining: ${userCount?.n ?? '?'}`);
-  console.log('Done. You can sign up fresh on this database.');
+  console.log(`  wallet_transactions remaining: ${txCount?.n ?? '?'}`);
+  console.log('Done. Fresh signups allowed on this database.');
   process.exit(0);
 }
 

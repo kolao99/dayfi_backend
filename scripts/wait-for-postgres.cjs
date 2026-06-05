@@ -4,9 +4,22 @@
  */
 const { Client } = require('pg');
 
-const url = (process.env.DAYFI_DATABASE_URL || process.env.DATABASE_URL || '').trim();
+let url = (process.env.DAYFI_DATABASE_URL || process.env.DATABASE_URL || '').trim();
+// docker env_file / dotenv may leave surrounding quotes
+if (
+  (url.startsWith('"') && url.endsWith('"')) ||
+  (url.startsWith("'") && url.endsWith("'"))
+) {
+  url = url.slice(1, -1);
+}
 if (!url) {
   console.error('Set DAYFI_DATABASE_URL in .env');
+  process.exit(1);
+}
+if (url.includes('railway.internal')) {
+  console.error(
+    'DAYFI_DATABASE_URL uses railway.internal — that only works on Railway. Use the public *.railway.app URL from Postgres → Connect → Public networking.'
+  );
   process.exit(1);
 }
 

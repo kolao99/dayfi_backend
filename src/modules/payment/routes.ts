@@ -141,6 +141,7 @@ Router.post(
   authMiddleware.validateUserAuthToken,
   paymentValidator.bankTransfer,
   paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.withSpendCurrency('NGN'),
   paymentMiddleware.checkWalletExistsByUserId,
   paymentMiddleware.checkSufficientBalance,
   paymentController.bankTransfer
@@ -514,6 +515,24 @@ Router.post(
   authMiddleware.validateUserAuthToken,
   paymentValidator.createPaymentRequest,
   paymentController.createPaymentRequest
+);
+
+Router.post(
+  '/send/yellowcard',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentValidator.walletFundedYellowCardSend,
+  paymentMiddleware.validatePasswordOrPin('pin'),
+  paymentMiddleware.checkWalletExistsByUserId,
+  paymentMiddleware.checkSufficientBalance,
+  paymentController.walletFundedYellowCardSend
+);
+
+Router.get(
+  '/collection-status/:sequenceId',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  paymentController.getCollectionStatus
 );
 
 Router.post(

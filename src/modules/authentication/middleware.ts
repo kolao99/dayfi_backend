@@ -55,6 +55,7 @@ class AuthMiddleware {
           'OTP has expired, :::AuthController:: checkExpiry in auth.service.js'
         );
         errorResponse(res, enums.INVALID('OTP'), enums.HTTP_UNAUTHORIZED);
+        return;
       }
       console.log(
         `${enums.CURRENT_TIME_STAMP}, Info: OTP verification successful`

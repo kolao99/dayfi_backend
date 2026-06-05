@@ -6,6 +6,7 @@ import { db } from './config/database';
 import app from './config/express';
 import { AppEnv } from './shared/enums';
 import { envValidatorSchema } from './shared/validators/env-validator';
+import config from './config/env';
 
 function listenOnce(server: http.Server, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -42,6 +43,9 @@ async function main(app: Express): Promise<void> {
     app.set('trust proxy', 1);
   }
   await db.connect();
+
+  const jwtTtl = config?.JWT_TIME_TO_LIVE?.trim() || '30d (default)';
+  console.log(`Auth JWT time-to-live: ${jwtTtl}`);
 
   const {
     syncWalletExchangeRatesFromMarket,

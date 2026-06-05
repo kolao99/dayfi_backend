@@ -544,8 +544,9 @@ Onboarding creates **USD + NGN** ledger wallets via `ensureUserLedgerWallets`.
 - [ ] Run migrations: `npm run migrate:up`
 - [ ] Seed FX: `NGN→USD`, `USD→GHS`, etc. via `POST /payments/exchange-rate`
 - [ ] Set `DAYFI_GREY_*`, `DAYFI_YELLOWCARD_*`, `WALLET_ENCRYPTION_KEY`
-- [ ] Register webhooks: `/payments/grey/webhook`, `/payments/yc-webhook`
-- [ ] Whitelist Yellow Card outbound IP on Railway
+- [ ] Register webhooks: `/payments/grey/webhook`, `/payments/yc-webhook`, `/payments/webhooks/flutterwave`
+- [ ] Whitelist VPS outbound IPv4 at Flutterwave + Yellow Card (`docs/DEPLOY_VPS.md`, `npm run egress-ip`)
+- [ ] API on VPS with static IP (or Railway Pro static egress); Postgres can stay on Railway
 - [ ] Require transaction PIN before send/invest (`users.transaction_pin`)
 
 ## Changelog

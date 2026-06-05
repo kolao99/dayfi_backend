@@ -1,6 +1,7 @@
 import { db } from '../../config/database';
 import {
   buildIdempotencyKey,
+  debitUsdBalance,
   debitWalletBalance,
 } from './balanceService';
 import {
@@ -129,6 +130,30 @@ export async function recordCryptoOutboundLedger(params: {
         err instanceof Error ? err.message : String(err)
       }`
     );
+  }
+
+  const platformFeeUsd = Number(process.env.DAYFI_TRANSFER_FEE_USD ?? 0.1);
+  if (Number.isFinite(platformFeeUsd) && platformFeeUsd > 0) {
+    const usdWallet = await db.oneOrNone<{ wallet_id: string }>(
+      `SELECT wallet_id FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
+      [params.userId]
+    );
+    if (usdWallet?.wallet_id) {
+      await debitUsdBalance({
+        userId: params.userId,
+        walletId: usdWallet.wallet_id,
+        amountUsd: platformFeeUsd,
+        source: 'stellar',
+        idempotencyKey: buildIdempotencyKey('crypto-out-fee', params.txHash),
+        externalReference: `${reference}:fee`,
+        metadata: {
+          txHash: params.txHash,
+          feeType: 'platform',
+          asset,
+          network: activityNetwork,
+        },
+      });
+    }
   }
 
   return { skipped: false, newBalance: debit.newBalance };

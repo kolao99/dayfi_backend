@@ -4,6 +4,7 @@ import PaymentsService from './services';
 import enums from '../../shared/lib/enums';
 import HashText from '../../shared/services/hashing';
 import { DISPLAY_CURRENCIES, PRIMARY_CURRENCY } from './walletModel';
+import { convertAmountToUsd } from './fxService';
 
 class PaymentMiddleware {
   private readonly paymentsService: PaymentsService;
@@ -84,8 +85,8 @@ class PaymentMiddleware {
   };
 
   /**
-   * Loads the wallet used for balance checks.
-   * Default: unified USD. Legacy Nigeria bank transfer: `spendCurrency: NGN`.
+   * Loads the USD ledger wallet for balance checks.
+   * [spendCurrency] / [debitCurrency] on the request is the pay-with display currency only.
    */
   checkWalletExistsByUserId = async (
     req: Request,
@@ -108,44 +109,45 @@ class PaymentMiddleware {
       await this.paymentsService.ensureUserLedgerWallets(userId);
 
       const allowed = DISPLAY_CURRENCIES as readonly string[];
-      const currency = allowed.includes(spendCurrency)
+      const payWith = allowed.includes(spendCurrency)
         ? spendCurrency
         : PRIMARY_CURRENCY;
 
-      let wallet = await this.paymentsService.getWalletByCurrency(
+      const wallet = await this.paymentsService.getWalletByCurrency(
         userId,
-        currency
+        PRIMARY_CURRENCY
       );
 
       if (!wallet) {
-        wallet = await this.paymentsService.getWalletByUserId(userId);
-      }
-
-      if (!wallet) {
         console.log(
-          `${enums.CURRENT_TIME_STAMP}, Info: Wallet not found in checkWalletExists`
+          `${enums.CURRENT_TIME_STAMP}, Info: USD wallet not found in checkWalletExistsByUserId`
         );
         return errorResponse(res, 'Wallet not found', enums.HTTP_NOT_FOUND);
       }
 
       (req as any).wallet = wallet;
-      (req as any).spendCurrency = currency;
-      (req as any).debitCurrency = currency;
+      (req as any).spendCurrency = payWith;
+      (req as any).debitCurrency = payWith;
       return next();
     } catch (error) {
       next(error);
     }
   };
 
+  /** Compare pay-with amount + fee against unified USD ledger (FX at check time). */
   checkSufficientBalance = async (
     req: Request,
     res: Response,
     next: NextFunction
   ): Promise<any> => {
     try {
-      const amount: number = parseFloat(req.body.amount);
+      const amount: number = parseFloat(
+        req.body.amount ?? req.body.sendAmount
+      );
       const fee: number = parseFloat(req.body.fee) || 0;
       const wallet = (req as any).wallet;
+      const payWith: string =
+        (req as any).spendCurrency ?? PRIMARY_CURRENCY;
 
       if (!wallet) {
         return errorResponse(
@@ -156,16 +158,19 @@ class PaymentMiddleware {
       }
 
       const totalRequired = amount + fee;
-      if (Number(wallet.balance) < totalRequired) {
+      const { usdAmount } = await convertAmountToUsd(totalRequired, payWith);
+
+      if (Number(wallet.balance) < usdAmount) {
         return errorResponse(
           res,
           fee > 0
-            ? `Insufficient wallet balance. You need ₦${totalRequired.toLocaleString()} (₦${amount.toLocaleString()} + ₦${fee.toLocaleString()} fee).`
-            : 'Insufficient wallet balance',
+            ? `Insufficient balance. You need ${totalRequired.toLocaleString()} ${payWith} (including fees).`
+            : 'Insufficient balance',
           enums.HTTP_BAD_REQUEST
         );
       }
 
+      (req as any).usdDebitAmount = usdAmount;
       return next();
     } catch (error) {
       next(error);
