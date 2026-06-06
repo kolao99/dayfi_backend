@@ -130,7 +130,7 @@ export async function notifyNgnBankDeposit(params: {
   await createUserNotification({
     userId: params.userId,
     title: 'NGN bank deposit',
-    message: `${ngn} sent · ${usd} added to your wallet`,
+    message: `${ngn} received · ${usd} added to your wallet`,
     type: 'NGN_DEPOSIT',
     metadata: {
       type: 'NGN_DEPOSIT',

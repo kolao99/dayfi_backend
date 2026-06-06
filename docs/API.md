@@ -460,7 +460,11 @@ Also accepts `customerReference`, `receivedAmount`, `transactionReference`, `id`
 ```
 GET /payments/wallet-details  →  show primary.balance (USD)
 GET /payments/capabilities    →  gate features
+GET /notifications            →  inbox list (deposit, send, bill pay, P2P)
+GET /notifications/unread-count → bell badge
 ```
+
+On pull-to-refresh or return to Home, mobile re-fetches wallet details, transactions, and notifications. Unread transaction alerts also surface as local notifications (Phase 1 inbox only; FCM push is Phase 2).
 
 ### Receive — Bank Transfer
 
@@ -523,6 +527,103 @@ See [.env.example](../.env.example).
 
 ---
 
+# Notifications API (`/api/v1/notifications`)
+
+**Live (Phase 1)** · In-app inbox only. Events are written when money moves; mobile polls these routes. FCM push delivery is **Planned (Phase 2)**.
+
+All routes require `Authorization: Bearer <JWT>`.
+
+## List notifications
+
+**Live** · `GET /notifications`
+
+Returns the user's inbox, newest first (default limit 50).
+
+**Response `data`:** array of:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Notification UUID |
+| `title` | string | Short headline |
+| `message` | string | Human-readable body |
+| `type` | string | Event code (see below) |
+| `read` | boolean | Whether user has opened/dismissed |
+| `created_at` | string | ISO timestamp |
+| `metadata` | object | `reference`, amounts, counterparty labels |
+
+### Notification types (Phase 1)
+
+| `type` | Emitted when |
+|--------|----------------|
+| `NGN_DEPOSIT` | Flutterwave NGN VA deposit credits USD ledger |
+| `BANK_SEND` | Nigeria bank transfer (Flutterwave payout) succeeds |
+| `BILL_PAY` | Bill payment succeeds |
+| `BILL_PAY_FAILED` | Bill payment fails after USD debit is reversed |
+| `P2P_RECEIVE` | User receives a Dayfi-to-Dayfi transfer |
+| `P2P_SEND` | User sends a Dayfi-to-Dayfi transfer |
+
+Example:
+
+```json
+{
+  "status": "success",
+  "message": "Notifications fetched successfully",
+  "code": 200,
+  "data": [
+    {
+      "id": "uuid",
+      "title": "NGN bank deposit",
+      "message": "₦200.00 received · $0.15 added to your wallet",
+      "type": "NGN_DEPOSIT",
+      "read": false,
+      "created_at": "2026-06-05T12:00:00.000Z",
+      "metadata": {
+        "type": "NGN_DEPOSIT",
+        "reference": "FLW-REF",
+        "ngnAmount": 200,
+        "usdCredited": 0.15,
+        "currency": "NGN"
+      }
+    }
+  ]
+}
+```
+
+## Unread count
+
+**Live** · `GET /notifications/unread-count`
+
+```json
+{
+  "status": "success",
+  "data": { "count": 3 }
+}
+```
+
+## Mark one read
+
+**Live** · `PUT /notifications/:notificationId`
+
+```json
+{
+  "status": "success",
+  "data": { "notificationId": "uuid", "read": true }
+}
+```
+
+## Mark all read
+
+**Live** · `PUT /notifications/read-all`
+
+```json
+{
+  "status": "success",
+  "data": { "updated": 3 }
+}
+```
+
+---
+
 ## Auth API (summary)
 
 Base: `/api/v1/auth`
@@ -553,5 +654,6 @@ Onboarding creates **USD + NGN** ledger wallets via `ensureUserLedgerWallets`.
 
 | Date | Change |
 |------|--------|
+| 2026-06-05 | Phase 1 notifications inbox: emit on NGN deposit, bank send, bill pay, P2P; `GET /notifications`, unread count, mark read / read-all |
 | 2026-05-26 | Prod ledger: idempotent `ledger_movements`, P2P USD, receive/send/investment APIs, bug fixes |
 | 2026-05-26 | Unified USD ledger; wallet-details shape; Grey webhook stub; YC collection credits USD |
