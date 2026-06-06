@@ -132,7 +132,7 @@ export async function recordCryptoOutboundLedger(params: {
     );
   }
 
-  const platformFeeUsd = Number(process.env.DAYFI_TRANSFER_FEE_USD ?? 0.1);
+  const platformFeeUsd = Number(process.env.DAYFI_TRANSFER_FEE_USD ?? 0.05);
   if (Number.isFinite(platformFeeUsd) && platformFeeUsd > 0) {
     const usdWallet = await db.oneOrNone<{ wallet_id: string }>(
       `SELECT wallet_id FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,

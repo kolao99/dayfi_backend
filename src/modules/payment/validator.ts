@@ -551,7 +551,7 @@ class PaymentValidator {
       accountName: Joi.string().required(),
       accountType: Joi.string().default('bank'),
       reason: Joi.string().default('other'),
-      fee: Joi.number().min(0).default(0.1),
+      fee: Joi.number().min(0).default(0.05),
       spendCurrency: Joi.string().default('USD'),
       debitCurrency: Joi.string().optional(),
       pin: Joi.string().required(),

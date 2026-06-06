@@ -1118,13 +1118,13 @@ class PaymentController {
   };
 
   fetchFees = async (_req: Request, res: Response): Promise<any> => {
-    const feeUsd = Number(process.env.DAYFI_TRANSFER_FEE_USD ?? 0.1);
+    const feeUsd = Number(process.env.DAYFI_TRANSFER_FEE_USD ?? 0.05);
     return success(res, enums.FETCHED_SUCCESSFULLY('Fees'), enums.HTTP_OK, {
       currency: 'USD',
       transfer: {
         dayfi_to_dayfi: 0,
         dayfi_to_bank:
-          Number.isFinite(feeUsd) && feeUsd >= 0 ? feeUsd : 0.1,
+          Number.isFinite(feeUsd) && feeUsd >= 0 ? feeUsd : 0.05,
       },
       withdrawal: { local: 0, international: 0 },
     });

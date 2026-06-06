@@ -185,11 +185,130 @@ async function persistCryptoWallet(params: {
   );
 }
 
+const USER_FUNDING_AMOUNT_XLM = '1';
+
 function resolveFundingAmountXlm(): string {
   const raw =
     process.env.STELLAR_FUNDING_AMOUNT_XLM?.trim() ||
     process.env.FUNDING_AMOUNT?.trim();
-  return raw && raw.length > 0 ? raw : '1';
+  const amount = raw && raw.length > 0 ? raw : USER_FUNDING_AMOUNT_XLM;
+  const parsed = parseFloat(amount);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return USER_FUNDING_AMOUNT_XLM;
+  }
+  // Never send more than 1 XLM to a user's Stellar deposit address.
+  return Math.min(parsed, 1).toString();
+}
+
+const STELLAR_BASE_RESERVE_XLM = 0.5;
+
+function parseHorizonSubmitError(err: unknown): string {
+  const e = err as {
+    response?: {
+      data?: {
+        detail?: string;
+        title?: string;
+        extras?: {
+          result_codes?: {
+            transaction?: string;
+            operations?: string[];
+          };
+        };
+      };
+    };
+    message?: string;
+  };
+
+  const codes = e?.response?.data?.extras?.result_codes;
+  const txCode = codes?.transaction;
+  const opCodes = codes?.operations ?? [];
+  const masterPk =
+    process.env.MASTER_WALLET_PUBLIC_KEY?.trim() || 'master wallet';
+
+  if (
+    opCodes.includes('op_underfunded') ||
+    txCode === 'tx_insufficient_balance' ||
+    txCode === 'tx_insufficient_fee'
+  ) {
+    return (
+      `Stellar master wallet (${masterPk}) has insufficient XLM to fund crypto wallets. ` +
+      'Send at least 20 XLM to this address on mainnet, wait a minute, then retry.'
+    );
+  }
+
+  if (opCodes.length > 0) {
+    return `Stellar transaction failed (${txCode ?? 'unknown'}: ${opCodes.join(', ')})`;
+  }
+
+  const detail = e?.response?.data?.detail?.trim();
+  if (detail) return detail;
+
+  const msg = e?.message?.trim();
+  if (msg && !/^request failed with status code \d+$/i.test(msg)) {
+    return msg;
+  }
+
+  return 'Stellar transaction failed. Check master wallet XLM balance and retry.';
+}
+
+async function submitStellarTransaction(
+  server: StellarHorizonServer,
+  tx: ReturnType<typeof StellarSdk.TransactionBuilder.prototype.build>
+): Promise<void> {
+  try {
+    await server.submitTransaction(tx);
+  } catch (err: unknown) {
+    throw new Error(parseHorizonSubmitError(err));
+  }
+}
+
+async function getMasterNativeBalanceXlm(): Promise<number | null> {
+  const masterKeypair = resolveMasterKeypair();
+  if (!masterKeypair) return null;
+
+  const server = new StellarSdk.Horizon.Server(horizonUrl());
+  try {
+    const account = await server.loadAccount(masterKeypair.publicKey());
+    const native = (
+      account.balances as { asset_type?: string; balance?: string }[]
+    ).find((b) => b.asset_type === 'native');
+    return parseFloat(String(native?.balance || '0'));
+  } catch {
+    return null;
+  }
+}
+
+/** Minimum XLM master must hold to fund one new user (createAccount + sponsored trustlines). */
+function estimateXlmRequiredForProvision(): number {
+  const funding = parseFloat(resolveFundingAmountXlm());
+  const trustlineCount = buildReceiveTrustlineAssets().length;
+  const sponsorReserves = trustlineCount * STELLAR_BASE_RESERVE_XLM;
+  const fees = 0.05;
+  return funding + sponsorReserves + STELLAR_BASE_RESERVE_XLM + fees;
+}
+
+async function assertMasterCanFundProvision(): Promise<void> {
+  if (isStellarTestnet()) return;
+
+  const masterKeypair = resolveMasterKeypair();
+  if (!masterKeypair) {
+    throw new Error(
+      'Mainnet requires MASTER_WALLET_PUBLIC_KEY and MASTER_WALLET_SECRET_KEY to fund new Stellar accounts'
+    );
+  }
+
+  const balance = await getMasterNativeBalanceXlm();
+  const required = estimateXlmRequiredForProvision();
+  if (balance === null) {
+    throw new Error('Could not read Stellar master wallet balance from Horizon');
+  }
+  if (balance < required) {
+    throw new Error(
+      `Stellar master wallet (${masterKeypair.publicKey()}) has ${balance.toFixed(2)} XLM ` +
+        `but needs ~${required.toFixed(2)} XLM to provision one user. ` +
+        'Send XLM to the master wallet on mainnet and retry.'
+    );
+  }
 }
 
 function resolveMasterKeypair(): StellarKeypair | null {
@@ -264,18 +383,13 @@ async function fundFromMasterIfConfigured(userPublicKey: string): Promise<boolea
       })
     );
   } else {
-    txBuilder.addOperation(
-      StellarSdk.Operation.payment({
-        destination: userPublicKey,
-        asset: StellarSdk.Asset.native(),
-        amount: fundingAmount,
-      })
-    );
+    // Retry path: account already funded — never send additional XLM to the user.
+    return true;
   }
 
   const tx = txBuilder.setTimeout(60).build();
   tx.sign(masterKeypair);
-  await server.submitTransaction(tx);
+  await submitStellarTransaction(server, tx);
   await new Promise((r) => setTimeout(r, 2000));
   return true;
 }
@@ -327,7 +441,7 @@ async function addSponsoredTrustline(
 
   tx.sign(masterKeypair);
   tx.sign(userKeypair);
-  await server.submitTransaction(tx);
+  await submitStellarTransaction(server, tx);
   await new Promise((r) => setTimeout(r, 800));
 }
 
@@ -379,7 +493,7 @@ async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
       .setTimeout(60)
       .build();
     tx.sign(userKeypair);
-    await server.submitTransaction(tx);
+    await submitStellarTransaction(server, tx);
     await new Promise((r) => setTimeout(r, 800));
   }
 }
@@ -410,6 +524,8 @@ export async function provisionCryptoWalletsForUser(userId: string): Promise<{
     if (row?.stellar_deposit_address && row?.ethereum_deposit_address) {
       return;
     }
+
+    await assertMasterCanFundProvision();
 
     const mnemonic = StellarHDWallet.generateMnemonic({ entropyBits: 128 });
     const hd = StellarHDWallet.fromMnemonic(mnemonic);
