@@ -362,9 +362,9 @@ Spend from **USD** by default. Conversion to destination currency happens at pay
 | Pay | `POST /payments/bills/pay` (PIN required) |
 | Status | `GET /payments/bills/status/:reference` |
 
-Flow: debit **USD** (converted from NGN face value) → Flutterwave bill payment from payout wallet. On failure, USD is reversed and a labelled refund appears in transaction history.
+Flow: debit **USD** (converted from NGN face value) → Flutterwave bill payment from payout wallet. On failure, USD is reversed and a labelled refund appears in transaction history. Reversal ledger metadata includes **`ngnAmount`** (NGN bill face value) for mobile History (`₦100 = $0.07`).
 
-Ledger `source`: `bill_pay` (debit), `manual` + `metadata.reversal` (refund). Wallet activity uses human labels, e.g. `MTN Airtime · 08012345678` and `Airtime refund · MTN Airtime`.
+Ledger `source`: `bill_pay` (debit), `manual` + `metadata.reversal` (refund). Wallet activity uses human labels, e.g. `MTN Airtime · 08012345678` and `Airtime refund · MTN Airtime`. `GET /payments/wallet-transactions` exposes `ngn_amount` from ledger metadata (with fallback to original bill debit for legacy refunds).
 
 ### Dayfi-to-Dayfi transfer
 
@@ -693,6 +693,7 @@ Onboarding creates **USD + NGN** ledger wallets via `ensureUserLedgerWallets`.
 
 | Date | Change |
 |------|--------|
+| 2026-06-06 | Bill refund `ngnAmount` on reversal metadata; `wallet-transactions` `ngn_amount` from ledger + original debit fallback; DayEarn **USD-only** (7% APY) |
 | 2026-06-05 | Bill history labels: action names (`Airtime Topup`, `Airtime Topup refund`); expanded repair on wallet-transactions fetch |
 | 2026-06-05 | Bill transaction labels: provider/category-specific `reason` + `ledger_metadata`; repair legacy bill rows on wallet-transactions fetch |
 | 2026-06-05 | Phase 1 notifications inbox: emit on NGN deposit, bank send, bill pay, P2P; `GET /notifications`, unread count, mark read / read-all |

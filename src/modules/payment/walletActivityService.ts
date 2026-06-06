@@ -433,10 +433,24 @@ export async function backfillWalletActivitiesFromLedger(
                 p2pSenderLabel?.dayfi_id
               ? String(p2pSenderLabel.dayfi_id).replace(/^@/, '')
               : undefined,
-      accountType: isP2p ? 'dayfi' : undefined,
+      accountType: isBillPay || isBillReversal
+        ? 'bill'
+        : isP2p
+          ? 'dayfi'
+          : row.source === 'dayearn'
+            ? 'dayearn'
+            : row.source === 'dayflow' && row.direction === 'credit'
+              ? 'dayflow'
+              : undefined,
+      networkId:
+        isBillPay || isBillReversal
+          ? String(meta.billerCode ?? '').trim() || undefined
+          : undefined,
       beneficiaryCountry: isP2p
         ? countryForWalletCurrency(row.currency)
-        : undefined,
+        : isBillPay || isBillReversal
+          ? 'NG'
+          : undefined,
       timestamp: row.created_at,
     });
     if (result.recorded) inserted += 1;
@@ -509,7 +523,7 @@ export async function repairP2pWalletTransactions(
      FROM wallet_transactions wt
      LEFT JOIN beneficiaries b ON b.id = wt.beneficiary_id
      WHERE wt.user_id = $1
-       AND wt.status ILIKE '%payment%'
+       AND wt.status::text ILIKE '%payment%'
        AND (
          LOWER(COALESCE(b.name, '')) IN ('recipient', '')
          OR wt.reason ILIKE '%via p2p%'

@@ -256,7 +256,10 @@ export async function debitUsdBalance(params: {
         channel: 'wallet',
         status: 'success-payment',
         beneficiaryName: billLabel,
+        accountType: 'bill',
         accountNumber: String(meta.customerId ?? '').trim() || undefined,
+        networkId: String(meta.billerCode ?? '').trim() || undefined,
+        beneficiaryCountry: 'NG',
       });
     } catch (err: unknown) {
       console.warn(

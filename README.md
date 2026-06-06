@@ -24,20 +24,25 @@ Grey (primary fiat), Yellow Card (Africa payouts), Stellar (USDC receive), Flutt
 ### Transaction history
 
 - **`GET /payments/wallet-transactions`** — mobile History tab; joins `ledger_movements` for deposit FX and bill metadata.
-- **Bill pays** — action-specific labels (e.g. **Airtime Topup**, **MTN Airtime Topup**; refunds **Airtime Topup Refund**). Never generic “Bill payment”. Metadata: `categoryCode`, `billerName`, `itemName`, `customerId` on ledger + `ledger_metadata` in the API response.
+- **Bill pays** — action-specific labels (e.g. **Airtime Topup**, **MTN Airtime Topup**; refunds **Airtime Topup Refund**). Never generic “Bill payment”. Metadata: `categoryCode`, `billerName`, `itemName`, `customerId`, **`ngnAmount`** (NGN face value) on ledger + `ledger_metadata` / `ngn_amount` in the API response.
+- **History FX line (mobile)** — bill pay, refund, and NGN deposit rows show **`₦100 = $0.07`** (whole naira, USD to 2 dp). Refunds store `ngnAmount`; legacy rows fall back to the original bill debit.
 - **First page fetch** — backfills missing rows from `ledger_movements` and repairs legacy P2P, bill, and Flutterwave deposit labels (idempotent).
 
 ### Bills (Flutterwave)
 
-`GET /payments/bills/categories` → billers → items → `POST /payments/bills/pay` (debits USD, pays in NGN). Failed payout reverses USD with a labelled refund credit.
+`GET /payments/bills/categories` → billers → items → `POST /payments/bills/pay` (debits USD, pays in NGN). Failed payout reverses USD with a labelled refund credit (`ngnAmount` on reversal metadata).
 
 ### In-app inbox (Phase 1)
 
 Deposit, bank send, bill pay, and P2P write to `user_notifications`. Mobile polls `GET /notifications` and shows an unread badge. Push (FCM) is Phase 2.
 
+### DayEarn
+
+**USD pots only** (7% APY). Fund from global USD wallet. `GET/POST /payments/dayearn/*`.
+
 ### DayBudget (DayFlow)
 
-`/api/v1/dayflow/*` — AI budget chat, plans, templates, and automated flows. All data is scoped by authenticated `user_id`.
+`/api/v1/dayflow/*` — AI budget chat, plans, templates, and **scheduled autopay** (recurring sends/bills). All data scoped by authenticated `user_id`. Mobile wallet balance in **USD** (2 dp).
 
 ## Development
 

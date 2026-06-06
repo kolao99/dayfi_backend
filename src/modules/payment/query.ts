@@ -270,7 +270,7 @@ export const paymentQueries: PaymentQueries = {
                     OR lm.external_reference = regexp_replace(wt.id, '^wt-', '')
                   )
                   AND lm.direction = CASE
-                    WHEN wt.status ILIKE '%payment%' OR wt.send_amount IS NOT NULL
+                    WHEN wt.status::text ILIKE '%payment%' OR wt.send_amount IS NOT NULL
                       THEN 'debit'
                     ELSE 'credit'
                   END

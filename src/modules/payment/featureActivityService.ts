@@ -50,7 +50,7 @@ export async function getUserFeatureActivity(
         FROM wallet_transactions wt
         LEFT JOIN beneficiaries b ON b.id = wt.beneficiary_id
         WHERE wt.user_id = $1
-          AND wt.status ILIKE '%collection%'
+          AND wt.status::text ILIKE '%collection%'
           AND COALESCE(wt.receive_amount, 0) > 0
           AND COALESCE(b.name, '') NOT ILIKE '%currency conversion%'
           AND COALESCE(wt.reason, '') NOT ILIKE '%convert%'
