@@ -41,6 +41,7 @@ import { createVirtualAccount } from './flutterwaveService';
 import {
   recordWalletActivity,
   backfillWalletActivitiesFromLedger,
+  repairBillWalletTransactions,
   repairP2pWalletTransactions,
 } from './walletActivityService';
 import {
@@ -1037,6 +1038,15 @@ class PaymentService {
       } catch (err: unknown) {
         console.warn(
           `[fetchWalletTransactions] p2p repair skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      try {
+        await repairBillWalletTransactions(userId);
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] bill repair skipped: ${
             err instanceof Error ? err.message : String(err)
           }`
         );

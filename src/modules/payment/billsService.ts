@@ -10,11 +10,11 @@ import {
 } from './flutterwaveService';
 import {
   convertAmountToUsd,
-  debitUsdBalance,
   creditUsdBalance,
+  debitUsdBalance,
 } from './balanceService';
 import { PRIMARY_CURRENCY } from './walletModel';
-import { recordWalletActivity } from './walletActivityService';
+import { formatBillPayLabel } from './walletActivityService';
 import {
   notifyBillPayFailed,
   notifyBillPaySuccess,
@@ -141,7 +141,17 @@ export class BillsService {
         source: 'manual',
         idempotencyKey: `${idempotencyKey}-reversal`,
         externalReference: `${reference}-reversal`,
-        metadata: { reversal: true, reason: 'bill_payment_failed' },
+        metadata: {
+          reversal: true,
+          reason: 'bill_payment_failed',
+          categoryCode: params.categoryCode,
+          billerCode: params.billerCode,
+          itemCode: params.itemCode,
+          customerId: params.customerId,
+          billerName: params.billerName,
+          itemName: params.itemName,
+          originalReference: reference,
+        },
       });
       await safeNotify(
         () =>
@@ -160,32 +170,20 @@ export class BillsService {
       throw err;
     }
 
-    const label =
-      params.itemName?.trim() ||
-      params.billerName?.trim() ||
-      `${params.categoryCode} bill`;
-
-    await recordWalletActivity({
-      userId,
-      id: reference,
-      direction: 'debit',
-      amount,
-      currency: 'NGN',
-      source: 'bank_out',
-      title: label,
-      reason: `${label} · ${params.customerId}`,
-      channel: 'bank',
-      status: 'success-payment',
-      beneficiaryName: params.billerName ?? 'Bill Payment',
-      externalReference: String(fwResult.tx_ref ?? fwResult.reference ?? reference),
-    });
+    const billMeta = {
+      categoryCode: params.categoryCode,
+      billerName: params.billerName,
+      itemName: params.itemName,
+      customerId: params.customerId,
+    };
+    const billLabel = formatBillPayLabel(billMeta);
 
     await safeNotify(
       () =>
         notifyBillPaySuccess({
           userId,
           amount,
-          billerName: params.billerName?.trim() || label,
+          billerName: params.billerName?.trim() || billLabel,
           customerId: params.customerId,
           reference,
         }),

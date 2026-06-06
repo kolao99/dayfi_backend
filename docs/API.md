@@ -347,6 +347,24 @@ Spend from **USD** by default. Conversion to destination currency happens at pay
 | Africa (20 countries, mobile money) | Yellow Card | **Partial** (`create-payment-request`) |
 | Stellar USDC | Stellar SDK | **Planned** |
 | Nigeria bank (NGN) | Flutterwave legacy | **Live** |
+| Nigeria bills (airtime, data, cable, etc.) | Flutterwave Bills | **Live** |
+
+### Nigeria bill pay (Flutterwave)
+
+**Live** · Bills API under `/payments/bills/*`
+
+| Step | Endpoint |
+|------|----------|
+| Categories | `GET /payments/bills/categories` |
+| Billers | `GET /payments/bills/categories/:category/billers` |
+| Items | `GET /payments/bills/billers/:billerCode/items` |
+| Validate customer | `POST /payments/bills/validate` |
+| Pay | `POST /payments/bills/pay` (PIN required) |
+| Status | `GET /payments/bills/status/:reference` |
+
+Flow: debit **USD** (converted from NGN face value) → Flutterwave bill payment from payout wallet. On failure, USD is reversed and a labelled refund appears in transaction history.
+
+Ledger `source`: `bill_pay` (debit), `manual` + `metadata.reversal` (refund). Wallet activity uses human labels, e.g. `MTN Airtime · 08012345678` and `Airtime refund · MTN Airtime`.
 
 ### Dayfi-to-Dayfi transfer
 
@@ -395,6 +413,8 @@ Use after a collection or as standalone disbursement per Yellow Card docs.
 | POST | `/payments/add-dayfi-id` | Live | Set Dayfi tag on USD wallet |
 | GET | `/payments/validate-dayfi-id/:dayfiId` | Live | Lookup tag |
 | GET | `/payments/wallet-transactions` | Live | Transaction history |
+| GET | `/payments/bills/categories` | Live | Bill categories (Flutterwave) |
+| POST | `/payments/bills/pay` | Live | Pay bill (debits USD) |
 | GET | `/payments/beneficiaries` | Live | Saved beneficiaries |
 | GET | `/payments/fees` | Live | Fee schedule placeholder |
 | POST | `/payments/charge-card` | Live | Legacy card charge (Flutterwave) |
@@ -414,6 +434,21 @@ Use after a collection or as standalone disbursement per Yellow Card docs.
 | `page` | number | default `1` |
 | `limit` | number | default `10`, max `100` |
 | `sortOrder` | string | `asc`, `desc` |
+
+**Side effects (page 1 only):** idempotent backfill from `ledger_movements` into `wallet_transactions`, plus repair passes for legacy P2P, bill, and Flutterwave deposit rows.
+
+**Response `data.transactions[]` highlights:**
+
+| Field | Description |
+|-------|-------------|
+| `id` | Stable id, e.g. `wt-dayfi-bill-{uuid}` for bill pays |
+| `reason` | Human label — bill pays use `{biller} {category} · {phone}`; refunds use `{category} refund · {biller} {category}` |
+| `ledger_currency` | Usually `USD` for hub debits/credits |
+| `ngn_amount`, `usd_credited`, `fx_ngn_to_usd` | Populated for NGN bank deposits (from joined ledger) |
+| `ledger_metadata` | Raw `ledger_movements.metadata` — `categoryCode`, `billerName`, `itemName`, `customerId`, `reversal`, etc. |
+| `beneficiary.name` | Matches bill label (not generic “Bill payment”) after repair |
+
+Bill detection on mobile: `id` / `external_reference` containing `dayfi-bill`, or `ledger_metadata.categoryCode`.
 
 ---
 
@@ -466,6 +501,10 @@ GET /notifications/unread-count → bell badge
 
 On pull-to-refresh or return to Home, mobile re-fetches wallet details, transactions, and notifications. Unread transaction alerts also surface as local notifications (Phase 1 inbox only; FCM push is Phase 2).
 
+**History tab:** use `reason`, `beneficiary.name`, and `ledger_metadata` for bill-specific titles (Airtime, MTN, etc.) — not generic “Bill payment”.
+
+**DayBudget:** `/dayflow/*` is server-scoped per user; mobile caches plans/chat per user id locally.
+
 ### Receive — Bank Transfer
 
 ```
@@ -516,7 +555,7 @@ POST /payments/bank-transfer
 
 ## Environment variables
 
-See [.env.example](../.env.example).
+See [deploy/.env.example](../deploy/.env.example) (local dev: copy to repo root `.env`).
 
 | Variable | Rail |
 |----------|------|
@@ -654,6 +693,7 @@ Onboarding creates **USD + NGN** ledger wallets via `ensureUserLedgerWallets`.
 
 | Date | Change |
 |------|--------|
+| 2026-06-05 | Bill transaction labels: provider/category-specific `reason` + `ledger_metadata`; repair legacy bill rows on wallet-transactions fetch |
 | 2026-06-05 | Phase 1 notifications inbox: emit on NGN deposit, bank send, bill pay, P2P; `GET /notifications`, unread count, mark read / read-all |
 | 2026-05-26 | Prod ledger: idempotent `ledger_movements`, P2P USD, receive/send/investment APIs, bug fixes |
 | 2026-05-26 | Unified USD ledger; wallet-details shape; Grey webhook stub; YC collection credits USD |

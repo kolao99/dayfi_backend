@@ -3,6 +3,57 @@ import type { LedgerSource } from './balanceService';
 
 export const NGN_BANK_DEPOSIT_REASON = 'Deposit via NGN bank account';
 
+export function formatBillCategoryLabel(code?: string | null): string {
+  switch (String(code ?? '').toUpperCase()) {
+    case 'AIRTIME':
+      return 'Airtime';
+    case 'MOBILEDATA':
+      return 'Mobile Data';
+    case 'CABLEBILLS':
+      return 'Cable TV';
+    case 'INTSERVICE':
+      return 'Internet';
+    case 'UTILITYBILLS':
+      return 'Utilities';
+    default: {
+      const raw = String(code ?? '').trim();
+      if (!raw) return 'Bill';
+      return raw
+        .toLowerCase()
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+  }
+}
+
+export function formatBillPayLabel(meta: Record<string, unknown>): string {
+  const biller = String(meta.billerName ?? meta.itemName ?? '').trim();
+  const category = formatBillCategoryLabel(String(meta.categoryCode ?? ''));
+  if (
+    biller &&
+    category &&
+    !biller.toLowerCase().includes(category.toLowerCase())
+  ) {
+    return `${biller} ${category}`;
+  }
+  return biller || category || 'Bill payment';
+}
+
+export function billPayActivityReason(
+  meta: Record<string, unknown>,
+  customerId?: string | null
+): string {
+  const label = formatBillPayLabel(meta);
+  const customer = String(customerId ?? meta.customerId ?? '').trim();
+  return customer ? `${label} · ${customer}` : label;
+}
+
+export function billRefundActivityReason(meta: Record<string, unknown>): string {
+  const label = formatBillPayLabel(meta);
+  const category = formatBillCategoryLabel(String(meta.categoryCode ?? ''));
+  return `${category} refund · ${label}`;
+}
+
 export type WalletActivityDirection = 'credit' | 'debit';
 
 export type RecordWalletActivityParams = {
@@ -250,6 +301,11 @@ export async function backfillWalletActivitiesFromLedger(
     const activityTitle =
       typeof meta.activityTitle === 'string' ? meta.activityTitle.trim() : '';
     const isP2p = row.source === 'p2p';
+    const isBillPay = row.source === 'bill_pay';
+    const isBillReversal =
+      row.source === 'manual' &&
+      meta.reversal === true &&
+      (meta.categoryCode || meta.billerName || meta.itemName);
     const txId =
       isSwap && row.external_reference
         ? buildWalletActivityTxId(
@@ -301,6 +357,8 @@ export async function backfillWalletActivitiesFromLedger(
           )
         : null;
 
+    const billLabel = isBillPay || isBillReversal ? formatBillPayLabel(meta) : '';
+
     const result = await recordWalletActivity({
       userId: row.user_id,
       id: txId,
@@ -310,46 +368,67 @@ export async function backfillWalletActivitiesFromLedger(
       source: row.source as LedgerSource,
       title: isSwap
         ? activityTitle || `Convert ${meta.fromCurrency ?? row.currency}`
-        : row.direction === 'credit'
-          ? `${assetCode} deposit`
-          : `${row.currency} withdrawal`,
+        : isBillPay
+          ? billLabel
+          : isBillReversal
+            ? `${billLabel} refund`
+            : row.direction === 'credit'
+              ? `${assetCode} deposit`
+              : `${row.currency} withdrawal`,
       externalReference: row.external_reference ?? undefined,
       channel:
         row.source === 'stellar'
           ? 'crypto'
           : row.source === 'flutterwave'
             ? 'bank'
-            : 'wallet',
+            : isBillPay || isBillReversal
+              ? 'wallet'
+              : 'wallet',
       network: row.source === 'stellar' ? 'stellar' : null,
+      status: isBillPay
+        ? 'success-payment'
+        : isBillReversal
+          ? 'success-collection'
+          : undefined,
       reason: isSwap
         ? activityTitle ||
           `Convert ${meta.fromCurrency ?? ''} → ${meta.toCurrency ?? row.currency}`
-        : isP2p && row.direction === 'debit' && p2pTagFromLegacy
-          ? `p2p:${p2pTagFromLegacy}`
-          : row.direction === 'credit'
-            ? row.source === 'flutterwave'
-              ? NGN_BANK_DEPOSIT_REASON
-              : `${assetCode} deposit via ${row.source}`
-            : `${row.currency} sent via ${row.source}`,
+        : isBillPay
+          ? billPayActivityReason(meta, String(meta.customerId ?? ''))
+          : isBillReversal
+            ? billRefundActivityReason(meta)
+            : isP2p && row.direction === 'debit' && p2pTagFromLegacy
+              ? `p2p:${p2pTagFromLegacy}`
+              : row.direction === 'credit'
+                ? row.source === 'flutterwave'
+                  ? NGN_BANK_DEPOSIT_REASON
+                  : `${assetCode} deposit via ${row.source}`
+                : `${row.currency} sent via ${row.source}`,
       beneficiaryName: isSwap
         ? 'Currency conversion'
-        : isP2p && row.direction === 'debit' && p2pTagFromLegacy
-          ? `@${p2pTagFromLegacy}`
-          : isP2p && row.direction === 'credit'
-            ? p2pSenderLabel?.dayfi_id
-              ? `@${String(p2pSenderLabel.dayfi_id).replace(/^@/, '')}`
-              : p2pSenderLabel?.first_name?.trim() || 'Dayfi user'
-            : row.direction === 'credit'
-              ? 'Wallet Top Up'
-              : 'Recipient',
+        : isBillPay
+          ? billLabel
+          : isBillReversal
+            ? `${billLabel} refund`
+            : isP2p && row.direction === 'debit' && p2pTagFromLegacy
+              ? `@${p2pTagFromLegacy}`
+              : isP2p && row.direction === 'credit'
+                ? p2pSenderLabel?.dayfi_id
+                  ? `@${String(p2pSenderLabel.dayfi_id).replace(/^@/, '')}`
+                  : p2pSenderLabel?.first_name?.trim() || 'Dayfi user'
+                : row.direction === 'credit'
+                  ? 'Wallet Top Up'
+                  : 'Recipient',
       accountNumber:
-        isP2p && row.direction === 'debit' && p2pTagFromLegacy
-          ? p2pTagFromLegacy
-          : isP2p &&
-              row.direction === 'credit' &&
-              p2pSenderLabel?.dayfi_id
-            ? String(p2pSenderLabel.dayfi_id).replace(/^@/, '')
-            : undefined,
+        isBillPay || isBillReversal
+          ? String(meta.customerId ?? '').trim() || undefined
+          : isP2p && row.direction === 'debit' && p2pTagFromLegacy
+            ? p2pTagFromLegacy
+            : isP2p &&
+                row.direction === 'credit' &&
+                p2pSenderLabel?.dayfi_id
+              ? String(p2pSenderLabel.dayfi_id).replace(/^@/, '')
+              : undefined,
       accountType: isP2p ? 'dayfi' : undefined,
       beneficiaryCountry: isP2p
         ? countryForWalletCurrency(row.currency)
@@ -522,6 +601,150 @@ export async function repairP2pWalletTransactions(
            send_channel = 'wallet'
        WHERE id = $1`,
       [row.id, `p2p:${resolvedTag}`, beneficiaryId, sourceId]
+    );
+    repaired += 1;
+  }
+
+  return { repaired };
+}
+
+function billRefFromWalletRow(row: {
+  id: string;
+  external_reference: string | null;
+}): string | null {
+  const ref = row.external_reference?.trim();
+  if (ref?.includes('dayfi-bill')) {
+    return ref.replace(/-reversal$/i, '');
+  }
+  const idMatch = row.id.match(/dayfi-bill-[a-f0-9-]+/i);
+  return idMatch?.[0]?.replace(/-reversal$/i, '') ?? null;
+}
+
+async function ledgerBillMetaForWalletRow(
+  userId: string,
+  row: { id: string; external_reference: string | null; status: string | null }
+): Promise<Record<string, unknown> | null> {
+  const billRef = billRefFromWalletRow(row);
+  if (!billRef) return null;
+
+  const isReversal =
+    row.external_reference?.toLowerCase().includes('-reversal') ||
+    row.id.toLowerCase().includes('-reversal');
+
+  const movement = await db.oneOrNone<{ metadata: Record<string, unknown> | null }>(
+    `SELECT metadata
+     FROM ledger_movements
+     WHERE user_id = $1
+       AND (
+         external_reference = $2
+         OR external_reference = $3
+       )
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [
+      userId,
+      isReversal ? `${billRef}-reversal` : billRef,
+      billRef,
+    ]
+  );
+  return movement?.metadata ?? null;
+}
+
+/** Fix legacy bill rows that still show generic "Bill payment" / "sent via bill_pay". */
+export async function repairBillWalletTransactions(
+  userId: string
+): Promise<{ repaired: number }> {
+  const rows = await db.manyOrNone<{
+    id: string;
+    external_reference: string | null;
+    reason: string | null;
+    beneficiary_id: string | null;
+    source_id: string | null;
+    beneficiary_name: string | null;
+    status: string | null;
+  }>(
+    `SELECT wt.id, wt.external_reference, wt.reason, wt.beneficiary_id,
+            wt.source_id, b.name AS beneficiary_name, wt.status
+     FROM wallet_transactions wt
+     LEFT JOIN beneficiaries b ON b.id = wt.beneficiary_id
+     WHERE wt.user_id = $1
+       AND (
+         wt.id ILIKE '%dayfi-bill%'
+         OR wt.external_reference ILIKE '%dayfi-bill%'
+       )
+       AND (
+         LOWER(COALESCE(b.name, '')) IN ('recipient', 'bill payment', '')
+         OR wt.reason ILIKE '%sent via bill_pay%'
+         OR wt.reason ILIKE '%usd sent via%'
+         OR wt.reason ILIKE '%wallet credit%'
+       )`,
+    [userId]
+  );
+
+  let repaired = 0;
+  for (const row of rows ?? []) {
+    const meta = await ledgerBillMetaForWalletRow(userId, row);
+    if (!meta || !(meta.categoryCode || meta.billerName || meta.itemName)) {
+      continue;
+    }
+
+    const isReversal =
+      row.external_reference?.toLowerCase().includes('-reversal') ||
+      row.id.toLowerCase().includes('-reversal') ||
+      meta.reversal === true;
+
+    const billLabel = formatBillPayLabel(meta);
+    const reason = isReversal
+      ? billRefundActivityReason(meta)
+      : billPayActivityReason(meta, String(meta.customerId ?? ''));
+    const beneficiaryLabel = isReversal ? `${billLabel} refund` : billLabel;
+    const customerId = String(meta.customerId ?? '').trim();
+
+    let beneficiaryId = row.beneficiary_id;
+    if (beneficiaryId) {
+      await db.none(
+        `UPDATE beneficiaries SET name = $2 WHERE id = $1`,
+        [beneficiaryId, beneficiaryLabel]
+      );
+    } else {
+      beneficiaryId = `ben-bill-${row.id.slice(0, 32)}`;
+      await db.none(
+        `INSERT INTO beneficiaries (id, user_id, name, country, phone, address, dob, email, id_number, id_type)
+         VALUES ($1, $2, $3, 'NG', '', '', '', '', '', 'individual')
+         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
+        [beneficiaryId, userId, beneficiaryLabel]
+      );
+    }
+
+    let sourceId = row.source_id;
+    if (customerId) {
+      if (sourceId) {
+        await db.none(
+          `UPDATE source SET account_type = 'bill', account_number = $2 WHERE id = $1`,
+          [sourceId, customerId]
+        );
+      } else if (beneficiaryId) {
+        sourceId = `src-bill-${row.id.slice(0, 32)}`;
+        await db.none(
+          `INSERT INTO source (id, account_type, account_number, network_id, beneficiary_id)
+           VALUES ($1, 'bill', $2, '', $3)
+           ON CONFLICT (id) DO UPDATE
+             SET account_type = EXCLUDED.account_type,
+                 account_number = EXCLUDED.account_number`,
+          [sourceId, customerId, beneficiaryId]
+        );
+      }
+    }
+
+    await db.none(
+      `UPDATE wallet_transactions
+       SET reason = $2,
+           beneficiary_id = COALESCE(beneficiary_id, $3),
+           source_id = COALESCE(source_id, $4),
+           send_channel = COALESCE(send_channel, 'wallet'),
+           receive_channel = COALESCE(receive_channel, 'wallet')
+       WHERE id = $1`,
+      [row.id, reason, beneficiaryId, sourceId]
     );
     repaired += 1;
   }

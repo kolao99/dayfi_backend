@@ -42,17 +42,21 @@ flowchart TB
 | **Grey** | USD/EUR/GBP accounts, collections, global payouts | Webhook + VA storage live; API base URL from Integrations |
 | **Yellow Card** | Africa collections & payouts | Live |
 | **Stellar** | USDC/EURC receive | Address provision live; inbound listener planned |
-| **Flutterwave** | Nigeria NGN bank out | Live (`spendCurrency: NGN`) |
+| **Flutterwave** | Nigeria NGN bank out, NGN VA deposits, bills (airtime/data/cable) | Live (`spendCurrency: NGN`; bills debit USD) |
 
 ## Key services
 
 | Module | File |
 |--------|------|
 | Balance / idempotency | `balanceService.ts` |
-| Inflow FX + credit | `inflowService.ts` |
+| Wallet history mirror | `walletActivityService.ts` — `recordWalletActivity`, ledger backfill, P2P/bill repair |
+| Bills (Flutterwave) | `billsService.ts` — pay, reverse, labelled wallet rows |
+| Inflow FX + credit | `inflowService.ts` / `flutterwaveInflowService.ts` |
 | P2P USD transfer | `p2pService.ts` |
 | Send quote | `payoutQuoteService.ts` |
 | Investment pocket | `investmentService.ts` |
+| Notifications (Phase 1) | `notificationService.ts` |
+| DayBudget / DayFlow | `dayflow/` — plans, flows, AI chat (per `user_id`) |
 | Grey | `greyService.ts` |
 | Yellow Card | `yellowCardService.ts` |
 | Crypto addresses | `cryptoWalletProvision.ts` |
@@ -60,7 +64,10 @@ flowchart TB
 ## Database
 
 - `grey_virtual_accounts` — Grey account metadata per user/currency
-- `ledger_movements` — idempotent credits/debits
+- `ledger_movements` — idempotent credits/debits (`source`: `flutterwave`, `bill_pay`, `p2p`, `manual`, …)
+- `wallet_transactions` — mobile history mirror (joined to ledger for FX + `ledger_metadata`)
+- `user_notifications` — Phase 1 in-app inbox
+- `dayflow_plans`, `dayflow_flows`, `dayflow_plan_templates` — DayBudget (per user)
 - `p2p_transfers`, `investment_pockets`, `investment_movements`
 
 ## Mobile flows
@@ -70,7 +77,11 @@ flowchart TB
 | Receive US Bank | `GET /payments/receive/us-bank`, `GET /payments/grey/accounts` |
 | Receive Crypto | `GET /payments/receive/crypto` |
 | Send (quote) | `GET /payments/send/quote` → Yellow Card / Grey payout |
+| Pay bills | `GET/POST /payments/bills/*` |
 | Invest | `POST /payments/investment/*` |
+| History | `GET /payments/wallet-transactions` |
+| Notifications | `GET /notifications`, unread count, mark read |
+| DayBudget | `GET/POST /dayflow/plan`, `/dayflow/chat`, `/dayflow/dashboard` |
 | Local NGN | `POST /payments/wallets/swap` |
 
 Full API: [API.md](./API.md) · OpenAPI: [openapi.yaml](./openapi.yaml)

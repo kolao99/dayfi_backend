@@ -43,8 +43,11 @@ VS Code → **Run and Debug**:
 
 1. Home / wallet loads  
 2. **Send** → Nigerian banks list (Flutterwave)  
-3. **Pay bills** → categories load (Flutterwave)  
-4. Cross-border / YC send path (Yellow Card)
+3. **Pay bills** → categories load; pay shows **MTN Airtime** (or similar) in History, not “Bill payment”  
+4. **History** → NGN deposit subtitle says “received”; bill refund is separate from deposit  
+5. **Notifications** bell badge updates after deposit/send/bill/P2P  
+6. **DayBudget** → new user sees empty plan (no stale data from another account on same device)  
+7. Cross-border / YC send path (Yellow Card)
 
 ## 4. After tests pass
 

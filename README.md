@@ -1,6 +1,8 @@
 # Dayfi Backend
 
-API server for Dayfi payments and authentication.
+API server for Dayfi — payments, authentication, DayBudget (DayFlow), and in-app notifications.
+
+**Production:** `https://api.dayfi.co/api/v1` · Deploy: [docs/DEPLOY_VPS.md](docs/DEPLOY_VPS.md)
 
 ## Payments model
 
@@ -11,22 +13,50 @@ API server for Dayfi payments and authentication.
 | [docs/API.md](docs/API.md) | Full API reference (mobile + ops) |
 | [docs/openapi.yaml](docs/openapi.yaml) | OpenAPI 3 — import to Postman |
 | [docs/PAYMENTS_ARCHITECTURE.md](docs/PAYMENTS_ARCHITECTURE.md) | Rails, services, DB |
+| [docs/MOBILE_INTEGRATION.md](docs/MOBILE_INTEGRATION.md) | Consumer app wiring |
 | [docs/DEPLOY_VPS.md](docs/DEPLOY_VPS.md) | VPS deploy runbook |
+| [docs/TEST_PRODUCTION.md](docs/TEST_PRODUCTION.md) | Smoke tests on prod |
 
-**In-app inbox (Phase 1):** deposit, bank send, bill pay, and P2P events write to `user_notifications`; mobile polls `GET /notifications` and shows an unread badge. Push (FCM) is Phase 2.
+### Rails
 
-**Rails:** Grey (primary fiat), Yellow Card (Africa payouts), Stellar (USDC receive), Flutterwave (NGN VA + bills).
+Grey (primary fiat), Yellow Card (Africa payouts), Stellar (USDC receive), Flutterwave (NGN VA + bills + NGN bank send).
+
+### Transaction history
+
+- **`GET /payments/wallet-transactions`** — mobile History tab; joins `ledger_movements` for deposit FX and bill metadata.
+- **Bill pays** — labels are provider-specific (e.g. `MTN Airtime`, `Airtime refund · MTN Airtime`), not generic “Bill payment”. Metadata: `categoryCode`, `billerName`, `itemName`, `customerId` on ledger + optional `ledger_metadata` in the API response.
+- **First page fetch** — backfills missing rows from `ledger_movements` and repairs legacy P2P, bill, and Flutterwave deposit labels (idempotent).
+
+### Bills (Flutterwave)
+
+`GET /payments/bills/categories` → billers → items → `POST /payments/bills/pay` (debits USD, pays in NGN). Failed payout reverses USD with a labelled refund credit.
+
+### In-app inbox (Phase 1)
+
+Deposit, bank send, bill pay, and P2P write to `user_notifications`. Mobile polls `GET /notifications` and shows an unread badge. Push (FCM) is Phase 2.
+
+### DayBudget (DayFlow)
+
+`/api/v1/dayflow/*` — AI budget chat, plans, templates, and automated flows. All data is scoped by authenticated `user_id`.
 
 ## Development
 
 ```bash
-cp deploy/.env.example deploy/.env
+cp deploy/.env.example .env   # local Docker dev (or deploy/.env on VPS)
 npm run db:up
 npm run migrate:up
 npm run dev
 ```
 
-Local env template for Docker dev: copy `deploy/.env.example` to `.env` at repo root (or use `deploy/.env` on the VPS only).
+API listens on `DAYFI_PORT` (default **3000**).
+
+## Deploy (VPS)
+
+```bash
+./scripts/deploy-vps.sh
+```
+
+See [deploy/README.md](deploy/README.md) and [docs/DEPLOY_VPS.md](docs/DEPLOY_VPS.md).
 
 ## Migrations
 
@@ -34,6 +64,16 @@ Local env template for Docker dev: copy `deploy/.env.example` to `.env` at repo 
 npm run migrate:up
 ```
 
-Migrations: `20260526120000-unified-usd-ledger`, `20260526140000-prod-ledger`, `20260526150000-rename-fincra-to-grey`.
+Recent: `20260526120000-unified-usd-ledger`, `20260526140000-prod-ledger`, `20260526150000-rename-fincra-to-grey`.
 
-Grey smoke test: `npm run grey:smoke`
+## Smoke tests
+
+```bash
+npm run smoke:providers   # egress IP + Flutterwave + Yellow Card
+npm run grey:smoke
+npm run fw:smoke
+npm run yc:smoke
+npm run egress-ip
+```
+
+Production checklist: [docs/TEST_PRODUCTION.md](docs/TEST_PRODUCTION.md).

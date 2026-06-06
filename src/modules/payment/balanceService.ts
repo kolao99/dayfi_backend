@@ -3,7 +3,10 @@ import { db } from '../../config/database';
 import { PRIMARY_CURRENCY } from './walletModel';
 import { convertAmountToUsd } from './fxService';
 import {
+  billPayActivityReason,
+  billRefundActivityReason,
   buildWalletActivityTxId,
+  formatBillPayLabel,
   recordWalletActivity,
 } from './walletActivityService';
 
@@ -115,6 +118,39 @@ export async function creditUsdBalance(params: {
     return row.id;
   });
 
+  const meta = params.metadata ?? {};
+  if (
+    params.source === 'manual' &&
+    meta.reversal &&
+    (meta.categoryCode || meta.billerName || meta.itemName)
+  ) {
+    const billLabel = formatBillPayLabel(meta);
+    const txId = buildWalletActivityTxId(params.externalReference, movementId);
+    try {
+      await recordWalletActivity({
+        userId: params.userId,
+        id: txId,
+        direction: 'credit',
+        amount: usdAmount,
+        currency: PRIMARY_CURRENCY,
+        source: 'manual',
+        title: `${billLabel} refund`,
+        reason: billRefundActivityReason(meta),
+        externalReference: params.externalReference,
+        channel: 'wallet',
+        status: 'success-collection',
+        beneficiaryName: `${billLabel} refund`,
+        accountNumber: String(meta.customerId ?? '').trim() || undefined,
+      });
+    } catch (err: unknown) {
+      console.warn(
+        `[creditUsdBalance] bill refund activity record skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
   return {
     usdAmount,
     rate,
@@ -200,6 +236,35 @@ export async function debitUsdBalance(params: {
     `SELECT balance FROM wallets WHERE wallet_id = $1`,
     [params.walletId]
   );
+
+  if (params.source === 'bill_pay') {
+    const meta = params.metadata ?? {};
+    const billLabel = formatBillPayLabel(meta);
+    const txId = buildWalletActivityTxId(params.externalReference, movementId);
+    try {
+      await recordWalletActivity({
+        userId: params.userId,
+        id: txId,
+        direction: 'debit',
+        amount,
+        currency: PRIMARY_CURRENCY,
+        source: 'bill_pay',
+        title: billLabel,
+        reason: billPayActivityReason(meta, String(meta.customerId ?? '')),
+        externalReference: params.externalReference,
+        channel: 'wallet',
+        status: 'success-payment',
+        beneficiaryName: billLabel,
+        accountNumber: String(meta.customerId ?? '').trim() || undefined,
+      });
+    } catch (err: unknown) {
+      console.warn(
+        `[debitUsdBalance] bill pay activity record skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
 
   return {
     walletId: params.walletId,
@@ -316,6 +381,16 @@ export async function creditWalletBalance(params: {
       creditBeneficiary = 'DayFlow';
       creditAccountType = 'dayflow';
       creditAccountNumber = flowTitle || undefined;
+    } else if (
+      params.source === 'manual' &&
+      meta.reversal &&
+      (meta.categoryCode || meta.billerName || meta.itemName)
+    ) {
+      const billLabel = formatBillPayLabel(meta);
+      creditTitle = `${billLabel} refund`;
+      creditReason = billRefundActivityReason(meta);
+      creditBeneficiary = `${billLabel} refund`;
+      creditAccountNumber = String(meta.customerId ?? '').trim() || undefined;
     }
 
     try {

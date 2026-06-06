@@ -225,6 +225,7 @@ export const paymentQueries: PaymentQueries = {
               THEN (1 / (lm.metadata->>'rate')::numeric)
               ELSE (lm.metadata->>'rate')::numeric
             END AS fx_ngn_to_usd,
+            lm.metadata AS ledger_metadata,
             json_build_object(
                     'id', b.id,
                     'name', b.name,
@@ -247,9 +248,17 @@ export const paymentQueries: PaymentQueries = {
                  LEFT JOIN source s ON wt.source_id = s.id
                  LEFT JOIN beneficiaries b ON wt.beneficiary_id = b.id
                  LEFT JOIN ledger_movements lm
-                   ON lm.external_reference = wt.external_reference
-                  AND lm.user_id = wt.user_id
-                  AND lm.direction = 'credit'
+                   ON lm.user_id = wt.user_id
+                  AND (
+                    (wt.external_reference IS NOT NULL
+                      AND lm.external_reference = wt.external_reference)
+                    OR lm.external_reference = regexp_replace(wt.id, '^wt-', '')
+                  )
+                  AND lm.direction = CASE
+                    WHEN wt.status ILIKE '%payment%' OR wt.send_amount IS NOT NULL
+                      THEN 'debit'
+                    ELSE 'credit'
+                  END
         WHERE wt.user_id = $1
           AND ($2 IS NULL OR wt.status = $2)
           AND ($3 IS NULL OR wt.timestamp::date >= $3::date)
