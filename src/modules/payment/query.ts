@@ -209,7 +209,22 @@ export const paymentQueries: PaymentQueries = {
             wt.reason,
             wt.timestamp,
             COALESCE(
+              (lm.metadata->>'ngnAmount')::numeric,
+              (lm.metadata->>'ngn_amount')::numeric,
               (lm.metadata->>'originalAmount')::numeric,
+              (
+                SELECT (lm2.metadata->>'ngnAmount')::numeric
+                FROM ledger_movements lm2
+                WHERE lm2.user_id = wt.user_id
+                  AND lm2.direction = 'debit'
+                  AND lm2.external_reference = regexp_replace(
+                    COALESCE(wt.external_reference, lm.external_reference, ''),
+                    '-reversal$',
+                    ''
+                  )
+                  AND (lm2.metadata->>'ngnAmount') IS NOT NULL
+                LIMIT 1
+              ),
               CASE
                 WHEN wt.receive_channel = 'bank'
                   AND wt.activity_kind = 'deposit'

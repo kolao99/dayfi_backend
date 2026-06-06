@@ -1868,7 +1868,7 @@ class PaymentController {
   getDayEarnPreview = async (req: Request, res: Response): Promise<any> => {
     try {
       const amount = Number(req.query.amount);
-      const currency = String(req.query.currency);
+      const currency = String(req.query.currency || 'USD');
       const preview = computeInterestPreview(amount, currency);
       return success(res, 'DayEarn preview', enums.HTTP_OK, preview);
     } catch (err: any) {
@@ -1892,16 +1892,17 @@ class PaymentController {
   ): Promise<any> => {
     try {
       const { name, amount, currency, idempotencyKey } = req.body;
+      const potCurrency = String(currency || 'USD').toUpperCase();
       const wallet = await this.paymentService.ensureWalletForCurrency(
         req.user?.user_id,
-        currency
+        potCurrency
       );
       const result = await createDayEarnPot({
         userId: req.user?.user_id,
         walletId: wallet.wallet_id,
         name: String(name),
         amount: Number(amount),
-        currency: String(currency),
+        currency: potCurrency,
         idempotencyKey,
       });
       return success(

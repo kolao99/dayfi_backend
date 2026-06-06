@@ -12,7 +12,7 @@ import {
 } from './walletActivityService';
 import { convertAmountToUsd } from './fxService';
 
-const SUPPORTED_CURRENCIES = ['NGN', 'USD', 'EUR', 'GBP'] as const;
+const SUPPORTED_CURRENCIES = ['USD'] as const;
 export type DayEarnCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 
 export type DayEarnPotRow = {
@@ -51,9 +51,8 @@ function roundInterest(n: number): number {
 
 export function getDayEarnApyPercent(currency: string): number {
   const c = currency.toUpperCase();
-  if (c === 'NGN') return 15;
-  if (c === 'USD' || c === 'EUR' || c === 'GBP') return 7;
-  throw new Error(`Unsupported DayEarn currency: ${currency}`);
+  if (c === 'USD') return 7;
+  throw new Error(`DayEarn only supports USD (got ${currency})`);
 }
 
 export function computeDailyInterest(
@@ -383,9 +382,9 @@ export async function createDayEarnPot(params: {
     throw new Error('DayEarn is not available yet');
   }
 
-  const currency = String(params.currency).toUpperCase();
-  if (!SUPPORTED_CURRENCIES.includes(currency as DayEarnCurrency)) {
-    throw new Error(`Unsupported currency: ${currency}`);
+  const currency = 'USD';
+  if (String(params.currency).toUpperCase() !== currency) {
+    throw new Error('DayEarn only supports USD');
   }
 
   const name = String(params.name || '').trim();

@@ -144,6 +144,7 @@ export class BillsService {
         metadata: {
           reversal: true,
           reason: 'bill_payment_failed',
+          ngnAmount: amount,
           categoryCode: params.categoryCode,
           billerCode: params.billerCode,
           itemCode: params.itemCode,
