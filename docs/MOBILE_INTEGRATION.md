@@ -90,7 +90,7 @@ Authorization: Bearer <token>
 ```
 
 - Filter by `ledger_currency=USD` on the client for the global wallet tab.
-- **Bill pays:** use `reason`, `beneficiary.name`, and `ledger_metadata` (`categoryCode`, `billerName`, …) for titles like “MTN Airtime” — not generic “Bill payment”.
+- **Bill pays:** use `reason`, `beneficiary.name`, and `ledger_metadata` for titles like **Airtime Topup** / **Airtime Topup Refund** — never “Bill payment” / “Bill refund”.
 - **NGN deposits:** subtitle should say “received”, not “sent”; use `ngn_amount` + `usd_credited`.
 - First request on page 1 triggers server-side backfill/repair for legacy rows.
 

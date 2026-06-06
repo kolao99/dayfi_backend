@@ -6,6 +6,7 @@ import {
   billPayActivityReason,
   billRefundActivityReason,
   buildWalletActivityTxId,
+  formatBillCategoryLabel,
   formatBillPayLabel,
   recordWalletActivity,
 } from './walletActivityService';
@@ -124,7 +125,7 @@ export async function creditUsdBalance(params: {
     meta.reversal &&
     (meta.categoryCode || meta.billerName || meta.itemName)
   ) {
-    const billLabel = formatBillPayLabel(meta);
+    const actionLabel = formatBillCategoryLabel(String(meta.categoryCode ?? ''));
     const txId = buildWalletActivityTxId(params.externalReference, movementId);
     try {
       await recordWalletActivity({
@@ -134,12 +135,12 @@ export async function creditUsdBalance(params: {
         amount: usdAmount,
         currency: PRIMARY_CURRENCY,
         source: 'manual',
-        title: `${billLabel} refund`,
+        title: `${actionLabel} refund`,
         reason: billRefundActivityReason(meta),
         externalReference: params.externalReference,
         channel: 'wallet',
         status: 'success-collection',
-        beneficiaryName: `${billLabel} refund`,
+        beneficiaryName: `${actionLabel} refund`,
         accountNumber: String(meta.customerId ?? '').trim() || undefined,
       });
     } catch (err: unknown) {
@@ -386,10 +387,10 @@ export async function creditWalletBalance(params: {
       meta.reversal &&
       (meta.categoryCode || meta.billerName || meta.itemName)
     ) {
-      const billLabel = formatBillPayLabel(meta);
-      creditTitle = `${billLabel} refund`;
+      const actionLabel = formatBillCategoryLabel(String(meta.categoryCode ?? ''));
+      creditTitle = `${actionLabel} refund`;
       creditReason = billRefundActivityReason(meta);
-      creditBeneficiary = `${billLabel} refund`;
+      creditBeneficiary = `${actionLabel} refund`;
       creditAccountNumber = String(meta.customerId ?? '').trim() || undefined;
     }
 

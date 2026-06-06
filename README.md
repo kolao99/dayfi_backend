@@ -24,7 +24,7 @@ Grey (primary fiat), Yellow Card (Africa payouts), Stellar (USDC receive), Flutt
 ### Transaction history
 
 - **`GET /payments/wallet-transactions`** — mobile History tab; joins `ledger_movements` for deposit FX and bill metadata.
-- **Bill pays** — labels are provider-specific (e.g. `MTN Airtime`, `Airtime refund · MTN Airtime`), not generic “Bill payment”. Metadata: `categoryCode`, `billerName`, `itemName`, `customerId` on ledger + optional `ledger_metadata` in the API response.
+- **Bill pays** — action-specific labels (e.g. **Airtime Topup**, **MTN Airtime Topup**; refunds **Airtime Topup Refund**). Never generic “Bill payment”. Metadata: `categoryCode`, `billerName`, `itemName`, `customerId` on ledger + `ledger_metadata` in the API response.
 - **First page fetch** — backfills missing rows from `ledger_movements` and repairs legacy P2P, bill, and Flutterwave deposit labels (idempotent).
 
 ### Bills (Flutterwave)

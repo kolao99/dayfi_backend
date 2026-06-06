@@ -442,11 +442,11 @@ Use after a collection or as standalone disbursement per Yellow Card docs.
 | Field | Description |
 |-------|-------------|
 | `id` | Stable id, e.g. `wt-dayfi-bill-{uuid}` for bill pays |
-| `reason` | Human label — bill pays use `{biller} {category} · {phone}`; refunds use `{category} refund · {biller} {category}` |
+| `reason` | Human label — pays: `MTN Airtime Topup · 080…`; refunds: `Airtime Topup refund · MTN Airtime Topup` |
 | `ledger_currency` | Usually `USD` for hub debits/credits |
 | `ngn_amount`, `usd_credited`, `fx_ngn_to_usd` | Populated for NGN bank deposits (from joined ledger) |
 | `ledger_metadata` | Raw `ledger_movements.metadata` — `categoryCode`, `billerName`, `itemName`, `customerId`, `reversal`, etc. |
-| `beneficiary.name` | Matches bill label (not generic “Bill payment”) after repair |
+| `beneficiary.name` | Action label (e.g. `Airtime Topup`, `Airtime Topup refund`) after repair |
 
 Bill detection on mobile: `id` / `external_reference` containing `dayfi-bill`, or `ledger_metadata.categoryCode`.
 
@@ -501,7 +501,7 @@ GET /notifications/unread-count → bell badge
 
 On pull-to-refresh or return to Home, mobile re-fetches wallet details, transactions, and notifications. Unread transaction alerts also surface as local notifications (Phase 1 inbox only; FCM push is Phase 2).
 
-**History tab:** use `reason`, `beneficiary.name`, and `ledger_metadata` for bill-specific titles (Airtime, MTN, etc.) — not generic “Bill payment”.
+**History tab:** use `reason`, `beneficiary.name`, and `ledger_metadata` for action titles (**Airtime Topup**, **Airtime Topup Refund**, etc.) — never generic “Bill payment” / “Bill refund”.
 
 **DayBudget:** `/dayflow/*` is server-scoped per user; mobile caches plans/chat per user id locally.
 
@@ -693,6 +693,7 @@ Onboarding creates **USD + NGN** ledger wallets via `ensureUserLedgerWallets`.
 
 | Date | Change |
 |------|--------|
+| 2026-06-05 | Bill history labels: action names (`Airtime Topup`, `Airtime Topup refund`); expanded repair on wallet-transactions fetch |
 | 2026-06-05 | Bill transaction labels: provider/category-specific `reason` + `ledger_metadata`; repair legacy bill rows on wallet-transactions fetch |
 | 2026-06-05 | Phase 1 notifications inbox: emit on NGN deposit, bank send, bill pay, P2P; `GET /notifications`, unread count, mark read / read-all |
 | 2026-05-26 | Prod ledger: idempotent `ledger_movements`, P2P USD, receive/send/investment APIs, bug fixes |

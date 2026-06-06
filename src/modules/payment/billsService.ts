@@ -158,6 +158,7 @@ export class BillsService {
           notifyBillPayFailed({
             userId,
             amount,
+            categoryCode: params.categoryCode,
             billerName:
               params.billerName?.trim() ||
               params.itemName?.trim() ||

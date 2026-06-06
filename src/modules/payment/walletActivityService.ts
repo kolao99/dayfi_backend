@@ -6,9 +6,9 @@ export const NGN_BANK_DEPOSIT_REASON = 'Deposit via NGN bank account';
 export function formatBillCategoryLabel(code?: string | null): string {
   switch (String(code ?? '').toUpperCase()) {
     case 'AIRTIME':
-      return 'Airtime';
+      return 'Airtime Topup';
     case 'MOBILEDATA':
-      return 'Mobile Data';
+      return 'Data Topup';
     case 'CABLEBILLS':
       return 'Cable TV';
     case 'INTSERVICE':
@@ -36,7 +36,7 @@ export function formatBillPayLabel(meta: Record<string, unknown>): string {
   ) {
     return `${biller} ${category}`;
   }
-  return biller || category || 'Bill payment';
+  return biller || category || 'Bill Topup';
 }
 
 export function billPayActivityReason(
@@ -50,8 +50,8 @@ export function billPayActivityReason(
 
 export function billRefundActivityReason(meta: Record<string, unknown>): string {
   const label = formatBillPayLabel(meta);
-  const category = formatBillCategoryLabel(String(meta.categoryCode ?? ''));
-  return `${category} refund · ${label}`;
+  const action = formatBillCategoryLabel(String(meta.categoryCode ?? ''));
+  return `${action} refund · ${label}`;
 }
 
 export type WalletActivityDirection = 'credit' | 'debit';
@@ -358,6 +358,10 @@ export async function backfillWalletActivitiesFromLedger(
         : null;
 
     const billLabel = isBillPay || isBillReversal ? formatBillPayLabel(meta) : '';
+    const billAction =
+      isBillPay || isBillReversal
+        ? formatBillCategoryLabel(String(meta.categoryCode ?? ''))
+        : '';
 
     const result = await recordWalletActivity({
       userId: row.user_id,
@@ -371,7 +375,7 @@ export async function backfillWalletActivitiesFromLedger(
         : isBillPay
           ? billLabel
           : isBillReversal
-            ? `${billLabel} refund`
+            ? `${billAction} refund`
             : row.direction === 'credit'
               ? `${assetCode} deposit`
               : `${row.currency} withdrawal`,
@@ -409,7 +413,7 @@ export async function backfillWalletActivitiesFromLedger(
         : isBillPay
           ? billLabel
           : isBillReversal
-            ? `${billLabel} refund`
+            ? `${billAction} refund`
             : isP2p && row.direction === 'debit' && p2pTagFromLegacy
               ? `@${p2pTagFromLegacy}`
               : isP2p && row.direction === 'credit'
@@ -673,10 +677,14 @@ export async function repairBillWalletTransactions(
          OR wt.external_reference ILIKE '%dayfi-bill%'
        )
        AND (
-         LOWER(COALESCE(b.name, '')) IN ('recipient', 'bill payment', '')
+         LOWER(COALESCE(b.name, '')) IN ('recipient', 'bill payment', 'bill topup', '')
+         OR LOWER(COALESCE(b.name, '')) LIKE '%bill payment%'
+         OR LOWER(COALESCE(b.name, '')) LIKE '%bill topup%'
          OR wt.reason ILIKE '%sent via bill_pay%'
          OR wt.reason ILIKE '%usd sent via%'
          OR wt.reason ILIKE '%wallet credit%'
+         OR wt.reason ILIKE '%bill payment%'
+         OR wt.reason ILIKE '%bill refund%'
        )`,
     [userId]
   );
@@ -694,10 +702,13 @@ export async function repairBillWalletTransactions(
       meta.reversal === true;
 
     const billLabel = formatBillPayLabel(meta);
+    const actionLabel = formatBillCategoryLabel(String(meta.categoryCode ?? ''));
     const reason = isReversal
       ? billRefundActivityReason(meta)
       : billPayActivityReason(meta, String(meta.customerId ?? ''));
-    const beneficiaryLabel = isReversal ? `${billLabel} refund` : billLabel;
+    const beneficiaryLabel = isReversal
+      ? `${actionLabel} refund`
+      : billLabel;
     const customerId = String(meta.customerId ?? '').trim();
 
     let beneficiaryId = row.beneficiary_id;

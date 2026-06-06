@@ -1,4 +1,5 @@
 import { db } from '../../config/database';
+import { formatBillCategoryLabel } from '../payment/walletActivityService';
 
 export type UserNotificationRow = {
   id: string;
@@ -25,6 +26,8 @@ export function formatNotificationAmount(
   currency: string
 ): string {
   const c = String(currency || 'USD').toUpperCase();
+  const n = Number(amount);
+  const value = Number.isFinite(n) ? n : 0;
   const symbol =
     c === 'NGN'
       ? '₦'
@@ -33,7 +36,10 @@ export function formatNotificationAmount(
         : c === 'GBP'
           ? '£'
           : '$';
-  return `${symbol}${Number(amount).toFixed(2)}`;
+  if (c === 'NGN' && Math.abs(value - Math.round(value)) < 0.001) {
+    return `${symbol}${Math.round(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+  }
+  return `${symbol}${value.toFixed(2)}`;
 }
 
 export async function safeNotify(
@@ -197,13 +203,15 @@ export async function notifyBillPayFailed(params: {
   userId: string;
   amount: number;
   billerName: string;
+  categoryCode?: string;
   reference: string;
   reason?: string;
 }): Promise<void> {
   const formatted = formatNotificationAmount(params.amount, 'NGN');
+  const action = formatBillCategoryLabel(params.categoryCode);
   await createUserNotification({
     userId: params.userId,
-    title: 'Bill payment failed',
+    title: `${action} failed`,
     message: `${formatted} to ${params.billerName} could not be completed. Your wallet was not charged.`,
     type: 'BILL_PAY_FAILED',
     metadata: {
