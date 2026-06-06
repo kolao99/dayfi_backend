@@ -577,7 +577,20 @@ class PaymentValidator {
         .pattern(/^\d+(\.\d+)?$/)
         .required(),
       asset: Joi.string().trim().uppercase().valid('USDC', 'EURC').required(),
-      network: Joi.string().trim().lowercase().valid('stellar', 'ethereum', 'eth').required(),
+      network: Joi.string()
+        .trim()
+        .lowercase()
+        .valid(
+          'stellar',
+          'ethereum',
+          'eth',
+          'bsc',
+          'arbitrum',
+          'sonic',
+          'xdc',
+          'mantle'
+        )
+        .required(),
       memo: Joi.string().max(28).optional(),
       pin: Joi.string().required(),
     });

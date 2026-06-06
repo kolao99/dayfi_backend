@@ -10,6 +10,7 @@ import {
   buildReceiveTrustlineAssets,
   resolveEthTokenContracts,
 } from '../../config/stellarIssuers';
+import { buildReceiveNetworksPayload } from '../../config/cryptoNetworks';
 import { getStellarConfig } from '../../config/stellarConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -134,9 +135,13 @@ async function loadWalletRow(userId: string): Promise<{
   wallet_id: string;
   stellar_deposit_address: string | null;
   ethereum_deposit_address: string | null;
+  stellar_secret_encrypted: string | null;
+  ethereum_secret_encrypted: string | null;
+  crypto_mnemonic_encrypted: string | null;
 } | null> {
   return db.oneOrNone(
-    `SELECT wallet_id, stellar_deposit_address, ethereum_deposit_address
+    `SELECT wallet_id, stellar_deposit_address, ethereum_deposit_address,
+            stellar_secret_encrypted, ethereum_secret_encrypted, crypto_mnemonic_encrypted
      FROM wallets
      WHERE user_id = $1 AND currency = 'USD'
      ORDER BY created_at ASC LIMIT 1`,
@@ -183,6 +188,83 @@ async function persistCryptoWallet(params: {
       params.userId,
     ]
   );
+}
+
+/** Generate keys once, persist to DB before any on-chain funding (retries reuse same address). */
+async function ensureCryptoKeyMaterial(userId: string): Promise<{
+  stellarPublic: string;
+  stellarSecret: string;
+  ethAddress: string;
+  ethSecret: string;
+}> {
+  const row = await loadWalletRow(userId);
+  if (
+    row?.stellar_secret_encrypted &&
+    row?.ethereum_secret_encrypted &&
+    row?.crypto_mnemonic_encrypted
+  ) {
+    const stellarSecret = decryptSecret(String(row.stellar_secret_encrypted));
+    const stellarPublic =
+      String(row.stellar_deposit_address || '').trim() ||
+      StellarSdk.Keypair.fromSecret(stellarSecret).publicKey();
+    return {
+      stellarPublic,
+      stellarSecret,
+      ethAddress: String(row.ethereum_deposit_address || ''),
+      ethSecret: decryptSecret(String(row.ethereum_secret_encrypted)),
+    };
+  }
+
+  const mnemonic = StellarHDWallet.generateMnemonic({ entropyBits: 128 });
+  const hd = StellarHDWallet.fromMnemonic(mnemonic);
+  const stellarKp = hd.getKeypair(0);
+  const stellarPublic = stellarKp.publicKey();
+  const stellarSecret = stellarKp.secret();
+
+  const ethWallet = ethers.Wallet.createRandom();
+  const ethAddress = ethWallet.address;
+  const ethSecret = ethWallet.privateKey;
+
+  await persistCryptoWallet({
+    userId,
+    stellarPublic,
+    stellarSecretEnc: encryptSecret(stellarSecret),
+    ethAddress,
+    ethSecretEnc: encryptSecret(ethSecret),
+    mnemonicEnc: encryptSecret(mnemonic),
+  });
+
+  return { stellarPublic, stellarSecret, ethAddress, ethSecret };
+}
+
+async function isCryptoFullyProvisioned(userId: string): Promise<boolean> {
+  const row = await loadWalletRow(userId);
+  if (
+    !row?.stellar_deposit_address ||
+    !row?.ethereum_deposit_address ||
+    !row.stellar_secret_encrypted
+  ) {
+    return false;
+  }
+
+  const server = new StellarSdk.Horizon.Server(horizonUrl());
+  try {
+    const account = await server.loadAccount(String(row.stellar_deposit_address));
+    const assets = buildReceiveTrustlineAssets();
+    for (const asset of assets) {
+      const has = (
+        account.balances as { asset_code?: string; asset_issuer?: string }[]
+      ).some(
+        (b) =>
+          b.asset_code === asset.getCode() &&
+          b.asset_issuer === asset.getIssuer()
+      );
+      if (!has) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const USER_FUNDING_AMOUNT_XLM = '1';
@@ -426,7 +508,9 @@ async function addSponsoredTrustline(
     networkPassphrase: networkPassphrase(),
   })
     .addOperation(
-      StellarSdk.Operation.beginSponsoringFutureReserves(userPublicKey)
+      StellarSdk.Operation.beginSponsoringFutureReserves({
+        sponsoredId: userPublicKey,
+      })
     )
     .addOperation(
       StellarSdk.Operation.changeTrust({
@@ -498,6 +582,37 @@ async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
   }
 }
 
+async function runProvisionWork(uid: string): Promise<void> {
+  await ensureUsdWalletRow(uid);
+  if (await isCryptoFullyProvisioned(uid)) {
+    return;
+  }
+
+  await assertMasterCanFundProvision();
+
+  const { stellarPublic, stellarSecret } = await ensureCryptoKeyMaterial(uid);
+
+  await fundStellarAccount(stellarPublic);
+  await addReceiveTrustlines(stellarSecret);
+}
+
+/** Serialize provision attempts per user (concurrent HTTP calls share one chain). */
+function queueProvisionForUser(uid: string): Promise<void> {
+  const prev = provisionLocks.get(uid) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {
+      // Prior attempt failed; still allow this queued run to retry idempotently.
+    })
+    .then(() => runProvisionWork(uid));
+  provisionLocks.set(uid, next);
+  void next.finally(() => {
+    if (provisionLocks.get(uid) === next) {
+      provisionLocks.delete(uid);
+    }
+  });
+  return next;
+}
+
 /** Idempotent: create Stellar + ETH wallets, fund testnet, add USDC/EURC trustlines. */
 export async function provisionCryptoWalletsForUser(userId: string): Promise<{
   stellarAddress: string;
@@ -506,60 +621,16 @@ export async function provisionCryptoWalletsForUser(userId: string): Promise<{
   const uid = String(userId || '').trim();
   if (!uid) throw new Error('Invalid user id');
 
-  const existing = provisionLocks.get(uid);
-  if (existing) {
-    await existing;
-    const row = await loadWalletRow(uid);
-    if (row?.stellar_deposit_address && row?.ethereum_deposit_address) {
-      return {
-        stellarAddress: row.stellar_deposit_address,
-        ethereumAddress: row.ethereum_deposit_address,
-      };
-    }
-  }
-
-  const work = (async () => {
-    await ensureUsdWalletRow(uid);
-    const row = await loadWalletRow(uid);
-    if (row?.stellar_deposit_address && row?.ethereum_deposit_address) {
-      return;
-    }
-
-    await assertMasterCanFundProvision();
-
-    const mnemonic = StellarHDWallet.generateMnemonic({ entropyBits: 128 });
-    const hd = StellarHDWallet.fromMnemonic(mnemonic);
-    const stellarKp = hd.getKeypair(0);
-    const stellarPublic = stellarKp.publicKey();
-    const stellarSecret = stellarKp.secret();
-
-    const ethWallet = ethers.Wallet.createRandom();
-    const ethAddress = ethWallet.address;
-    const ethSecret = ethWallet.privateKey;
-
-    await fundStellarAccount(stellarPublic);
-    await addReceiveTrustlines(stellarSecret);
-
-    await persistCryptoWallet({
-      userId: uid,
-      stellarPublic,
-      stellarSecretEnc: encryptSecret(stellarSecret),
-      ethAddress,
-      ethSecretEnc: encryptSecret(ethSecret),
-      mnemonicEnc: encryptSecret(mnemonic),
-    });
-  })();
-
-  provisionLocks.set(uid, work);
-  try {
-    await work;
-  } finally {
-    provisionLocks.delete(uid);
-  }
+  await queueProvisionForUser(uid);
 
   const row = await loadWalletRow(uid);
   if (!row?.stellar_deposit_address || !row?.ethereum_deposit_address) {
     throw new Error('Crypto wallet provisioning did not persist addresses');
+  }
+  if (!(await isCryptoFullyProvisioned(uid))) {
+    throw new Error(
+      'Crypto wallet provisioning incomplete. Trustlines may still be pending — retry shortly.'
+    );
   }
   return {
     stellarAddress: row.stellar_deposit_address,
@@ -615,16 +686,18 @@ export async function enqueueCryptoWalletProvision(
   }
   const after = await loadWalletRow(uid);
   if (after?.stellar_deposit_address && after?.ethereum_deposit_address) {
-    const jobId = crypto.randomUUID();
-    jobs.set(jobId, {
-      userId: uid,
-      status: 'completed',
-      current_step: 'finalize',
-      error: null,
-      mnemonicPending: null,
-      recoveryDelivered: true,
-    });
-    return { job_id: jobId, status: 'completed' };
+    if (await isCryptoFullyProvisioned(uid)) {
+      const jobId = crypto.randomUUID();
+      jobs.set(jobId, {
+        userId: uid,
+        status: 'completed',
+        current_step: 'finalize',
+        error: null,
+        mnemonicPending: null,
+        recoveryDelivered: true,
+      });
+      return { job_id: jobId, status: 'completed' };
+    }
   }
 
   const jobId = crypto.randomUUID();
@@ -676,12 +749,17 @@ export function buildReceiveCryptoPayload(row: {
   ethereum_deposit_address: string | null;
 }) {
   const ethTokens = resolveEthTokenContracts();
+  const networks = buildReceiveNetworksPayload({
+    stellar: row.stellar_deposit_address,
+    evm: row.ethereum_deposit_address,
+  });
   return {
     method: 'crypto',
     network: 'stellar',
     assets: ['USDC', 'EURC'],
     stellarAddress: row.stellar_deposit_address,
     ethereumAddress: row.ethereum_deposit_address,
+    networks,
     stellarNetwork: isStellarTestnet() ? 'testnet' : 'mainnet',
     ethereumNetwork: ethTokens.network,
     stellarAssets: [

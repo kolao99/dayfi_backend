@@ -43,6 +43,10 @@ import {
   backfillWalletActivitiesFromLedger,
   repairP2pWalletTransactions,
 } from './walletActivityService';
+import {
+  notifyBankSend,
+  safeNotify,
+} from '../notifications/notificationService';
 
 type TransactionCountResult = { total: string | number };
 
@@ -270,7 +274,7 @@ class PaymentService {
       userId,
       amount,
       fromCurrency,
-      source === 'flutterwave' ? 'manual' : source,
+      source,
       externalReference
     );
   }
@@ -308,7 +312,7 @@ class PaymentService {
     userId: string,
     amount: number,
     fromCurrency: string,
-    source: 'grey' | 'stellar' | 'yellowcard' | 'manual',
+    source: 'grey' | 'stellar' | 'yellowcard' | 'flutterwave' | 'manual',
     externalReference?: string
   ): Promise<{
     usdAmount: number;
@@ -401,35 +405,51 @@ class PaymentService {
     userId: string,
     email: string,
     bvn: string
-  ): Promise<Wallet & { account_number?: string; bank_name?: string }> {
-    const existing = await db.oneOrNone<{
-      wallet_id: string;
-      account_number: string | null;
-      bank_name: string | null;
-    }>(
-      `SELECT wallet_id, account_number, bank_name FROM wallets
-       WHERE user_id = $1 AND currency = 'NGN' LIMIT 1`,
-      [userId]
-    );
-    if (existing?.account_number) {
-      const w = await this.getWalletByCurrency(userId, LOCAL_SPEND_CURRENCY);
-      return { ...w!, account_number: existing.account_number, bank_name: existing.bank_name ?? undefined };
-    }
-    const ngn = await this.ensureNgnWallet(userId);
-
+  ): Promise<Wallet & { account_number?: string; bank_name?: string; account_name?: string }> {
     const userRow = await db.oneOrNone<{
-      first_name: string;
-      last_name: string;
+      first_name: string | null;
+      last_name: string | null;
       phone_number: string | null;
     }>(
       `SELECT first_name, last_name, phone_number FROM users WHERE user_id = $1`,
       [userId]
     );
+    const accountName =
+      `${userRow?.first_name ?? ''} ${userRow?.last_name ?? ''}`.trim();
+
+    const existing = await db.oneOrNone<{
+      wallet_id: string;
+      account_number: string | null;
+      bank_name: string | null;
+      account_name: string | null;
+    }>(
+      `SELECT wallet_id, account_number, bank_name, account_name FROM wallets
+       WHERE user_id = $1 AND currency = 'NGN' LIMIT 1`,
+      [userId]
+    );
+    if (existing?.account_number) {
+      if (accountName && !String(existing.account_name ?? '').trim()) {
+        await db.none(
+          `UPDATE wallets SET account_name = $1, updated_at = CURRENT_TIMESTAMP
+           WHERE wallet_id = $2`,
+          [accountName, existing.wallet_id]
+        );
+      }
+      const w = await this.getWalletByCurrency(userId, LOCAL_SPEND_CURRENCY);
+      return {
+        ...w!,
+        account_number: existing.account_number,
+        bank_name: existing.bank_name ?? undefined,
+        account_name: String(existing.account_name ?? '').trim() || accountName || undefined,
+      };
+    }
+    const ngn = await this.ensureNgnWallet(userId);
 
     const response = await createVirtualAccount(email, bvn, {
-      firstname: userRow?.first_name,
-      lastname: userRow?.last_name,
+      firstname: userRow?.first_name ?? undefined,
+      lastname: userRow?.last_name ?? undefined,
       phonenumber: userRow?.phone_number ?? undefined,
+      narration: accountName || undefined,
     });
     const root = response?.data as Record<string, unknown> | undefined;
     const data = (root?.data ?? root) as Record<string, unknown> | undefined;
@@ -445,9 +465,16 @@ class PaymentService {
     }
 
     await db.none(
-      `UPDATE wallets SET account_number = $1, bank_name = $2, provider = $3, updated_at = CURRENT_TIMESTAMP
-       WHERE wallet_id = $4`,
-      [accountNumber, bankName, WALLET_PROVIDER.FLUTTERWAVE, ngn.wallet_id]
+      `UPDATE wallets SET account_number = $1, bank_name = $2, account_name = $3,
+       provider = $4, updated_at = CURRENT_TIMESTAMP
+       WHERE wallet_id = $5`,
+      [
+        accountNumber,
+        bankName,
+        accountName || null,
+        WALLET_PROVIDER.FLUTTERWAVE,
+        ngn.wallet_id,
+      ]
     );
 
     const updated = await this.getWalletByCurrency(userId, LOCAL_SPEND_CURRENCY);
@@ -601,6 +628,19 @@ class PaymentService {
         bankName,
         externalReference: reference,
       });
+
+      await safeNotify(
+        () =>
+          notifyBankSend({
+            userId,
+            amount,
+            currency: LOCAL_SPEND_CURRENCY,
+            recipientName: accountName,
+            bankName,
+            reference,
+          }),
+        'bank_send'
+      );
 
       return {
         success: true,
@@ -997,6 +1037,18 @@ class PaymentService {
       } catch (err: unknown) {
         console.warn(
           `[fetchWalletTransactions] p2p repair skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      try {
+        const { repairFlutterwaveDepositActivities } = await import(
+          './flutterwaveInflowService'
+        );
+        await repairFlutterwaveDepositActivities(userId);
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] flutterwave deposit repair skipped: ${
             err instanceof Error ? err.message : String(err)
           }`
         );

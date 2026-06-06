@@ -12,6 +12,7 @@ export { convertAmountToUsd } from './fxService';
 export type LedgerSource =
   | 'grey'
   | 'stellar'
+  | 'evm'
   | 'yellowcard'
   | 'flutterwave'
   | 'p2p'
@@ -103,6 +104,10 @@ export async function creditUsdBalance(params: {
           ...(params.metadata ?? {}),
           fromCurrency: params.fromCurrency,
           rate,
+          originalAmount:
+            String(params.fromCurrency).toUpperCase() !== PRIMARY_CURRENCY
+              ? Number(params.amount)
+              : undefined,
           balanceAfter: Number(updated.balance),
         }),
       ]
@@ -333,7 +338,7 @@ export async function creditWalletBalance(params: {
           (params.source === 'stellar'
             ? `${assetCode} deposit via Stellar`
             : params.source === 'flutterwave'
-              ? 'NGN virtual account deposit'
+              ? 'Deposit via NGN bank account'
               : `${currency} wallet credit`),
         externalReference: params.externalReference,
         channel:

@@ -7,7 +7,11 @@ import {
 } from './balanceService';
 import { convertAmountToUsd } from './fxService';
 import { PRIMARY_CURRENCY } from './walletModel';
-import { notifyP2pRecipient } from '../notifications/notificationService';
+import {
+  notifyP2pRecipient,
+  notifyP2pSend,
+  safeNotify,
+} from '../notifications/notificationService';
 import { normalizeDayfiId } from '../authentication/socialAuth';
 import {
   buildWalletActivityTxId,
@@ -220,21 +224,30 @@ export async function transferByDayfiTag(params: {
     [params.senderWalletId]
   );
 
-  try {
-    await notifyP2pRecipient({
-      recipientUserId: recipientWallet.user_id,
-      senderUserId: params.senderUserId,
-      senderWalletId: params.senderWalletId,
-      amount,
-      currency,
-      reference,
-    });
-  } catch (err: unknown) {
-    console.warn(
-      '[p2p] recipient notification failed:',
-      err instanceof Error ? err.message : err
-    );
-  }
+  await safeNotify(
+    () =>
+      notifyP2pRecipient({
+        recipientUserId: recipientWallet.user_id,
+        senderUserId: params.senderUserId,
+        senderWalletId: params.senderWalletId,
+        amount,
+        currency,
+        reference,
+      }),
+    'p2p_receive'
+  );
+
+  await safeNotify(
+    () =>
+      notifyP2pSend({
+        senderUserId: params.senderUserId,
+        recipientTag: normalizedTag,
+        amount,
+        currency,
+        reference,
+      }),
+    'p2p_send'
+  );
 
   return {
     reference,

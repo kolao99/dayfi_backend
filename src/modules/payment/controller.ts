@@ -27,6 +27,7 @@ import {
 } from './cryptoSendService';
 import { recordCryptoOutboundLedger } from './cryptoOutboundLedgerService';
 import { syncStellarInflowsToLedger } from './cryptoInflowSyncService';
+import { syncAllCryptoInflowsToLedger } from './evmInflowSyncService';
 import { getPayoutQuote } from './payoutQuoteService';
 import { getUserFeatureActivity } from './featureActivityService';
 import {
@@ -219,17 +220,29 @@ class PaymentController {
         userId
       );
 
-      // Ensure deposit address exists before reading Horizon inflows.
-      try {
-        await provisionCryptoWalletsForUser(userId);
-      } catch (provisionErr: unknown) {
-        console.warn(
-          `[getWalletDetails] crypto provision skipped for user=${userId}: ${
-            provisionErr instanceof Error
-              ? provisionErr.message
-              : String(provisionErr)
-          }`
-        );
+      // Only auto-provision when deposit addresses are missing (avoid Horizon on every balance load).
+      const cryptoRow = await db.oneOrNone<{
+        stellar_deposit_address: string | null;
+        ethereum_deposit_address: string | null;
+      }>(
+        `SELECT stellar_deposit_address, ethereum_deposit_address
+         FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
+        [userId]
+      );
+      const needsCryptoProvision =
+        !cryptoRow?.stellar_deposit_address || !cryptoRow?.ethereum_deposit_address;
+      if (needsCryptoProvision) {
+        try {
+          await provisionCryptoWalletsForUser(userId);
+        } catch (provisionErr: unknown) {
+          console.warn(
+            `[getWalletDetails] crypto provision skipped for user=${userId}: ${
+              provisionErr instanceof Error
+                ? provisionErr.message
+                : String(provisionErr)
+            }`
+          );
+        }
       }
 
       let stellarSync: Awaited<ReturnType<typeof syncStellarInflowsToLedger>> | null =
@@ -1452,6 +1465,7 @@ class PaymentController {
           currency: 'NGN',
           accountNumber: (wallet as any).account_number,
           bankName: (wallet as any).bank_name,
+          accountName: (wallet as any).account_name ?? null,
           provider: 'flutterwave',
         }
       );
@@ -1464,42 +1478,36 @@ class PaymentController {
   flutterwaveWebhook = async (req: Request, res: Response): Promise<any> => {
     try {
       const body = req.body as Record<string, unknown>;
-      const data =
-        body.data && typeof body.data === 'object'
-          ? (body.data as Record<string, unknown>)
-          : body;
-      const amount = Number(data.amount ?? body.amount);
-      const reference = String(
-        data.tx_ref ?? data.flw_ref ?? data.id ?? body.tx_ref ?? ''
+      console.log(
+        '[flutterwaveWebhook] event=%s type=%s',
+        body.event,
+        body['event.type'] ?? body.event_type
       );
-      const email = String(data.email ?? body.email ?? '');
-      if (!reference || !Number.isFinite(amount) || amount <= 0) {
-        return errorResponse(res, 'Invalid webhook payload', enums.HTTP_BAD_REQUEST);
+
+      const { parseFlutterwaveDepositWebhook, processFlutterwaveDeposit } =
+        await import('./flutterwaveInflowService');
+
+      const payload = parseFlutterwaveDepositWebhook(body);
+      if (!payload) {
+        console.warn('[flutterwaveWebhook] ignored payload (not a successful charge)');
+        return res.status(200).json({ received: true, ignored: true });
       }
 
-      const wallet = await db.oneOrNone<{ user_id: string }>(
-        `SELECT w.user_id FROM wallets w
-         JOIN users u ON u.user_id = w.user_id
-         WHERE w.currency = 'NGN' AND (u.email = $1 OR w.account_number = $2)
-         LIMIT 1`,
-        [email, String(data.account_number ?? '')]
-      );
-      if (!wallet?.user_id) {
-        return errorResponse(res, 'User not found for deposit', enums.HTTP_NOT_FOUND);
-      }
-
-      const result = await this.paymentService.creditWalletInflow(
-        wallet.user_id,
-        amount,
-        'NGN',
-        'NGN',
-        'flutterwave',
-        reference
+      const result = await processFlutterwaveDeposit(payload);
+      console.log(
+        '[flutterwaveWebhook] credited user=%s amount=%s NGN duplicate=%s',
+        result.userId,
+        payload.amount,
+        result.duplicate
       );
 
-      return res.status(200).json({ received: true, duplicate: result.duplicate });
+      return res.status(200).json({
+        received: true,
+        duplicate: result.duplicate,
+        userId: result.userId,
+      });
     } catch (err: any) {
-      console.error('Flutterwave webhook error:', err.message);
+      console.error('[flutterwaveWebhook] error:', err.message, req.body);
       return res.status(500).json({ error: err.message });
     }
   };
@@ -1546,7 +1554,7 @@ class PaymentController {
       );
       await provisionCryptoWalletsForUser(userId);
 
-      const sync = await syncStellarInflowsToLedger({
+      const sync = await syncAllCryptoInflowsToLedger({
         userId,
         walletsByCurrency,
       });
@@ -1631,21 +1639,9 @@ class PaymentController {
       );
 
       if (!row?.stellar_deposit_address || !row?.ethereum_deposit_address) {
-        await provisionCryptoWalletsForUser(userId);
-        row = await db.oneOrNone<{
-          stellar_deposit_address: string | null;
-          ethereum_deposit_address: string | null;
-        }>(
-          `SELECT stellar_deposit_address, ethereum_deposit_address
-           FROM wallets WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
-          [userId]
-        );
-      }
-
-      if (!row?.stellar_deposit_address || !row?.ethereum_deposit_address) {
         return errorResponse(
           res,
-          'Crypto wallet provisioning failed. Retry in a moment.',
+          'Crypto wallet not provisioned yet. Start wallet provisioning first.',
           enums.HTTP_SERVICE_UNAVAILABLE
         );
       }

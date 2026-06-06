@@ -15,6 +15,11 @@ import {
 } from './balanceService';
 import { PRIMARY_CURRENCY } from './walletModel';
 import { recordWalletActivity } from './walletActivityService';
+import {
+  notifyBillPayFailed,
+  notifyBillPaySuccess,
+  safeNotify,
+} from '../notifications/notificationService';
 
 const SKIP_VALIDATE_CATEGORIES = new Set(['AIRTIME', 'MOBILEDATA']);
 
@@ -138,6 +143,20 @@ export class BillsService {
         externalReference: `${reference}-reversal`,
         metadata: { reversal: true, reason: 'bill_payment_failed' },
       });
+      await safeNotify(
+        () =>
+          notifyBillPayFailed({
+            userId,
+            amount,
+            billerName:
+              params.billerName?.trim() ||
+              params.itemName?.trim() ||
+              params.categoryCode,
+            reference,
+            reason: err instanceof Error ? err.message : String(err),
+          }),
+        'bill_pay_failed'
+      );
       throw err;
     }
 
@@ -160,6 +179,18 @@ export class BillsService {
       beneficiaryName: params.billerName ?? 'Bill Payment',
       externalReference: String(fwResult.tx_ref ?? fwResult.reference ?? reference),
     });
+
+    await safeNotify(
+      () =>
+        notifyBillPaySuccess({
+          userId,
+          amount,
+          billerName: params.billerName?.trim() || label,
+          customerId: params.customerId,
+          reference,
+        }),
+      'bill_pay'
+    );
 
     const fwTxRef = String(fwResult.tx_ref ?? '').trim();
     let statusData: Record<string, unknown> | null = null;

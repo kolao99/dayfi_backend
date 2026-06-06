@@ -2,7 +2,9 @@ import { Request, Response } from 'express';
 import enums from '../../shared/lib/enums';
 import { errorResponse, success } from '../../shared/lib/api-response';
 import {
+  countUnreadNotifications,
   listUserNotifications,
+  markAllNotificationsRead,
   markNotificationRead,
 } from './notificationService';
 
@@ -29,6 +31,44 @@ class NotificationController {
         enums.HTTP_OK,
         data
       );
+    } catch (err: unknown) {
+      return errorResponse(
+        res,
+        err instanceof Error ? err.message : String(err),
+        enums.HTTP_INTERNAL_SERVER_ERROR
+      );
+    }
+  };
+
+  unreadCount = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id;
+      if (!userId) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+      const count = await countUnreadNotifications(userId);
+      return success(res, enums.FETCHED_SUCCESSFULLY('Unread count'), enums.HTTP_OK, {
+        count,
+      });
+    } catch (err: unknown) {
+      return errorResponse(
+        res,
+        err instanceof Error ? err.message : String(err),
+        enums.HTTP_INTERNAL_SERVER_ERROR
+      );
+    }
+  };
+
+  markAllRead = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.user_id;
+      if (!userId) {
+        return errorResponse(res, enums.NO_TOKEN, enums.HTTP_UNAUTHORIZED);
+      }
+      const updated = await markAllNotificationsRead(userId);
+      return success(res, 'Notifications updated', enums.HTTP_OK, {
+        updated,
+      });
     } catch (err: unknown) {
       return errorResponse(
         res,

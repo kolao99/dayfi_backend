@@ -7,10 +7,19 @@ import { ethers } from 'ethers';
 import { db } from '../../config/database';
 import {
   isStellarTestnet,
-  resolveEthTokenContracts,
   resolveEurcIssuer,
   resolveUsdcIssuer,
 } from '../../config/stellarIssuers';
+import {
+  getCryptoSendConfigPayload,
+  getCryptoNetwork,
+  isCryptoNetworkKey,
+  resolveEvmChainKeyForSend,
+} from '../../config/cryptoNetworks';
+import {
+  resolveEvmChainConfig,
+  resolveEvmTokenAddress,
+} from '../../config/evmChains';
 import { decryptWalletSecret } from './cryptoWalletSecrets';
 
 const horizonUrl = () =>
@@ -44,16 +53,7 @@ async function loadCryptoRow(userId: string) {
 }
 
 export function getCryptoSendConfig() {
-  return {
-    networks: [
-      { key: 'stellar', name: 'Stellar', assets: ['USDC', 'EURC'] },
-      { key: 'ethereum', name: 'Ethereum', assets: ['USDC', 'EURC'] },
-    ],
-    assets: {
-      USDC: ['stellar', 'ethereum'],
-      EURC: ['stellar', 'ethereum'],
-    },
-  };
+  return getCryptoSendConfigPayload();
 }
 
 export async function sendStellarAsset(params: {
@@ -118,54 +118,54 @@ export async function sendStellarAsset(params: {
   };
 }
 
-function resolveEthRpc(): string {
-  const contracts = resolveEthTokenContracts();
-  const fromEnv = process.env.ETH_RPC_URL?.trim();
-  if (fromEnv) return fromEnv;
-  if (contracts.network === 'sepolia') {
-    return 'https://ethereum-sepolia.publicnode.com';
-  }
-  return 'https://ethereum.publicnode.com';
-}
-
 const ERC20_ABI = [
   'function transfer(address to, uint256 amount) returns (bool)',
   'function balanceOf(address account) view returns (uint256)',
   'function decimals() view returns (uint8)',
 ];
 
-export async function sendEthereumToken(params: {
+export async function sendEvmToken(params: {
   userId: string;
+  networkKey: string;
   toAddress: string;
   amount: string;
   assetCode: string;
 }): Promise<{ hash: string; from: string; to: string }> {
+  const chainKey = resolveEvmChainKeyForSend(params.networkKey);
+  if (!chainKey) {
+    throw new Error(`Unsupported EVM network: ${params.networkKey}`);
+  }
+
+  const chain = resolveEvmChainConfig(chainKey);
+  if (!chain) {
+    throw new Error(`${params.networkKey} is not configured on this environment`);
+  }
+
   const row = await loadCryptoRow(params.userId);
   if (!row?.ethereum_secret_encrypted || !row.ethereum_deposit_address) {
-    throw new Error('Ethereum wallet not provisioned. Open Receive → Crypto first.');
+    throw new Error('EVM wallet not provisioned. Open Receive → Crypto first.');
   }
 
   const to = params.toAddress.trim();
   if (!/^0x[a-fA-F0-9]{40}$/.test(to)) {
-    throw new Error('Invalid Ethereum address');
+    throw new Error('Invalid wallet address (must be 0x…)');
   }
 
-  const contracts = resolveEthTokenContracts();
   const code = params.assetCode.toUpperCase();
-  const tokenAddress = code === 'EURC' ? contracts.eurc : contracts.usdc;
-  if (!tokenAddress) throw new Error(`Unsupported EVM asset: ${code}`);
+  const tokenAddress = resolveEvmTokenAddress(chainKey, code);
+  if (!tokenAddress) throw new Error(`${code} is not supported on ${chain.key}`);
 
   const secret = decryptWalletSecret(row.ethereum_secret_encrypted);
-  const provider = new ethers.JsonRpcProvider(resolveEthRpc());
+  const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
   const wallet = new ethers.Wallet(secret, provider);
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, wallet);
   const decimals = await token.decimals();
   const amountWei = ethers.parseUnits(params.amount, decimals);
 
-  const ethBalance = await provider.getBalance(wallet.address);
-  if (ethBalance === BigInt(0)) {
+  const nativeBalance = await provider.getBalance(wallet.address);
+  if (nativeBalance === BigInt(0)) {
     throw new Error(
-      'Insufficient ETH for gas. Fund your Ethereum wallet with a small amount of Sepolia ETH (testnet) first.'
+      `Insufficient ${chain.nativeSymbol} for gas on ${chain.key}. Fund this wallet with a small amount of ${chain.nativeSymbol} first.`
     );
   }
 
@@ -174,6 +174,16 @@ export async function sendEthereumToken(params: {
   if (!receipt?.hash) throw new Error('EVM transfer failed');
 
   return { hash: receipt.hash, from: wallet.address, to };
+}
+
+/** @deprecated use sendEvmToken */
+export async function sendEthereumToken(params: {
+  userId: string;
+  toAddress: string;
+  amount: string;
+  assetCode: string;
+}): Promise<{ hash: string; from: string; to: string }> {
+  return sendEvmToken({ ...params, networkKey: 'ethereum' });
 }
 
 export async function getCryptoBalances(userId: string): Promise<{
@@ -205,30 +215,47 @@ export async function getCryptoBalances(userId: string): Promise<{
   }
 
   if (row.ethereum_deposit_address) {
-    try {
-      const provider = new ethers.JsonRpcProvider(resolveEthRpc());
-      const ethBal = await provider.getBalance(row.ethereum_deposit_address);
-      ethereum.ETH = ethers.formatEther(ethBal);
-      const contracts = resolveEthTokenContracts();
-      const erc20 = [
-        ['USDC', contracts.usdc],
-        ['EURC', contracts.eurc],
-      ] as const;
-      for (const [code, tokenAddress] of erc20) {
-        const token = new ethers.Contract(
-          tokenAddress,
-          [
-            'function balanceOf(address) view returns (uint256)',
-            'function decimals() view returns (uint8)',
-          ],
-          provider
-        );
-        const bal = await token.balanceOf(row.ethereum_deposit_address);
-        const dec = await token.decimals();
-        ethereum[code] = ethers.formatUnits(bal, dec);
+    const chains = ['ethereum', 'bsc', 'arbitrum', 'mantle', 'sonic', 'xdc'] as const;
+    for (const chainKey of chains) {
+      const chain = resolveEvmChainConfig(chainKey);
+      if (!chain) continue;
+      try {
+        const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
+        if (chainKey === 'ethereum') {
+          const ethBal = await provider.getBalance(row.ethereum_deposit_address);
+          ethereum.ETH = ethers.formatEther(ethBal);
+        }
+        const usdcAddr = resolveEvmTokenAddress(chainKey, 'USDC');
+        if (usdcAddr && chainKey === 'ethereum') {
+          const token = new ethers.Contract(
+            usdcAddr,
+            [
+              'function balanceOf(address) view returns (uint256)',
+              'function decimals() view returns (uint8)',
+            ],
+            provider
+          );
+          const bal = await token.balanceOf(row.ethereum_deposit_address);
+          const dec = await token.decimals();
+          ethereum.USDC = ethers.formatUnits(bal, dec);
+        }
+        const eurcAddr = resolveEvmTokenAddress(chainKey, 'EURC');
+        if (eurcAddr && chainKey === 'ethereum') {
+          const token = new ethers.Contract(
+            eurcAddr,
+            [
+              'function balanceOf(address) view returns (uint256)',
+              'function decimals() view returns (uint8)',
+            ],
+            provider
+          );
+          const bal = await token.balanceOf(row.ethereum_deposit_address);
+          const dec = await token.decimals();
+          ethereum.EURC = ethers.formatUnits(bal, dec);
+        }
+      } catch {
+        /* chain rpc unavailable */
       }
-    } catch {
-      /* rpc or contract read failed */
     }
   }
 
@@ -243,14 +270,28 @@ export async function routeCryptoSend(params: {
   amount: string;
   memo?: string;
 }): Promise<{ hash: string; network: string; asset: string; from: string; to: string }> {
-  const network = params.network.toLowerCase();
+  let network = params.network.toLowerCase();
+  if (network === 'eth') network = 'ethereum';
   const asset = params.asset.toUpperCase();
+
+  if (!isCryptoNetworkKey(network)) {
+    throw new Error(`Unsupported network: ${params.network}`);
+  }
+
+  const net = getCryptoNetwork(network);
+  if (!net?.sendEnabled) {
+    throw new Error(`${net?.name ?? network} send is not available yet. Use Stellar or Ethereum.`);
+  }
+
+  if (!net.assets.includes(asset as 'USDC' | 'EURC')) {
+    throw new Error(`${asset} is not supported on ${net.name}`);
+  }
 
   if (!['USDC', 'EURC'].includes(asset)) {
     throw new Error('Only USDC and EURC are supported');
   }
 
-  if (network === 'stellar') {
+  if (net.rail === 'stellar') {
     const r = await sendStellarAsset({
       userId: params.userId,
       toAddress: params.to,
@@ -261,14 +302,15 @@ export async function routeCryptoSend(params: {
     return { ...r, network: 'stellar', asset };
   }
 
-  if (network === 'ethereum' || network === 'eth') {
-    const r = await sendEthereumToken({
+  if (net.rail === 'evm') {
+    const r = await sendEvmToken({
       userId: params.userId,
+      networkKey: network,
       toAddress: params.to,
       amount: params.amount,
       assetCode: asset,
     });
-    return { ...r, network: 'ethereum', asset };
+    return { ...r, network, asset };
   }
 
   throw new Error(`Unsupported network: ${params.network}`);

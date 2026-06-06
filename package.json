@@ -24,6 +24,7 @@
     "migrate-test:reset": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate reset --config database.json -e test",
     "egress-ip": "ts-node -r dotenv/config scripts/print-egress-ip.ts",
     "fw:smoke": "ts-node -r dotenv/config scripts/flutterwave-smoke.ts",
+    "fw:reconcile": "ts-node -r dotenv/config scripts/reconcile-flutterwave-deposits.ts",
     "yc:smoke": "ts-node -r dotenv/config scripts/yellowcard-smoke.ts",
     "smoke:providers": "npm run egress-ip && npm run fw:smoke && npm run yc:smoke",
     "grey:smoke": "ts-node -r dotenv/config scripts/grey-smoke.ts",

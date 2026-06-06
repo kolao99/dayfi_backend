@@ -208,6 +208,23 @@ export const paymentQueries: PaymentQueries = {
             wt.status,
             wt.reason,
             wt.timestamp,
+            COALESCE(
+              (lm.metadata->>'originalAmount')::numeric,
+              CASE
+                WHEN wt.receive_channel = 'bank'
+                  AND wt.activity_kind = 'deposit'
+                  AND wt.ledger_currency = 'NGN'
+                THEN wt.receive_amount
+                ELSE NULL
+              END
+            ) AS ngn_amount,
+            COALESCE(lm.usd_equivalent, wt.send_amount) AS usd_credited,
+            CASE
+              WHEN (lm.metadata->>'rate')::numeric > 0
+                AND (lm.metadata->>'rate')::numeric < 1
+              THEN (1 / (lm.metadata->>'rate')::numeric)
+              ELSE (lm.metadata->>'rate')::numeric
+            END AS fx_ngn_to_usd,
             json_build_object(
                     'id', b.id,
                     'name', b.name,
@@ -229,6 +246,10 @@ export const paymentQueries: PaymentQueries = {
         FROM wallet_transactions wt
                  LEFT JOIN source s ON wt.source_id = s.id
                  LEFT JOIN beneficiaries b ON wt.beneficiary_id = b.id
+                 LEFT JOIN ledger_movements lm
+                   ON lm.external_reference = wt.external_reference
+                  AND lm.user_id = wt.user_id
+                  AND lm.direction = 'credit'
         WHERE wt.user_id = $1
           AND ($2 IS NULL OR wt.status = $2)
           AND ($3 IS NULL OR wt.timestamp::date >= $3::date)

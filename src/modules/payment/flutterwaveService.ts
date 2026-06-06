@@ -145,6 +145,35 @@ export const verifyCharge = async (
   return response.data;
 };
 
+/** V3 verify a transaction by numeric Flutterwave id (webhook reconciliation). */
+export async function verifyFlutterwaveTransactionById(
+  transactionId: string | number
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(String(transactionId).trim());
+  const data = await flutterwaveGet<Record<string, unknown>>(
+    `/v3/transactions/${id}/verify`
+  );
+  return data ?? {};
+}
+
+/** List recent successful Flutterwave transactions (reconciliation). */
+export async function listFlutterwaveTransactions(params?: {
+  from?: string;
+  to?: string;
+  status?: string;
+  currency?: string;
+  page?: number;
+}): Promise<Record<string, unknown>[]> {
+  const data = await flutterwaveGet<unknown>('/v3/transactions', {
+    page: params?.page ?? 1,
+    ...(params?.from ? { from: params.from } : {}),
+    ...(params?.to ? { to: params.to } : {}),
+    ...(params?.status ? { status: params.status } : {}),
+    ...(params?.currency ? { currency: params.currency } : {}),
+  });
+  return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+}
+
 export const verifyPayment = async (txref: string): Promise<any> => {
   const data = {
     txref,
@@ -198,9 +227,20 @@ export const fetchBanks = async (): Promise<{
 export const createVirtualAccount = async (
   email: string,
   bvn: string,
-  options?: { firstname?: string; lastname?: string; phonenumber?: string }
+  options?: {
+    firstname?: string;
+    lastname?: string;
+    phonenumber?: string;
+    /** Shown as beneficiary name on bank transfers (e.g. Opay). Use the user's legal name. */
+    narration?: string;
+  }
 ): Promise<AxiosResponse> => {
   const txRef = `dayfi-va-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const first = String(options?.firstname ?? '').trim();
+  const last = String(options?.lastname ?? '').trim();
+  const fullName = `${first} ${last}`.trim();
+  const narration =
+    String(options?.narration ?? '').trim() || fullName || 'Dayfi Account';
   return axios.post(
     `${baseUrl()}/v3/virtual-account-numbers`,
     {
@@ -208,10 +248,10 @@ export const createVirtualAccount = async (
       bvn,
       is_permanent: true,
       tx_ref: txRef,
-      narration: 'Dayfi NGN Wallet',
+      narration,
       currency: 'NGN',
-      ...(options?.firstname ? { firstname: options.firstname } : {}),
-      ...(options?.lastname ? { lastname: options.lastname } : {}),
+      ...(first ? { firstname: first } : {}),
+      ...(last ? { lastname: last } : {}),
       ...(options?.phonenumber ? { phonenumber: options.phonenumber } : {}),
     },
     { headers: v3Headers() }
@@ -271,6 +311,26 @@ function assertFlutterwaveSuccess(payload: unknown, fallback: string): unknown {
     throw new Error(String(root?.message ?? fallback));
   }
   return root?.data ?? root;
+}
+
+export const FLUTTERWAVE_BILL_PARTNER_UNAVAILABLE =
+  'Bill payments are temporarily unavailable. Our payment partner cannot process this right now — please try again shortly.';
+
+/** Flutterwave bill float empty — not the Dayfi user's wallet balance. */
+export function isFlutterwaveMerchantInsufficientFunds(message: string): boolean {
+  const lower = String(message || '').toLowerCase();
+  return (
+    lower.includes('insufficient funds in your wallet') ||
+    lower.includes('insufficient funds in wallet') ||
+    lower.includes('insufficient balance in your wallet')
+  );
+}
+
+export function mapFlutterwaveBillErrorMessage(message: string, fallback: string): string {
+  if (isFlutterwaveMerchantInsufficientFunds(message)) {
+    return FLUTTERWAVE_BILL_PARTNER_UNAVAILABLE;
+  }
+  return message.trim() || fallback;
 }
 
 /** Map axios/Flutterwave errors to a readable message (not "Request failed with status code 400"). */

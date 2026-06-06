@@ -75,6 +75,7 @@ export type WalletRow = {
   ethereum_deposit_address?: string | null;
   account_number?: string | null;
   bank_name?: string | null;
+  account_name?: string | null;
 };
 
 const WALLET_LABELS: Record<string, string> = {
@@ -144,6 +145,8 @@ export async function formatGlobalDisplayRows(
           : null,
       bankName:
         currency === LOCAL_SPEND_CURRENCY ? ngnRow?.bank_name ?? null : null,
+      accountName:
+        currency === LOCAL_SPEND_CURRENCY ? ngnRow?.account_name ?? null : null,
     });
   }
   return rows;

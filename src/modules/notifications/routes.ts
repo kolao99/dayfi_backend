@@ -10,6 +10,18 @@ Router.get(
   authMiddleware.validateUserAuthToken,
   notificationController.list
 );
+Router.get(
+  '/unread-count',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  notificationController.unreadCount
+);
+Router.put(
+  '/read-all',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  notificationController.markAllRead
+);
 Router.put(
   '/:notificationId',
   authMiddleware.getAuthToken,

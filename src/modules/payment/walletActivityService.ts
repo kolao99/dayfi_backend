@@ -1,6 +1,8 @@
 import { db } from '../../config/database';
 import type { LedgerSource } from './balanceService';
 
+export const NGN_BANK_DEPOSIT_REASON = 'Deposit via NGN bank account';
+
 export type WalletActivityDirection = 'credit' | 'debit';
 
 export type RecordWalletActivityParams = {
@@ -325,7 +327,9 @@ export async function backfillWalletActivitiesFromLedger(
         : isP2p && row.direction === 'debit' && p2pTagFromLegacy
           ? `p2p:${p2pTagFromLegacy}`
           : row.direction === 'credit'
-            ? `${assetCode} deposit via ${row.source}`
+            ? row.source === 'flutterwave'
+              ? NGN_BANK_DEPOSIT_REASON
+              : `${assetCode} deposit via ${row.source}`
             : `${row.currency} sent via ${row.source}`,
       beneficiaryName: isSwap
         ? 'Currency conversion'

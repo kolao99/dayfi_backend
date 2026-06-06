@@ -2,7 +2,10 @@ import { Request, Response } from 'express';
 import { success, errorResponse } from '../../shared/lib/api-response';
 import enums from '../../shared/lib/enums';
 import { billsService } from './billsService';
-import { flutterwaveErrorMessage } from './flutterwaveService';
+import {
+  flutterwaveErrorMessage,
+  mapFlutterwaveBillErrorMessage,
+} from './flutterwaveService';
 
 class BillsController {
   getCategories = async (_req: Request, res: Response): Promise<any> => {
@@ -117,8 +120,12 @@ class BillsController {
     err: unknown,
     status = enums.HTTP_BAD_REQUEST
   ): Response {
-    const msg = flutterwaveErrorMessage(err, 'Bill payment request failed');
+    const raw = flutterwaveErrorMessage(err, 'Bill payment request failed');
+    const msg = mapFlutterwaveBillErrorMessage(raw, 'Bill payment request failed');
     const lower = msg.toLowerCase();
+    if (lower.includes('payment partner cannot process')) {
+      return errorResponse(res, msg, enums.HTTP_SERVICE_UNAVAILABLE);
+    }
     if (
       lower.includes('not enabled') ||
       lower.includes('not supported') ||
