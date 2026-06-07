@@ -15,6 +15,10 @@ import {
 } from './walletModel';
 import { normalizeRecipientPhone } from './recipientPhone';
 import {
+  buildYellowCardSendPartyFields,
+  assertNigeriaSenderKyc,
+} from './yellowCardSender';
+import {
   enqueueCryptoWalletProvision,
   provisionCryptoWalletsForUser,
   buildReceiveCryptoPayload,
@@ -966,6 +970,9 @@ class PaymentController {
       } = req.body;
 
       const paymentSequenceId = crypto.randomUUID();
+      const userId = String(req.user?.user_id ?? '');
+      const ycParty = await buildYellowCardSendPartyFields(userId);
+      assertNigeriaSenderKyc(ycParty.sender, String(country).toUpperCase());
 
       const payload = {
         sequenceId: paymentSequenceId,
@@ -975,6 +982,8 @@ class PaymentController {
         localAmount: amount,
         reason,
         forceAccept: true,
+        customerType: ycParty.customerType,
+        customerUID: ycParty.customerUID,
         destination: {
           accountNumber,
           accountType,
@@ -982,12 +991,7 @@ class PaymentController {
           networkId,
           accountName,
         },
-        sender: {
-          name: req.user?.first_name + ' ' + req.user?.last_name,
-          email: req.user?.email,
-          phone: req.user?.phone_number,
-          country: country,
-        },
+        sender: ycParty.sender,
         metadata,
       };
 
@@ -1164,12 +1168,10 @@ class PaymentController {
         reason = 'other',
         fee = 0.1,
         spendCurrency = PRIMARY_CURRENCY,
+        bankName,
         recipient,
       } = req.body;
 
-      const senderName =
-        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() ||
-        'Dayfi User';
       const recipientCountry = String(
         recipient?.country ?? country ?? 'NG'
       ).toUpperCase();
@@ -1191,16 +1193,6 @@ class PaymentController {
       const result = await this.paymentService.walletFundedYellowCardSend(
         {
           userId,
-          sender: {
-            name: senderName,
-            email: user?.email ?? '',
-            phone: normalizeRecipientPhone(
-              user?.phone_number,
-              String(spendCurrency).toUpperCase() === 'NGN' ? 'NG' : 'US',
-              '+2340000000000'
-            ),
-            country: String(spendCurrency).toUpperCase() === 'NGN' ? 'NG' : 'US',
-          },
           sendAmount: Number(sendAmount),
           payWithCurrency: String(spendCurrency).toUpperCase(),
           feeUsd: Number(fee),
@@ -1213,6 +1205,7 @@ class PaymentController {
           accountName: String(accountName),
           accountType: String(accountType),
           reason: String(reason).toLowerCase(),
+          bankName: bankName != null ? String(bankName) : undefined,
           recipient: recipientPayload,
         },
         this.yellowCardService

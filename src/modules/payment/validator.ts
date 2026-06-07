@@ -550,6 +550,7 @@ class PaymentValidator {
       accountNumber: Joi.string().required(),
       accountName: Joi.string().required(),
       accountType: Joi.string().default('bank'),
+      bankName: Joi.string().allow('').optional(),
       reason: Joi.string().default('other'),
       fee: Joi.number().min(0).default(0.05),
       spendCurrency: Joi.string().default('USD'),

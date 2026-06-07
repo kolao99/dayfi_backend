@@ -201,11 +201,25 @@ export const paymentQueries: PaymentQueries = {
             wt.receive_channel,
             wt.receive_network,
             wt.receive_amount,
-            0::numeric AS fees,
+            COALESCE((lm.metadata->>'feeUsd')::numeric, 0::numeric) AS fees,
             wt.ledger_currency,
             wt.activity_kind,
             wt.external_reference,
-            wt.status,
+            CASE
+              WHEN wt.activity_kind = 'withdrawal'
+                AND wt.status::text ILIKE '%payment%'
+                AND EXISTS (
+                  SELECT 1
+                  FROM ledger_movements lm_rev
+                  WHERE lm_rev.user_id = wt.user_id
+                    AND lm_rev.direction = 'credit'
+                    AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
+                    AND lm_rev.external_reference =
+                      regexp_replace(COALESCE(wt.id, ''), '^wt-', '') || '-reversal'
+                )
+              THEN 'failed-payment'
+              ELSE wt.status
+            END AS status,
             wt.reason,
             wt.timestamp,
             COALESCE(
@@ -243,14 +257,47 @@ export const paymentQueries: PaymentQueries = {
             lm.metadata AS ledger_metadata,
             json_build_object(
                     'id', b.id,
-                    'name', b.name,
-                    'country', b.country,
+                    'name', CASE
+                      WHEN b.name IS NOT NULL
+                        AND TRIM(b.name) <> ''
+                        AND LOWER(TRIM(b.name)) NOT IN ('recipient', 'wallet top up')
+                        THEN b.name
+                      WHEN lm.metadata->>'accountName' IS NOT NULL
+                        AND TRIM(lm.metadata->>'accountName') <> ''
+                        THEN lm.metadata->>'accountName'
+                      ELSE COALESCE(NULLIF(TRIM(b.name), ''), 'Recipient')
+                    END,
+                    'country', COALESCE(
+                      NULLIF(TRIM(b.country), ''),
+                      NULLIF(TRIM(lm.metadata->>'payoutCountry'), ''),
+                      CASE
+                        WHEN UPPER(COALESCE(lm.metadata->>'receiveCurrency', wt.receive_network, '')) = 'NGN'
+                          THEN 'NG'
+                        ELSE NULL
+                      END,
+                      b.country
+                    ),
                     'phone', b.phone,
                     'address', b.address,
                     'dob', b.dob,
                     'email', b.email,
                     'idNumber', b.id_number,
-                    'idType', b.id_type
+                    'idType', b.id_type,
+                    'account_number', s.account_number,
+                    'account_type', s.account_type,
+                    'bankName', COALESCE(
+                      NULLIF(TRIM(lm.metadata->>'bankName'), ''),
+                      NULLIF(
+                        TRIM(
+                          SPLIT_PART(
+                            COALESCE(wt.reason, lm.metadata->>'activityTitle', ''),
+                            ' · ',
+                            2
+                          )
+                        ),
+                        ''
+                      )
+                    )
             ) AS beneficiary,
             json_build_object(
                     'id', s.id,
@@ -279,6 +326,15 @@ export const paymentQueries: PaymentQueries = {
           AND ($3 IS NULL OR wt.timestamp::date >= $3::date)
           AND ($4 IS NULL OR wt.timestamp::date <= $4::date)
           AND ($5 IS NULL OR b.name ILIKE '%' || $5 || '%' OR wt.reason ILIKE '%' || $5 || '%')
+          AND NOT (
+            wt.activity_kind IS NULL
+            AND wt.status IN ('success-collection', 'failed-collection')
+            AND wt.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-'
+          )
+          AND NOT (
+            wt.activity_kind = 'deposit'
+            AND wt.external_reference ILIKE '%-reversal'
+          )
         ORDER BY
             CASE WHEN $8 = 'ASC' THEN wt.timestamp END ASC NULLS LAST,
             CASE WHEN $8 = 'DESC' THEN wt.timestamp END DESC NULLS LAST

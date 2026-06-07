@@ -41,18 +41,27 @@ import { normalizeRecipientPhone } from './recipientPhone';
 import {
   matchYellowCardNetwork,
   parseYellowCardNetworks,
+  resolveFlutterwaveBankName,
   resolveYellowCardNetworkId,
 } from './yellowCardNetworkResolver';
 import YellowCardService from './yellowCardService';
+import {
+  assertNigeriaSenderKyc,
+  buildYellowCardSendPartyFields,
+} from './yellowCardSender';
 import { createVirtualAccount } from './flutterwaveService';
 import {
   recordWalletActivity,
   backfillWalletActivitiesFromLedger,
+  buildWalletActivityTxId,
   repairBillWalletTransactions,
   repairP2pWalletTransactions,
+  repairYellowCardWalletTransactions,
+  repairFailedWalletTransactionStatuses,
 } from './walletActivityService';
 import {
   notifyBankSend,
+  notifyBankSendFailed,
   safeNotify,
 } from '../notifications/notificationService';
 
@@ -70,14 +79,27 @@ function walletTransactionQuality(row: WalletTransactionRow): number {
   let score = 0;
   if (row.ledger_currency) score += 4;
   if (String(row.id ?? '').startsWith('wt-')) score += 2;
-  if (row.beneficiary?.name && row.beneficiary.name !== 'Recipient') score += 1;
+  const name = String(row.beneficiary?.name ?? '').trim();
+  if (name && name.toLowerCase() !== 'recipient') score += 1;
+  const reason = String((row as { reason?: string | null }).reason ?? '')
+    .trim()
+    .toLowerCase();
+  if (reason.startsWith('send to ')) score += 8;
   return score;
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function walletTransactionDedupeKey(row: WalletTransactionRow): string {
-  const ext = String(row.external_reference ?? '').trim();
-  if (ext) return ext;
   const id = String(row.id ?? '').trim();
+  const bareId = id.replace(/^wt-/, '');
+  if (UUID_RE.test(bareId)) return bareId.toLowerCase();
+
+  const ext = String(row.external_reference ?? '').trim();
+  if (UUID_RE.test(ext)) return ext.toLowerCase();
+  if (ext) return ext;
+
   if (id.startsWith('wt-p2p-debit-')) return id.replace(/^wt-p2p-debit-/, '');
   if (id.startsWith('wt-p2p-credit-')) return `credit:${id.replace(/^wt-p2p-credit-/, '')}`;
   if (id.startsWith('wt-')) return id.slice(3);
@@ -1092,6 +1114,24 @@ class PaymentService {
         );
       }
       try {
+        await repairYellowCardWalletTransactions(userId);
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] yellowcard repair skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      try {
+        await repairFailedWalletTransactionStatuses(userId);
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] failed-status repair skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      try {
         const { repairFlutterwaveDepositActivities } = await import(
           './flutterwaveInflowService'
         );
@@ -1440,12 +1480,6 @@ class PaymentService {
   async walletFundedYellowCardSend(
     params: {
       userId: string;
-      sender: {
-        name: string;
-        email: string;
-        phone: string;
-        country: string;
-      };
       sendAmount: number;
       payWithCurrency: string;
       feeUsd: number;
@@ -1458,6 +1492,7 @@ class PaymentService {
       accountName: string;
       accountType: string;
       reason: string;
+      bankName?: string;
       recipient: {
         name: string;
         country: string;
@@ -1501,6 +1536,26 @@ class PaymentService {
     const paymentSequenceId = crypto.randomUUID();
     const debitKey = buildIdempotencyKey('yc_send', collectionSequenceId);
 
+    const ycNetworkId = await resolveYellowCardNetworkId({
+      networkId: params.networkId,
+      channelId: params.channelId,
+      country: params.country,
+    });
+
+    const bankName =
+      String(params.bankName ?? '').trim() ||
+      (await resolveFlutterwaveBankName(params.networkId)) ||
+      'Bank';
+
+    const ycParty = await buildYellowCardSendPartyFields(params.userId);
+    assertNigeriaSenderKyc(ycParty.sender, params.country);
+
+    const activityTitle = `Send to ${params.accountName} · ${bankName}`;
+    const fxRate =
+      receiveCurrency === 'NGN' && receiveAmount > 0 && sendUsd > 0
+        ? receiveAmount / sendUsd
+        : undefined;
+
     await debitUsdBalance({
       userId: params.userId,
       walletId: usdWallet.wallet_id,
@@ -1514,47 +1569,16 @@ class PaymentService {
         feeUsd,
         receiveAmount,
         receiveCurrency,
+        payoutCountry: params.country,
         channelId: params.channelId,
-        networkId: params.networkId,
+        networkId: ycNetworkId,
+        accountName: params.accountName,
+        bankName,
+        activityTitle,
+        ngnAmount: receiveCurrency === 'NGN' ? receiveAmount : undefined,
+        rate: fxRate,
       },
     });
-
-    const ycNetworkId = await resolveYellowCardNetworkId({
-      networkId: params.networkId,
-      channelId: params.channelId,
-      country: params.country,
-    });
-
-    const beneficiary = await this.createBeneficiary(
-      params.recipient.name,
-      params.recipient.country,
-      params.recipient.phone,
-      params.recipient.address,
-      params.recipient.dob,
-      params.recipient.email,
-      params.recipient.idNumber,
-      params.recipient.idType,
-      params.userId
-    );
-
-    const savedSource = await this.createSource(
-      params.accountType,
-      params.accountNumber,
-      ycNetworkId,
-      beneficiary.id
-    );
-
-    await this.createWalletTransaction(
-      collectionSequenceId,
-      'success-collection',
-      reason,
-      sendAmount,
-      params.channelId,
-      ycNetworkId,
-      beneficiary.id,
-      params.userId,
-      savedSource.id
-    );
 
     const ycPayload = {
       sequenceId: paymentSequenceId,
@@ -1564,6 +1588,8 @@ class PaymentService {
       localAmount: receiveAmount,
       reason,
       forceAccept: true,
+      customerType: ycParty.customerType,
+      customerUID: ycParty.customerUID,
       destination: {
         accountNumber: params.accountNumber,
         accountType: params.accountType,
@@ -1575,48 +1601,36 @@ class PaymentService {
           params.country
         ),
       },
-      sender: {
-        name: params.sender.name,
-        email: params.sender.email,
-        phone: normalizeRecipientPhone(
-          params.sender.phone,
-          params.sender.country
-        ),
-        country: params.sender.country,
-      },
+      sender: ycParty.sender,
       metadata: {
         collectionSequenceId,
         fundSource: 'dayfi_wallet',
+        senderDisplayName: ycParty.sender.name,
       },
     };
 
     try {
       const payment = await yellowCardService.createPaymentRequest(ycPayload);
 
-      await this.updateTransactionToPayment(
-        collectionSequenceId,
-        paymentSequenceId,
-        params.channelId,
-        ycNetworkId,
-        receiveAmount,
-        reason
-      );
-
       await recordWalletActivity({
         userId: params.userId,
-        id: collectionSequenceId,
+        id: buildWalletActivityTxId(collectionSequenceId),
         direction: 'debit',
-        amount: sendAmount,
+        amount: totalUsd,
         currency: payWith,
         source: 'yellowcard',
-        title: `Transfer to ${params.accountName}`,
-        reason,
+        title: activityTitle,
+        reason: activityTitle,
         channel: 'bank',
-        status: 'pending-payment',
+        status: 'success-payment',
         beneficiaryName: params.accountName,
         accountNumber: params.accountNumber,
+        accountType: params.accountType,
         networkId: ycNetworkId,
+        bankName,
         beneficiaryCountry: params.country,
+        receiveAmount,
+        receiveCurrency,
         externalReference: paymentSequenceId,
       });
 
@@ -1627,13 +1641,51 @@ class PaymentService {
         walletId: usdWallet.wallet_id,
         amount: totalUsd,
         fromCurrency: PRIMARY_CURRENCY,
-        source: 'manual',
+        source: 'yellowcard',
         idempotencyKey: `${debitKey}-reversal`,
         externalReference: `${collectionSequenceId}-reversal`,
+        metadata: {
+          reversal: true,
+          originalReference: collectionSequenceId,
+        },
       }).catch(() => undefined);
-      await this.updateTransactionStatus(collectionSequenceId, 'failed-collection').catch(
-        () => undefined
+
+      await recordWalletActivity({
+        userId: params.userId,
+        id: buildWalletActivityTxId(collectionSequenceId),
+        direction: 'debit',
+        amount: totalUsd,
+        currency: payWith,
+        source: 'yellowcard',
+        title: activityTitle,
+        reason: activityTitle,
+        channel: 'bank',
+        status: 'failed-payment',
+        beneficiaryName: params.accountName,
+        accountNumber: params.accountNumber,
+        accountType: params.accountType,
+        networkId: ycNetworkId,
+        bankName,
+        beneficiaryCountry: params.country,
+        receiveAmount,
+        receiveCurrency,
+        externalReference: paymentSequenceId,
+      }).catch(() => undefined);
+
+      await safeNotify(
+        () =>
+          notifyBankSendFailed({
+            userId: params.userId,
+            amount: sendUsd,
+            currency: payWith,
+            recipientName: params.accountName,
+            bankName,
+            reference: collectionSequenceId,
+            reason: err instanceof Error ? err.message : String(err),
+          }),
+        'bank_send_failed'
       );
+
       throw err;
     }
   }

@@ -219,3 +219,18 @@ export async function resolveYellowCardNetworkId(params: {
 
   return match.id;
 }
+
+/** Resolve Flutterwave bank code → display name (e.g. 100004 → OPay). */
+export async function resolveFlutterwaveBankName(
+  bankCode: string
+): Promise<string> {
+  const code = String(bankCode ?? '').trim();
+  if (!code) return '';
+  try {
+    const { banks } = await fetchBanks();
+    const hit = banks.find((b) => b.code === code);
+    return hit?.name?.trim() ?? '';
+  } catch {
+    return '';
+  }
+}

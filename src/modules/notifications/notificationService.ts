@@ -225,6 +225,37 @@ export async function notifyBillPayFailed(params: {
   });
 }
 
+export async function notifyBankSendFailed(params: {
+  userId: string;
+  amount: number;
+  currency: string;
+  recipientName: string;
+  bankName?: string;
+  reference: string;
+  reason?: string;
+}): Promise<void> {
+  const formatted = formatNotificationAmount(params.amount, params.currency);
+  const bank = params.bankName?.trim();
+  const detail = bank
+    ? ` to ${params.recipientName} (${bank})`
+    : ` to ${params.recipientName}`;
+  await createUserNotification({
+    userId: params.userId,
+    title: 'Transfer failed',
+    message: `${formatted}${detail} could not be completed. Your wallet was not charged.`,
+    type: 'BANK_SEND_FAILED',
+    metadata: {
+      type: 'BANK_SEND_FAILED',
+      reference: params.reference,
+      amount: params.amount,
+      currency: params.currency,
+      recipientName: params.recipientName,
+      bankName: params.bankName ?? null,
+      reason: params.reason ?? null,
+    },
+  });
+}
+
 export async function notifyP2pRecipient(params: {
   recipientUserId: string;
   senderUserId: string;

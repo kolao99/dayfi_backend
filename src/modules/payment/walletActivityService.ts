@@ -77,6 +77,8 @@ export type RecordWalletActivityParams = {
   networkId?: string;
   beneficiaryCountry?: string;
   bankName?: string;
+  receiveAmount?: number;
+  receiveCurrency?: string;
   timestamp?: Date;
 };
 
@@ -244,12 +246,19 @@ export async function recordWalletActivity(
       ]
     );
   } else {
+    const receiveAmount =
+      params.receiveAmount != null && Number.isFinite(params.receiveAmount)
+        ? Number(params.receiveAmount)
+        : null;
+    const receiveCurrency = params.receiveCurrency?.trim().toUpperCase() || null;
+
     await db.none(
       `INSERT INTO wallet_transactions (
          id, user_id, beneficiary_id, source_id, status, reason,
          send_amount, send_channel, send_network,
+         receive_amount, receive_channel, receive_network,
          ledger_currency, activity_kind, external_reference, timestamp
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         id,
         userId,
@@ -260,6 +269,9 @@ export async function recordWalletActivity(
         amount,
         channel,
         network,
+        receiveAmount,
+        receiveAmount != null ? 'bank' : null,
+        receiveCurrency,
         currency,
         kind,
         extRef,
@@ -269,6 +281,50 @@ export async function recordWalletActivity(
   }
 
   return { recorded: true };
+}
+
+async function ledgerDebitWasReversed(
+  userId: string,
+  externalReference: string
+): Promise<boolean> {
+  const ref = String(externalReference || '').trim();
+  if (!ref) return false;
+  const row = await db.oneOrNone<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM ledger_movements
+     WHERE user_id = $1
+       AND direction = 'credit'
+       AND external_reference = $2
+       AND COALESCE(metadata->>'reversal', 'false') = 'true'
+     LIMIT 1`,
+    [userId, `${ref}-reversal`]
+  );
+  return Boolean(row);
+}
+
+/** Mark debits reversed in ledger as failed-payment in wallet history. */
+export async function repairFailedWalletTransactionStatuses(
+  userId: string
+): Promise<{ repaired: number }> {
+  const rows = await db.manyOrNone<{ id: string }>(
+    `UPDATE wallet_transactions wt
+     SET status = 'failed-payment'
+     WHERE wt.user_id = $1
+       AND wt.activity_kind = 'withdrawal'
+       AND wt.status = 'success-payment'
+       AND EXISTS (
+         SELECT 1
+         FROM ledger_movements lm_rev
+         WHERE lm_rev.user_id = wt.user_id
+           AND lm_rev.direction = 'credit'
+           AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
+           AND lm_rev.external_reference =
+             regexp_replace(COALESCE(wt.id, ''), '^wt-', '') || '-reversal'
+       )
+     RETURNING wt.id`,
+    [userId]
+  );
+  return { repaired: rows?.length ?? 0 };
 }
 
 /** Backfill wallet_transactions rows from ledger_movements (one-time / after deploy). */
@@ -297,12 +353,44 @@ export async function backfillWalletActivitiesFromLedger(
   let inserted = 0;
   for (const row of rows) {
     const meta = row.metadata ?? {};
+    const isBillPay = row.source === 'bill_pay';
+    const isYellowCardDebit =
+      row.source === 'yellowcard' && row.direction === 'debit';
+    const collectionId = row.external_reference?.trim() ?? '';
+    let debitFailed = false;
+
+    if (isYellowCardDebit && collectionId) {
+      debitFailed = await ledgerDebitWasReversed(row.user_id, collectionId);
+      const wtId = buildWalletActivityTxId(collectionId);
+      const existing = await db.oneOrNone<{ id: string; status: string }>(
+        `SELECT id, status FROM wallet_transactions
+         WHERE user_id = $1 AND (id = $2 OR id = $3)
+         LIMIT 1`,
+        [row.user_id, collectionId, wtId]
+      );
+      if (existing) {
+        if (debitFailed && existing.status === 'success-payment') {
+          await db.none(
+            `UPDATE wallet_transactions SET status = 'failed-payment' WHERE id = $1`,
+            [existing.id]
+          );
+        }
+        continue;
+      }
+    }
+
+    const isBillPayDebit = isBillPay && row.direction === 'debit';
+    if (isBillPayDebit && row.external_reference) {
+      debitFailed =
+        debitFailed ||
+        (await ledgerDebitWasReversed(row.user_id, row.external_reference));
+    }
+
     const assetCode = String(meta.assetCode ?? row.currency).toUpperCase();
     const isSwap = row.source === 'swap';
     const activityTitle =
       typeof meta.activityTitle === 'string' ? meta.activityTitle.trim() : '';
     const isP2p = row.source === 'p2p';
-    const isBillPay = row.source === 'bill_pay';
     const isBillReversal =
       row.source === 'manual' &&
       meta.reversal === true &&
@@ -364,6 +452,19 @@ export async function backfillWalletActivitiesFromLedger(
         ? formatBillCategoryLabel(String(meta.categoryCode ?? ''))
         : '';
     const isGreyCredit = row.source === 'grey' && row.direction === 'credit';
+    const ycAccountName = String(meta.accountName ?? '').trim();
+    const ycBankName = String(meta.bankName ?? '').trim();
+    const ycReceiveAmount = Number(meta.receiveAmount);
+    const ycReceiveCurrency = String(meta.receiveCurrency ?? 'NGN')
+      .trim()
+      .toUpperCase();
+    const ycActivityTitle =
+      activityTitle ||
+      (ycAccountName && ycBankName
+        ? `Send to ${ycAccountName} · ${ycBankName}`
+        : ycAccountName
+          ? `Send to ${ycAccountName}`
+          : '');
 
     const result = await recordWalletActivity({
       userId: row.user_id,
@@ -378,6 +479,8 @@ export async function backfillWalletActivitiesFromLedger(
           ? billLabel
           : isBillReversal
             ? `${billAction} refund`
+            : isYellowCardDebit && ycActivityTitle
+              ? ycActivityTitle
             : isGreyCredit
               ? `${row.currency} bank deposit`
               : row.direction === 'credit'
@@ -387,17 +490,21 @@ export async function backfillWalletActivitiesFromLedger(
       channel:
         row.source === 'stellar'
           ? 'crypto'
-          : row.source === 'flutterwave' || isGreyCredit
+          : row.source === 'flutterwave' || isGreyCredit || isYellowCardDebit
             ? 'bank'
             : isBillPay || isBillReversal
               ? 'wallet'
               : 'wallet',
       network: row.source === 'stellar' ? 'stellar' : null,
       status: isBillPay
-        ? 'success-payment'
+        ? debitFailed
+          ? 'failed-payment'
+          : 'success-payment'
         : isBillReversal
           ? 'success-collection'
-          : undefined,
+          : isYellowCardDebit && debitFailed
+            ? 'failed-payment'
+            : undefined,
       reason: isSwap
         ? activityTitle ||
           `Convert ${meta.fromCurrency ?? ''} → ${meta.toCurrency ?? row.currency}`
@@ -407,6 +514,8 @@ export async function backfillWalletActivitiesFromLedger(
             ? billRefundActivityReason(meta)
             : isP2p && row.direction === 'debit' && p2pTagFromLegacy
               ? `p2p:${p2pTagFromLegacy}`
+              : isYellowCardDebit && ycActivityTitle
+                ? ycActivityTitle
               : row.direction === 'credit'
                 ? row.source === 'flutterwave'
                   ? NGN_BANK_DEPOSIT_REASON
@@ -420,6 +529,8 @@ export async function backfillWalletActivitiesFromLedger(
           ? billLabel
           : isBillReversal
             ? `${billAction} refund`
+            : isYellowCardDebit && ycAccountName
+              ? ycAccountName
             : isP2p && row.direction === 'debit' && p2pTagFromLegacy
               ? `@${p2pTagFromLegacy}`
               : isP2p && row.direction === 'credit'
@@ -432,6 +543,8 @@ export async function backfillWalletActivitiesFromLedger(
       accountNumber:
         isBillPay || isBillReversal
           ? String(meta.customerId ?? '').trim() || undefined
+          : isYellowCardDebit
+            ? String(meta.accountNumber ?? '').trim() || undefined
           : isP2p && row.direction === 'debit' && p2pTagFromLegacy
             ? p2pTagFromLegacy
             : isP2p &&
@@ -441,6 +554,8 @@ export async function backfillWalletActivitiesFromLedger(
               : undefined,
       accountType: isBillPay || isBillReversal
         ? 'bill'
+        : isYellowCardDebit
+          ? String(meta.accountType ?? 'bank').trim() || 'bank'
         : isP2p
           ? 'dayfi'
           : row.source === 'dayearn'
@@ -451,11 +566,21 @@ export async function backfillWalletActivitiesFromLedger(
       networkId:
         isBillPay || isBillReversal
           ? String(meta.billerCode ?? '').trim() || undefined
+          : isYellowCardDebit
+            ? String(meta.networkId ?? '').trim() || undefined
+            : undefined,
+      bankName: isYellowCardDebit ? ycBankName || undefined : undefined,
+      receiveAmount:
+        isYellowCardDebit && Number.isFinite(ycReceiveAmount) && ycReceiveAmount > 0
+          ? ycReceiveAmount
           : undefined,
+      receiveCurrency: isYellowCardDebit ? ycReceiveCurrency : undefined,
       beneficiaryCountry: isP2p
         ? countryForWalletCurrency(row.currency)
         : isBillPay || isBillReversal
           ? 'NG'
+          : isYellowCardDebit
+            ? String(meta.payoutCountry ?? 'NG').trim() || 'NG'
           : isGreyCredit
             ? countryForWalletCurrency(row.currency)
             : undefined,
@@ -778,6 +903,139 @@ export async function repairBillWalletTransactions(
            receive_channel = COALESCE(receive_channel, 'wallet')
        WHERE id = $1`,
       [row.id, reason, beneficiaryId, sourceId]
+    );
+    repaired += 1;
+  }
+
+  return { repaired };
+}
+
+/** Fix legacy Yellow Card send rows that still show generic "Recipient" / missing bank name. */
+export async function repairYellowCardWalletTransactions(
+  userId: string
+): Promise<{ repaired: number }> {
+  const rows = await db.manyOrNone<{
+    id: string;
+    reason: string | null;
+    beneficiary_id: string | null;
+    source_id: string | null;
+    send_channel: string | null;
+    receive_amount: string | null;
+    receive_network: string | null;
+    beneficiary_name: string | null;
+    metadata: Record<string, unknown> | null;
+  }>(
+    `SELECT wt.id, wt.reason, wt.beneficiary_id, wt.source_id, wt.send_channel,
+            wt.receive_amount, wt.receive_network, b.name AS beneficiary_name,
+            lm.metadata
+     FROM wallet_transactions wt
+     LEFT JOIN beneficiaries b ON b.id = wt.beneficiary_id
+     JOIN ledger_movements lm
+       ON lm.user_id = wt.user_id
+      AND lm.direction = 'debit'
+      AND lm.source = 'yellowcard'
+      AND lm.external_reference = regexp_replace(wt.id, '^wt-', '')
+     WHERE wt.user_id = $1
+       AND wt.activity_kind = 'withdrawal'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM ledger_movements lm_rev
+         WHERE lm_rev.user_id = wt.user_id
+           AND lm_rev.direction = 'credit'
+           AND lm_rev.external_reference = lm.external_reference || '-reversal'
+           AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
+       )
+       AND (
+         LOWER(COALESCE(b.name, '')) IN ('recipient', '')
+         OR COALESCE(wt.reason, '') NOT ILIKE 'send to %'
+         OR COALESCE(wt.reason, '') ILIKE '% sent via yellowcard%'
+         OR wt.receive_amount IS NULL
+         OR wt.send_channel IS DISTINCT FROM 'bank'
+       )`,
+    [userId]
+  );
+
+  let repaired = 0;
+  for (const row of rows ?? []) {
+    const meta = row.metadata ?? {};
+    const accountName = String(meta.accountName ?? '').trim();
+    const bankName = String(meta.bankName ?? '').trim();
+    if (!accountName) continue;
+
+    const activityTitle =
+      typeof meta.activityTitle === 'string' && meta.activityTitle.trim()
+        ? meta.activityTitle.trim()
+        : bankName
+          ? `Send to ${accountName} · ${bankName}`
+          : `Send to ${accountName}`;
+
+    const receiveAmount = Number(meta.receiveAmount);
+    const receiveCurrency = String(meta.receiveCurrency ?? 'NGN')
+      .trim()
+      .toUpperCase();
+    const payoutCountry = String(meta.payoutCountry ?? 'NG').trim() || 'NG';
+    const accountNumber = String(meta.accountNumber ?? '').trim();
+    const networkId = String(meta.networkId ?? '').trim();
+    const accountType = String(meta.accountType ?? 'bank').trim() || 'bank';
+
+    let beneficiaryId = row.beneficiary_id;
+    if (beneficiaryId) {
+      await db.none(`UPDATE beneficiaries SET name = $2, country = $3 WHERE id = $1`, [
+        beneficiaryId,
+        accountName,
+        payoutCountry,
+      ]);
+    } else {
+      beneficiaryId = `ben-yc-${row.id.slice(0, 32)}`;
+      await db.none(
+        `INSERT INTO beneficiaries (id, user_id, name, country, phone, address, dob, email, id_number, id_type)
+         VALUES ($1, $2, $3, $4, '', '', '', '', '', 'individual')
+         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, country = EXCLUDED.country`,
+        [beneficiaryId, userId, accountName, payoutCountry]
+      );
+    }
+
+    let sourceId = row.source_id;
+    if (accountNumber) {
+      if (sourceId) {
+        await db.none(
+          `UPDATE source
+           SET account_type = $2, account_number = $3, network_id = $4
+           WHERE id = $1`,
+          [sourceId, accountType, accountNumber, networkId]
+        );
+      } else if (beneficiaryId) {
+        sourceId = `src-yc-${row.id.slice(0, 32)}`;
+        await db.none(
+          `INSERT INTO source (id, account_type, account_number, network_id, beneficiary_id)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (id) DO UPDATE
+             SET account_type = EXCLUDED.account_type,
+                 account_number = EXCLUDED.account_number,
+                 network_id = EXCLUDED.network_id`,
+          [sourceId, accountType, accountNumber, networkId, beneficiaryId]
+        );
+      }
+    }
+
+    await db.none(
+      `UPDATE wallet_transactions
+       SET reason = $2,
+           beneficiary_id = COALESCE(beneficiary_id, $3),
+           source_id = COALESCE(source_id, $4),
+           send_channel = 'bank',
+           receive_channel = 'bank',
+           receive_amount = COALESCE($5, receive_amount),
+           receive_network = COALESCE($6, receive_network)
+       WHERE id = $1`,
+      [
+        row.id,
+        activityTitle,
+        beneficiaryId,
+        sourceId,
+        Number.isFinite(receiveAmount) && receiveAmount > 0 ? receiveAmount : null,
+        receiveCurrency,
+      ]
     );
     repaired += 1;
   }
