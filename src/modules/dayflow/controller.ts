@@ -87,7 +87,7 @@ class DayflowController {
       const template = await getPlanTemplate(userId);
       return success(
         res,
-        enums.FETCHED_SUCCESSFULLY('DayBudget template'),
+        enums.FETCHED_SUCCESSFULLY('DayFlow template'),
         enums.HTTP_OK,
         { template }
       );
@@ -106,7 +106,7 @@ class DayflowController {
       const template = await savePlanTemplate(userId, req.body);
       return success(
         res,
-        enums.CREATED_SUCCESSFULLY('DayBudget template'),
+        enums.CREATED_SUCCESSFULLY('DayFlow template'),
         enums.HTTP_OK,
         { template }
       );
@@ -115,7 +115,7 @@ class DayflowController {
       if (msg === 'DAYFLOW_TEMPLATE_TABLE_MISSING') {
         return errorResponse(
           res,
-          'DayBudget template table not migrated yet. Run npm run migrate up.',
+          'DayFlow template table not migrated yet. Run npm run migrate up.',
           enums.HTTP_SERVICE_UNAVAILABLE
         );
       }

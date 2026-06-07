@@ -38,6 +38,12 @@ import {
 } from './balanceService';
 import { transferByDayfiTag } from './p2pService';
 import { normalizeRecipientPhone } from './recipientPhone';
+import {
+  matchYellowCardNetwork,
+  parseYellowCardNetworks,
+  resolveYellowCardNetworkId,
+} from './yellowCardNetworkResolver';
+import YellowCardService from './yellowCardService';
 import { createVirtualAccount } from './flutterwaveService';
 import {
   recordWalletActivity,
@@ -144,7 +150,7 @@ class PaymentService {
     return fetchBanks();
   }
 
-  /** Map Flutterwave bank list → Yellow Card–like network rows for mobile send UI. */
+  /** Map Flutterwave bank list → network rows for mobile send UI (YC id when available). */
   async fetchNigerianBankNetworks(): Promise<
     Array<{
       id: string;
@@ -157,15 +163,48 @@ class PaymentService {
     }>
   > {
     const { banks } = await fetchBanks();
-    return banks.map((b) => ({
-      id: b.code,
-      code: b.code,
-      name: b.name,
-      country: 'NG',
-      status: 'active',
-      accountNumberType: 'NUBAN',
-      channelIds: ['ngn_bank_flutterwave'],
-    }));
+    const yc = new YellowCardService();
+    let ycNetworks = parseYellowCardNetworks([]);
+    if (yc.isConfigured()) {
+      try {
+        const raw = await yc.fetchNetworks();
+        ycNetworks = parseYellowCardNetworks(raw).filter(
+          (n) => n.status !== 'inactive'
+        );
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchNigerianBankNetworks] Yellow Card networks unavailable: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
+
+    return banks.map((b) => {
+      const match =
+        ycNetworks.length > 0
+          ? matchYellowCardNetwork({
+              bankName: b.name,
+              flutterwaveCode: b.code,
+              country: 'NG',
+              networks: ycNetworks,
+            })
+          : null;
+      const channelIds =
+        match?.channelIds && match.channelIds.length > 0
+          ? match.channelIds
+          : ['ngn_bank_flutterwave'];
+
+      return {
+        id: match?.id ?? b.code,
+        code: b.code,
+        name: b.name,
+        country: 'NG',
+        status: 'active',
+        accountNumberType: 'NUBAN',
+        channelIds,
+      };
+    });
   }
 
   private async createWalletRow(
@@ -1480,6 +1519,12 @@ class PaymentService {
       },
     });
 
+    const ycNetworkId = await resolveYellowCardNetworkId({
+      networkId: params.networkId,
+      channelId: params.channelId,
+      country: params.country,
+    });
+
     const beneficiary = await this.createBeneficiary(
       params.recipient.name,
       params.recipient.country,
@@ -1495,7 +1540,7 @@ class PaymentService {
     const savedSource = await this.createSource(
       params.accountType,
       params.accountNumber,
-      params.networkId,
+      ycNetworkId,
       beneficiary.id
     );
 
@@ -1505,7 +1550,7 @@ class PaymentService {
       reason,
       sendAmount,
       params.channelId,
-      params.networkId,
+      ycNetworkId,
       beneficiary.id,
       params.userId,
       savedSource.id
@@ -1523,7 +1568,7 @@ class PaymentService {
         accountNumber: params.accountNumber,
         accountType: params.accountType,
         country: params.country,
-        networkId: params.networkId,
+        networkId: ycNetworkId,
         accountName: params.accountName,
         phoneNumber: normalizeRecipientPhone(
           params.recipient.phone,
@@ -1552,7 +1597,7 @@ class PaymentService {
         collectionSequenceId,
         paymentSequenceId,
         params.channelId,
-        params.networkId,
+        ycNetworkId,
         receiveAmount,
         reason
       );
@@ -1570,7 +1615,7 @@ class PaymentService {
         status: 'pending-payment',
         beneficiaryName: params.accountName,
         accountNumber: params.accountNumber,
-        networkId: params.networkId,
+        networkId: ycNetworkId,
         beneficiaryCountry: params.country,
         externalReference: paymentSequenceId,
       });
