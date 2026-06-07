@@ -10,6 +10,7 @@ import {
   type BudgetFrequency,
   type BudgetType,
 } from './budgetService';
+import { runDueBudgetReminders } from './budgetReminderService';
 
 class BudgetController {
   list = async (req: Request, res: Response): Promise<void> => {
@@ -202,6 +203,23 @@ class BudgetController {
       res.status(500).json({
         success: false,
         message: e?.message ?? 'Failed to resume budget',
+      });
+    }
+  };
+
+  runDueReminders = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const userId = req.user?.user_id;
+      if (!userId) {
+        res.status(401).json({ success: false, message: 'Unauthorized' });
+        return;
+      }
+      const outcome = await runDueBudgetReminders();
+      res.status(200).json({ success: true, data: outcome });
+    } catch (e: any) {
+      res.status(500).json({
+        success: false,
+        message: e?.message ?? 'Failed to run budget reminders',
       });
     }
   };

@@ -311,6 +311,13 @@ Router.post(
   budgetController.create
 );
 
+Router.post(
+  '/budgets/run-due-reminders',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  budgetController.runDueReminders
+);
+
 Router.get(
   '/budgets/:budgetId',
   authMiddleware.getAuthToken,

@@ -59,6 +59,11 @@ async function main(app: Express): Promise<void> {
   );
   startDayflowAutopayScheduler();
 
+  const { startBudgetReminderScheduler } = await import(
+    './modules/payment/budgetReminderScheduler'
+  );
+  startBudgetReminderScheduler();
+
   const server = http.createServer(app);
 
   const preferredPort = Number(Env.get('PORT') ?? 3000);

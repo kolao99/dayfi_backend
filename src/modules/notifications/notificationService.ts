@@ -19,6 +19,11 @@ export type NotificationTypeCode =
   | 'BANK_SEND'
   | 'BILL_PAY'
   | 'BILL_PAY_FAILED'
+  | 'BUDGET_REMINDER'
+  | 'BUDGET_BILL_REMINDER'
+  | 'BUDGET_SEND_REMINDER'
+  | 'BUDGET_DAILY_EARN_REMINDER'
+  | 'BUDGET_SPENDING_CAP_REMINDER'
   | 'general';
 
 export function formatNotificationAmount(
