@@ -29,6 +29,7 @@ type PaymentQueries = {
   createSource: string;
   updateWalletTransaction: string;
   updateWalletTransactionPayment: string;
+  updateWalletTransactionPaymentByRef: string;
   updateTransactionToPayment: string;
   createBeneficiary: string;
   getUserBeneficiaries: string;
@@ -461,6 +462,16 @@ export const paymentQueries: PaymentQueries = {
   SET status = $2,
       timestamp = NOW()
   WHERE payment_sequence_id = $1
+  RETURNING *;
+`,
+
+  updateWalletTransactionPaymentByRef: `
+  UPDATE wallet_transactions
+  SET status = $2,
+      timestamp = NOW()
+  WHERE external_reference = $1
+     OR id = $1
+     OR collection_sequence_id = $1
   RETURNING *;
 `,
 

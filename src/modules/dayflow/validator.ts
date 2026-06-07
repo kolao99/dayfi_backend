@@ -37,6 +37,9 @@ class DayflowValidator {
         )
         .max(20)
         .optional(),
+      mode: Joi.string()
+        .valid('addItem', 'editBudget', 'general')
+        .optional(),
     });
     return this.validateRequestBody(req, res, next, schema);
   };
@@ -109,10 +112,12 @@ class DayflowValidator {
       id: Joi.string().optional(),
       title: Joi.string().trim().min(1).max(120).required(),
       amount: Joi.number().positive().required(),
+      sourceAmount: Joi.number().positive().optional(),
       frequency: Joi.string()
         .valid('once', 'weekly', 'biweekly', 'monthly')
         .optional(),
       dueLabel: Joi.string().trim().max(80).optional(),
+      nextRunAt: Joi.string().isoDate().optional(),
       recipientHint: Joi.string().trim().max(200).optional(),
       recipientId: Joi.string().trim().max(255).allow(null).optional(),
       paymentType: Joi.string().valid('send', 'bill', 'savings').optional(),

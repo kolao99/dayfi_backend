@@ -116,6 +116,7 @@ export async function createBudget(
     frequency?: BudgetFrequency;
     categories?: unknown[];
     recipientId?: string | null;
+    nextRunAt?: string | Date | null;
     metadata?: Record<string, unknown>;
   }
 ) {
@@ -124,7 +125,12 @@ export async function createBudget(
   }
 
   const frequency = input.frequency ?? 'monthly';
-  const nextRun = computeNextRunAt(frequency);
+  let nextRun: Date | null = null;
+  if (input.nextRunAt) {
+    const parsed = new Date(input.nextRunAt);
+    if (!Number.isNaN(parsed.getTime())) nextRun = parsed;
+  }
+  if (!nextRun) nextRun = computeNextRunAt(frequency);
 
   const row = await db.one<BudgetRow>(
     `INSERT INTO budgets (

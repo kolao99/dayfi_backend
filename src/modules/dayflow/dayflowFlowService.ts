@@ -19,6 +19,8 @@ import {
   inferFlowType,
   type NamingInput,
 } from './dayflowFlowNaming';
+import { validateSchedulesForCreate } from './dayflowFlowValidation';
+import { resolveNextRunAtIso } from './dayflowDueDate';
 
 export type DayflowFlowCategory = {
   name: string;
@@ -31,6 +33,7 @@ export type DayflowFlowSchedule = {
   id?: string;
   title: string;
   amount: number;
+  sourceAmount?: number;
   frequency?: BudgetFrequency;
   dueLabel?: string;
   recipientHint?: string;
@@ -163,10 +166,18 @@ function earliestNextRun(schedules: DayflowFlowSchedule[]): Date | null {
   let earliest: Date | null = null;
   for (const s of schedules) {
     if (!s.autoPay) continue;
+    const explicit = parseScheduleNextRunAt(s);
     const freq = s.frequency ?? 'monthly';
-    const next = computeNextRunAt(freq);
-    if (!next) continue;
-    if (!earliest || next < earliest) earliest = next;
+    const next =
+      explicit ??
+      resolveNextRunAtIso({
+        dueLabel: s.dueLabel,
+        nextRunAt: s.nextRunAt,
+        frequency: freq,
+      });
+    const parsed = next ? new Date(next) : computeNextRunAt(freq);
+    if (!parsed || Number.isNaN(parsed.getTime())) continue;
+    if (!earliest || parsed < earliest) earliest = parsed;
   }
   return earliest;
 }
@@ -193,6 +204,7 @@ async function linkBudgetsForSchedules(
         currency,
         frequency: freq,
         recipientId: copy.recipientId ?? null,
+        nextRunAt: copy.nextRunAt ?? undefined,
         metadata: {
           dayflowFlowId: flowId,
           scheduleId: copy.id,
@@ -201,7 +213,7 @@ async function linkBudgetsForSchedules(
         },
       });
       copy.budgetId = budget.id;
-      copy.nextRunAt = budget.nextRunAt;
+      copy.nextRunAt = copy.nextRunAt ?? budget.nextRunAt;
     } catch (err) {
       console.warn(
         `[dayflow] schedule budget link skipped: ${
@@ -370,10 +382,26 @@ export async function createAndActivateFlow(
   }
 
   const categories = input.categories ?? [];
-  let schedules = (input.schedules ?? []).map((s) => ({
-    ...s,
-    id: s.id ?? crypto.randomUUID(),
-  }));
+  let schedules = (input.schedules ?? []).map((s) => {
+    const freq = s.frequency ?? 'monthly';
+    const resolvedNext =
+      s.nextRunAt ??
+      resolveNextRunAtIso({
+        dueLabel: s.dueLabel,
+        nextRunAt: s.nextRunAt,
+        frequency: freq,
+      });
+    return {
+      ...s,
+      id: s.id ?? crypto.randomUUID(),
+      ...(resolvedNext ? { nextRunAt: resolvedNext } : {}),
+    };
+  });
+
+  const scheduleCheck = validateSchedulesForCreate(schedules);
+  if (!scheduleCheck.ok) {
+    throw new Error(scheduleCheck.message);
+  }
 
   let total =
     sumCategories(categories) > 0

@@ -49,6 +49,7 @@ import {
   buildYellowCardSendPartyFields,
 } from './yellowCardSender';
 import { assertYellowCardSendWithinLimits } from './yellowCardSendLimits';
+import { resolveYellowCardPaymentStatus } from './yellowCardStatus';
 import { createVirtualAccount } from './flutterwaveService';
 import {
   recordWalletActivity,
@@ -1127,6 +1128,18 @@ class PaymentService {
         );
       }
       try {
+        const { syncYellowCardPaymentStatusesForUser } = await import(
+          './walletActivityService'
+        );
+        await syncYellowCardPaymentStatusesForUser(userId);
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] yellowcard status sync skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      try {
         await repairFailedWalletTransactionStatuses(userId);
       } catch (err: unknown) {
         console.warn(
@@ -1434,8 +1447,15 @@ class PaymentService {
     if (tx && String(tx.status) === status) {
       return tx;
     }
-    return this.dbService.singleTransaction<any>(
+    const updated = await this.dbService.singleTransaction<any>(
       'updateWalletTransactionPayment',
+      [id, status],
+      enums.PAYMENT_QUERY
+    );
+    if (updated) return updated;
+
+    return this.dbService.singleTransaction<any>(
+      'updateWalletTransactionPaymentByRef',
       [id, status],
       enums.PAYMENT_QUERY
     );
@@ -1635,6 +1655,7 @@ class PaymentService {
 
     try {
       const payment = await yellowCardService.createPaymentRequest(ycPayload);
+      const txStatus = resolveYellowCardPaymentStatus(payment);
 
       await recordWalletActivity({
         userId: params.userId,
@@ -1646,7 +1667,7 @@ class PaymentService {
         title: activityTitle,
         reason: activityTitle,
         channel: 'bank',
-        status: 'success-payment',
+        status: txStatus,
         beneficiaryName: params.accountName,
         accountNumber: params.accountNumber,
         accountType: params.accountType,
@@ -1656,6 +1677,8 @@ class PaymentService {
         receiveAmount: ycLocalAmount,
         receiveCurrency,
         externalReference: paymentSequenceId,
+        paymentSequenceId,
+        collectionSequenceId,
       });
 
       return { collectionSequenceId, paymentSequenceId, payment };

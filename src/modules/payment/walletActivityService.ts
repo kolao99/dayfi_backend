@@ -79,6 +79,8 @@ export type RecordWalletActivityParams = {
   bankName?: string;
   receiveAmount?: number;
   receiveCurrency?: string;
+  paymentSequenceId?: string;
+  collectionSequenceId?: string;
   timestamp?: Date;
 };
 
@@ -281,13 +283,17 @@ export async function recordWalletActivity(
         : null;
     const receiveCurrency = params.receiveCurrency?.trim().toUpperCase() || null;
 
+    const paymentSequenceId = params.paymentSequenceId?.trim() || null;
+    const collectionSequenceId = params.collectionSequenceId?.trim() || null;
+
     await db.none(
       `INSERT INTO wallet_transactions (
          id, user_id, beneficiary_id, source_id, status, reason,
          send_amount, send_channel, send_network,
          receive_amount, receive_channel, receive_network,
-         ledger_currency, activity_kind, external_reference, timestamp
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+         ledger_currency, activity_kind, external_reference,
+         payment_sequence_id, collection_sequence_id, timestamp
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
       [
         id,
         userId,
@@ -304,6 +310,8 @@ export async function recordWalletActivity(
         currency,
         kind,
         extRef,
+        paymentSequenceId,
+        collectionSequenceId,
         recordedAt,
       ]
     );
@@ -1157,5 +1165,74 @@ export async function repairYellowCardWalletTransactions(
     repaired += 1;
   }
 
+  await db.none(
+    `UPDATE wallet_transactions
+     SET payment_sequence_id = external_reference
+     WHERE user_id = $1
+       AND payment_sequence_id IS NULL
+       AND external_reference IS NOT NULL
+       AND activity_kind = 'withdrawal'`,
+    [userId]
+  );
+
+  try {
+    await syncYellowCardPaymentStatusesForUser(userId);
+  } catch (_) {
+    /* optional live status sync */
+  }
+
   return { repaired };
+}
+
+/** Align wallet row status with Yellow Card provider (Pending_provider → pending-payment). */
+export async function syncYellowCardPaymentStatusesForUser(
+  userId: string
+): Promise<{ synced: number }> {
+  const { default: YellowCardService } = await import('./yellowCardService');
+  const { resolveYellowCardPaymentStatus } = await import('./yellowCardStatus');
+  const yc = new YellowCardService();
+  if (!yc.isConfigured()) return { synced: 0 };
+
+  const rows = await db.manyOrNone<{
+    id: string;
+    payment_sequence_id: string | null;
+    external_reference: string | null;
+    status: string;
+  }>(
+    `SELECT id, payment_sequence_id, external_reference, status
+     FROM wallet_transactions
+     WHERE user_id = $1
+       AND activity_kind = 'withdrawal'
+       AND send_channel = 'bank'
+       AND COALESCE(payment_sequence_id, external_reference) IS NOT NULL
+       AND timestamp > NOW() - interval '30 days'`,
+    [userId]
+  );
+
+  let synced = 0;
+  for (const row of rows ?? []) {
+    const seq = row.payment_sequence_id ?? row.external_reference;
+    if (!seq) continue;
+    try {
+      const payment = await yc.fetchPaymentBySequenceId(seq);
+      const mapped = resolveYellowCardPaymentStatus(payment);
+      if (mapped !== row.status) {
+        await db.none(
+          `UPDATE wallet_transactions SET status = $2 WHERE id = $1`,
+          [row.id, mapped]
+        );
+        synced += 1;
+        console.info(
+          `[yellowcard] status sync ${seq}: ${row.status} → ${mapped}`
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[yellowcard] status sync skipped for ${seq}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+  return { synced };
 }

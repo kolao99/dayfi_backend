@@ -237,6 +237,35 @@ export class YellowCardService {
     }
   }
 
+  /** Lookup send by partner sequenceId (authoritative status from Yellow Card). */
+  async fetchPaymentBySequenceId(sequenceId: string): Promise<any> {
+    const id = String(sequenceId ?? '').trim();
+    if (!id) throw new Error('Payment sequence id is required');
+    const path = `/business/payments/sequence-id/${id}`;
+    const method = 'GET';
+    const headers = this.getHeaders(method, path);
+
+    try {
+      const response = await axios.get(this.url(path), {
+        headers,
+        timeout: 25_000,
+      });
+      return response.data;
+    } catch (error: any) {
+      const detail = yellowCardAxiosDetail(error);
+      console.error('[YellowCard] fetchPaymentBySequenceId:', detail);
+      throw new Error(
+        error.response?.data?.message ||
+          `Unable to fetch Yellow Card payment: ${detail}`.slice(0, 2000)
+      );
+    }
+  }
+
+  /** @deprecated Use fetchPaymentBySequenceId */
+  async fetchPayment(sequenceId: string): Promise<any> {
+    return this.fetchPaymentBySequenceId(sequenceId);
+  }
+
   async resolveBankDetailsYC(
     accountNumber: string,
     networkId: string

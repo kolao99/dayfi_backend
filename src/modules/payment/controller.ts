@@ -18,6 +18,13 @@ import {
   buildYellowCardSendPartyFields,
 } from './yellowCardSender';
 import {
+  isYellowCardReceiveWebhookEvent,
+  isYellowCardSendWebhookEvent,
+  resolveWalletStatusFromYellowCardWebhook,
+  verifyYellowCardWebhookSignature,
+  type YellowCardWebhookPayload,
+} from './yellowCardWebhook';
+import {
   enqueueCryptoWalletProvision,
   provisionCryptoWalletsForUser,
   buildReceiveCryptoPayload,
@@ -2042,43 +2049,92 @@ class PaymentController {
 
   webhook = async (req: Request, res: Response): Promise<any> => {
     try {
-      const { event, sequenceId, amount, currency, usdAmount, localAmount } =
-        req.body;
+      const payload = req.body as YellowCardWebhookPayload;
+      const signature = (req.headers['x-yc-signature'] ??
+        req.headers['X-YC-Signature']) as string | undefined;
 
-      console.log('Incoming Webhook:', req.body);
+      if (signature) {
+        const raw = JSON.stringify(req.body);
+        if (!verifyYellowCardWebhookSignature(raw, signature)) {
+          console.warn('[YellowCard] webhook signature mismatch');
+          return errorResponse(
+            res,
+            'Invalid webhook signature',
+            enums.HTTP_UNAUTHORIZED
+          );
+        }
+      }
 
-      switch (event) {
-        case 'COLLECTION.COMPLETE':
+      const event = String(payload.event ?? '').trim();
+      const sequenceId = String(payload.sequenceId ?? '').trim();
+      const providerStatus = String(payload.status ?? '').trim();
+
+      console.log('[YellowCard] webhook', {
+        event,
+        sequenceId,
+        status: providerStatus,
+      });
+
+      if (!sequenceId) {
+        return errorResponse(
+          res,
+          'Missing sequenceId in webhook payload',
+          enums.HTTP_BAD_REQUEST
+        );
+      }
+
+      const walletStatus = resolveWalletStatusFromYellowCardWebhook(payload);
+
+      if (isYellowCardSendWebhookEvent(event)) {
+        if (!walletStatus) {
+          console.warn(`[YellowCard] unmapped send webhook: ${event}`);
+          return res.status(200).json({ received: true, skipped: true });
+        }
+        const updated =
+          await this.paymentService.updateTransactionPaymentStatus(
+            sequenceId,
+            walletStatus
+          );
+        if (!updated) {
+          console.warn(
+            `[YellowCard] no wallet row for send webhook sequenceId=${sequenceId}`
+          );
+        }
+        return res.status(200).json({ received: true, status: walletStatus });
+      }
+
+      if (isYellowCardReceiveWebhookEvent(event)) {
+        const { amount, currency, usdAmount, localAmount } = payload as Record<
+          string,
+          unknown
+        >;
+        const upper = event.toUpperCase();
+        if (upper.endsWith('.COMPLETE')) {
           await this.paymentService.completeCollectionInflow(sequenceId, {
             amount: Number(amount ?? localAmount),
             currency: currency as string | undefined,
             usdAmount: usdAmount != null ? Number(usdAmount) : undefined,
           });
-          break;
-
-        case 'COLLECTION.FAILED':
+        } else if (
+          upper.endsWith('.FAILED') ||
+          upper.endsWith('.EXPIRED') ||
+          upper.endsWith('.CANCELLED')
+        ) {
           await this.paymentService.updateTransactionStatus(
             sequenceId,
             'failed-collection'
           );
-          break;
+        }
+        return res.status(200).json({ received: true });
+      }
 
-        case 'PAYMENT.COMPLETE':
-          await this.paymentService.updateTransactionPaymentStatus(
-            sequenceId,
-            'success-payment'
-          );
-          break;
-
-        case 'PAYMENT.FAILED':
-          await this.paymentService.updateTransactionPaymentStatus(
-            sequenceId,
-            'failed-payment'
-          );
-          break;
-
-        default:
-          console.warn(`Unhandled webhook event: ${event}`);
+      if (walletStatus) {
+        await this.paymentService.updateTransactionPaymentStatus(
+          sequenceId,
+          walletStatus
+        );
+      } else {
+        console.warn(`[YellowCard] unhandled webhook event: ${event}`);
       }
 
       return res.status(200).json({ received: true });

@@ -5,6 +5,7 @@ import {
 } from '../payment/fxService';
 import { PRIMARY_CURRENCY } from '../payment/walletModel';
 import type { DayFlowPaymentLine, DayFlowPlanDraft } from './dayflowService';
+import { resolveNextRunAtIso } from './dayflowDueDate';
 
 export type DayFlowInputCurrency = 'NGN' | 'USD';
 
@@ -84,12 +85,27 @@ export async function normalizePlanDraftToUsd(
   const payments: DayFlowPaymentLine[] = await Promise.all(
     draft.payments.map(async (p) => {
       const converted = await toUsdAmount(p.amount, inputCurrency);
+      const freq = String(p.dueLabel ?? draft.periodLabel ?? '').toLowerCase();
+      const frequency =
+        freq.includes('week') && !freq.includes('two')
+          ? 'weekly'
+          : freq.includes('tomorrow') || freq.includes('today') || freq.includes('once')
+            ? 'once'
+            : 'monthly';
+      const resolvedNext = resolveNextRunAtIso({
+        dueLabel: p.dueLabel ?? draft.periodLabel,
+        nextRunAt: p.nextRunAt,
+        frequency,
+      });
       return {
         ...p,
         amount: converted.amount,
         ...(converted.sourceAmount != null
           ? { sourceAmount: converted.sourceAmount }
-          : {}),
+          : p.sourceAmount != null
+            ? { sourceAmount: p.sourceAmount }
+            : {}),
+        ...(resolvedNext ? { nextRunAt: resolvedNext } : {}),
       };
     })
   );

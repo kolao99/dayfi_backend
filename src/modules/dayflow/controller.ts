@@ -271,12 +271,16 @@ class DayflowController {
   chat = async (req: Request, res: Response): Promise<any> => {
     try {
       const userId = req.user?.user_id as string;
-      const { message, history } = req.body;
+      const { message, history, mode } = req.body;
 
       const result = await chatWithDayflow({
         userId,
         message: String(message),
         history: Array.isArray(history) ? history : [],
+        mode:
+          mode === 'addItem' || mode === 'editBudget' || mode === 'general'
+            ? mode
+            : undefined,
       });
 
       return success(res, 'DayFlow reply', enums.HTTP_OK, result);

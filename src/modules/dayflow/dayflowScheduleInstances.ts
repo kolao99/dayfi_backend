@@ -75,6 +75,28 @@ export function currentPeriodBounds(ref: Date = new Date()): {
   };
 }
 
+function frequencyFromLabel(label?: string | null): string {
+  const lower = String(label ?? '').toLowerCase();
+  if (
+    lower.includes('every week') ||
+    lower.includes('each week') ||
+    lower.includes('weekly') ||
+    lower.includes('per week')
+  ) {
+    return 'weekly';
+  }
+  if (
+    lower.includes('two week') ||
+    lower.includes('biweekly') ||
+    lower.includes('bi-weekly')
+  ) {
+    return 'biweekly';
+  }
+  if (lower.includes('every day') || lower.includes('daily')) return 'daily';
+  if (lower.includes('once')) return 'once';
+  return 'monthly';
+}
+
 function parseWeekday(label?: string | null): number | null {
   if (!label) return null;
   const lower = label.toLowerCase();
@@ -214,10 +236,14 @@ function expandSchedule(
   periodEnd: Date,
   now: Date
 ): DayflowScheduleInstance[] {
-  const freqRaw = String(
-    schedule.frequency ?? flow.budgetType ?? 'monthly'
-  ).toLowerCase();
   const dueLabel = schedule.dueLabel ?? flow.periodLabel ?? '';
+  const freqRaw = (() => {
+    const explicit = String(schedule.frequency ?? '').toLowerCase();
+    if (explicit && explicit !== 'monthly') return explicit;
+    const fromLabel = frequencyFromLabel(dueLabel);
+    if (fromLabel !== 'monthly') return fromLabel;
+    return String(flow.budgetType ?? 'monthly').toLowerCase();
+  })();
   const scheduleId = schedule.id ?? schedule.title;
   const instances: DayflowScheduleInstance[] = [];
 
@@ -275,8 +301,19 @@ function expandSchedule(
 
   const weekday = parseWeekday(dueLabel);
   if (freqRaw === 'weekly' || weekday != null) {
-    const dayIdx = weekday ?? 0;
-    for (const day of weekdaysInPeriod(periodStart, periodEnd, dayIdx)) {
+    const dayIdx =
+      weekday ??
+      (schedule.nextRunAt
+        ? new Date(schedule.nextRunAt).getDay()
+        : now.getDay());
+    let anchor = startOfDay(periodStart);
+    const today = startOfDay(now);
+    if (schedule.nextRunAt) {
+      const next = startOfDay(new Date(schedule.nextRunAt));
+      if (!Number.isNaN(next.getTime())) anchor = next;
+    }
+    if (anchor < today) anchor = today;
+    for (const day of weekdaysInPeriod(anchor, periodEnd, dayIdx)) {
       instances.push({
         ...base,
         id: `${flow.id}:${scheduleId}:${day.toISOString().slice(0, 10)}`,

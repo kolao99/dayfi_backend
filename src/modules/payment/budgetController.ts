@@ -68,6 +68,7 @@ class BudgetController {
         categories,
         recipientId,
         metadata,
+        nextRunAt,
       } = req.body ?? {};
 
       if (!name || typeof name !== 'string' || name.trim().length < 2) {
@@ -113,6 +114,10 @@ class BudgetController {
         frequency: freq,
         categories: Array.isArray(categories) ? categories : [],
         recipientId: recipientId ?? null,
+        nextRunAt:
+          typeof nextRunAt === 'string' && nextRunAt.trim().length > 0
+            ? nextRunAt.trim()
+            : undefined,
         metadata:
           metadata && typeof metadata === 'object' ? metadata : undefined,
       });
