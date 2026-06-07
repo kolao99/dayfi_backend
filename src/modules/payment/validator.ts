@@ -558,12 +558,16 @@ class PaymentValidator {
       recipient: Joi.object({
         name: Joi.string().required(),
         country: Joi.string().required(),
-        phone: Joi.string().required(),
-        address: Joi.string().required(),
-        dob: Joi.string().required(),
-        email: Joi.string().email().required(),
-        idNumber: Joi.string().required(),
-        idType: Joi.string().required(),
+        phone: Joi.string()
+          .trim()
+          .empty('')
+          .default('+2340000000000')
+          .required(),
+        address: Joi.string().allow('').default('Not provided'),
+        dob: Joi.string().allow('').default('1990-01-01'),
+        email: Joi.string().email().allow('').default('recipient@dayfi.co'),
+        idNumber: Joi.string().allow('').default('A00000000'),
+        idType: Joi.string().allow('').default('passport'),
       }).optional(),
     });
 

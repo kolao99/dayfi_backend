@@ -29,6 +29,7 @@
     "smoke:providers": "npm run egress-ip && npm run fw:smoke && npm run yc:smoke",
     "grey:smoke": "ts-node -r dotenv/config scripts/grey-smoke.ts",
     "deposit:usd": "ts-node -r dotenv/config scripts/simulate-usd-bank-deposit.ts",
+    "fix:grey-deposit": "ts-node -r dotenv/config scripts/fix-duplicate-grey-deposit.ts",
     "db:clear-users": "ts-node -r dotenv/config scripts/clear-test-users.ts",
     "stellar:diagnose": "ts-node -r dotenv/config scripts/stellar-sync-diagnose.ts",
     "seed:create": "node -r dotenv/config ./node_modules/db-migrate/bin/db-migrate create update-transaction-table --config database.json",

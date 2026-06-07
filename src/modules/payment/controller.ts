@@ -13,6 +13,7 @@ import {
   formatPrdWalletDetails,
   usdLedgerBalance,
 } from './walletModel';
+import { normalizeRecipientPhone } from './recipientPhone';
 import {
   enqueueCryptoWalletProvision,
   provisionCryptoWalletsForUser,
@@ -1169,15 +1170,22 @@ class PaymentController {
       const senderName =
         `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() ||
         'Dayfi User';
-      const recipientPayload = recipient ?? {
-        name: accountName,
-        country,
-        phone: user?.phone_number ?? '+2340000000000',
-        address: 'Not provided',
-        dob: '1990-01-01',
-        email: user?.email ?? 'user@dayfi.co',
-        idNumber: 'A00000000',
-        idType: 'passport',
+      const recipientCountry = String(
+        recipient?.country ?? country ?? 'NG'
+      ).toUpperCase();
+      const recipientPayload = {
+        name: String(recipient?.name ?? accountName),
+        country: recipientCountry,
+        phone: normalizeRecipientPhone(
+          recipient?.phone,
+          recipientCountry,
+          user?.phone_number
+        ),
+        address: String(recipient?.address ?? 'Not provided'),
+        dob: String(recipient?.dob ?? '1990-01-01'),
+        email: String(recipient?.email ?? user?.email ?? 'user@dayfi.co'),
+        idNumber: String(recipient?.idNumber ?? 'A00000000'),
+        idType: String(recipient?.idType ?? 'passport'),
       };
 
       const result = await this.paymentService.walletFundedYellowCardSend(
@@ -1186,7 +1194,11 @@ class PaymentController {
           sender: {
             name: senderName,
             email: user?.email ?? '',
-            phone: user?.phone_number ?? '',
+            phone: normalizeRecipientPhone(
+              user?.phone_number,
+              String(spendCurrency).toUpperCase() === 'NGN' ? 'NG' : 'US',
+              '+2340000000000'
+            ),
             country: String(spendCurrency).toUpperCase() === 'NGN' ? 'NG' : 'US',
           },
           sendAmount: Number(sendAmount),

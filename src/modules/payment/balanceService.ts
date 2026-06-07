@@ -9,6 +9,7 @@ import {
   formatBillCategoryLabel,
   formatBillPayLabel,
   recordWalletActivity,
+  USD_BANK_DEPOSIT_REASON,
 } from './walletActivityService';
 
 export { convertAmountToUsd } from './fxService';
@@ -146,6 +147,31 @@ export async function creditUsdBalance(params: {
     } catch (err: unknown) {
       console.warn(
         `[creditUsdBalance] bill refund activity record skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  } else if (params.source === 'grey') {
+    const txId = buildWalletActivityTxId(params.externalReference, movementId);
+    try {
+      await recordWalletActivity({
+        userId: params.userId,
+        id: txId,
+        direction: 'credit',
+        amount: usdAmount,
+        currency: PRIMARY_CURRENCY,
+        source: 'grey',
+        title: 'USD bank deposit',
+        reason: USD_BANK_DEPOSIT_REASON,
+        externalReference: params.externalReference,
+        channel: 'bank',
+        status: 'success-collection',
+        beneficiaryName: 'Wallet Top Up',
+        beneficiaryCountry: 'US',
+      });
+    } catch (err: unknown) {
+      console.warn(
+        `[creditUsdBalance] grey deposit activity record skipped: ${
           err instanceof Error ? err.message : String(err)
         }`
       );
@@ -395,6 +421,9 @@ export async function creditWalletBalance(params: {
       creditReason = billRefundActivityReason(meta);
       creditBeneficiary = `${actionLabel} refund`;
       creditAccountNumber = String(meta.customerId ?? '').trim() || undefined;
+    } else if (params.source === 'grey') {
+      creditTitle = `${currency} bank deposit`;
+      creditReason = USD_BANK_DEPOSIT_REASON;
     }
 
     try {
@@ -411,19 +440,23 @@ export async function creditWalletBalance(params: {
             ? `${assetCode} deposit`
             : params.source === 'flutterwave'
               ? 'NGN bank deposit'
-              : `${currency} deposit`),
+              : params.source === 'grey'
+                ? `${currency} bank deposit`
+                : `${currency} deposit`),
         reason:
           creditReason ||
           (params.source === 'stellar'
             ? `${assetCode} deposit via Stellar`
             : params.source === 'flutterwave'
               ? 'Deposit via NGN bank account'
-              : `${currency} wallet credit`),
+              : params.source === 'grey'
+                ? USD_BANK_DEPOSIT_REASON
+                : `${currency} wallet credit`),
         externalReference: params.externalReference,
         channel:
           params.source === 'stellar'
             ? 'crypto'
-            : params.source === 'flutterwave'
+            : params.source === 'flutterwave' || params.source === 'grey'
               ? 'bank'
               : 'wallet',
         network: params.source === 'stellar' ? 'stellar' : null,

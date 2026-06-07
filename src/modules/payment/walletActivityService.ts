@@ -2,6 +2,7 @@ import { db } from '../../config/database';
 import type { LedgerSource } from './balanceService';
 
 export const NGN_BANK_DEPOSIT_REASON = 'Deposit via NGN bank account';
+export const USD_BANK_DEPOSIT_REASON = 'USD bank deposit via wire transfer';
 
 export function formatBillCategoryLabel(code?: string | null): string {
   switch (String(code ?? '').toUpperCase()) {
@@ -128,7 +129,7 @@ function channelForSource(
 ): 'crypto' | 'bank' | 'wallet' {
   if (channel) return channel;
   if (source === 'stellar') return 'crypto';
-  if (source === 'flutterwave') return 'bank';
+  if (source === 'flutterwave' || source === 'grey') return 'bank';
   if (source === 'bank_out') return 'bank';
   if (source === 'p2p') return 'wallet';
   if (source === 'dayearn' || source === 'dayflow') return 'wallet';
@@ -362,6 +363,7 @@ export async function backfillWalletActivitiesFromLedger(
       isBillPay || isBillReversal
         ? formatBillCategoryLabel(String(meta.categoryCode ?? ''))
         : '';
+    const isGreyCredit = row.source === 'grey' && row.direction === 'credit';
 
     const result = await recordWalletActivity({
       userId: row.user_id,
@@ -376,14 +378,16 @@ export async function backfillWalletActivitiesFromLedger(
           ? billLabel
           : isBillReversal
             ? `${billAction} refund`
-            : row.direction === 'credit'
-              ? `${assetCode} deposit`
-              : `${row.currency} withdrawal`,
+            : isGreyCredit
+              ? `${row.currency} bank deposit`
+              : row.direction === 'credit'
+                ? `${assetCode} deposit`
+                : `${row.currency} withdrawal`,
       externalReference: row.external_reference ?? undefined,
       channel:
         row.source === 'stellar'
           ? 'crypto'
-          : row.source === 'flutterwave'
+          : row.source === 'flutterwave' || isGreyCredit
             ? 'bank'
             : isBillPay || isBillReversal
               ? 'wallet'
@@ -406,7 +410,9 @@ export async function backfillWalletActivitiesFromLedger(
               : row.direction === 'credit'
                 ? row.source === 'flutterwave'
                   ? NGN_BANK_DEPOSIT_REASON
-                  : `${assetCode} deposit via ${row.source}`
+                  : isGreyCredit
+                    ? USD_BANK_DEPOSIT_REASON
+                    : `${assetCode} deposit via ${row.source}`
                 : `${row.currency} sent via ${row.source}`,
       beneficiaryName: isSwap
         ? 'Currency conversion'
@@ -450,7 +456,9 @@ export async function backfillWalletActivitiesFromLedger(
         ? countryForWalletCurrency(row.currency)
         : isBillPay || isBillReversal
           ? 'NG'
-          : undefined,
+          : isGreyCredit
+            ? countryForWalletCurrency(row.currency)
+            : undefined,
       timestamp: row.created_at,
     });
     if (result.recorded) inserted += 1;

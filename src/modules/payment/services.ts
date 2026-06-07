@@ -37,6 +37,7 @@ import {
   newReference,
 } from './balanceService';
 import { transferByDayfiTag } from './p2pService';
+import { normalizeRecipientPhone } from './recipientPhone';
 import { createVirtualAccount } from './flutterwaveService';
 import {
   recordWalletActivity,
@@ -1524,11 +1525,18 @@ class PaymentService {
         country: params.country,
         networkId: params.networkId,
         accountName: params.accountName,
+        phoneNumber: normalizeRecipientPhone(
+          params.recipient.phone,
+          params.country
+        ),
       },
       sender: {
         name: params.sender.name,
         email: params.sender.email,
-        phone: params.sender.phone,
+        phone: normalizeRecipientPhone(
+          params.sender.phone,
+          params.sender.country
+        ),
         country: params.sender.country,
       },
       metadata: {

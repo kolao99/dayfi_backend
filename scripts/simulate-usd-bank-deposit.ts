@@ -7,10 +7,6 @@ import 'dotenv/config';
 
 import { db } from '../src/config/database';
 import PaymentService from '../src/modules/payment/services';
-import {
-  buildWalletActivityTxId,
-  recordWalletActivity,
-} from '../src/modules/payment/walletActivityService';
 
 async function main(): Promise<void> {
   const email = String(process.argv[2] ?? 'kolawoleolufemi9@gmail.com')
@@ -40,27 +36,9 @@ async function main(): Promise<void> {
     user.user_id,
     amount,
     'USD',
-    'USD',
     'grey',
     reference
   );
-
-  if (!result.duplicate) {
-    await recordWalletActivity({
-      userId: user.user_id,
-      id: buildWalletActivityTxId(reference),
-      direction: 'credit',
-      amount: result.usdAmount,
-      currency: 'USD',
-      source: 'grey',
-      title: 'USD bank deposit',
-      reason: 'USD bank deposit via wire transfer',
-      externalReference: reference,
-      channel: 'bank',
-      status: 'success-collection',
-      beneficiaryName: 'Wallet Top Up',
-    });
-  }
 
   const wallet = await paymentService.getUsdWallet(user.user_id);
 
