@@ -1,6 +1,6 @@
 {
   "name": "account",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "main": "index.js",
   "scripts": {
     "start": "npm run build && node dist/src/index.js",

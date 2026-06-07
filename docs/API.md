@@ -435,18 +435,22 @@ Use after a collection or as standalone disbursement per Yellow Card docs.
 | `limit` | number | default `10`, max `100` |
 | `sortOrder` | string | `asc`, `desc` |
 
-**Side effects (page 1 only):** idempotent backfill from `ledger_movements` into `wallet_transactions`, plus repair passes for legacy P2P, bill, and Flutterwave deposit rows.
+**Side effects (page 1 only):** idempotent backfill from `ledger_movements` into `wallet_transactions`, plus repair passes for legacy P2P, bill, Flutterwave deposit, **Yellow Card send labels**, and **failed-payment status** (reversed debits).
 
 **Response `data.transactions[]` highlights:**
 
 | Field | Description |
 |-------|-------------|
-| `id` | Stable id, e.g. `wt-dayfi-bill-{uuid}` for bill pays |
-| `reason` | Human label — pays: `MTN Airtime Topup · 080…`; refunds: `Airtime Topup refund · MTN Airtime Topup` |
+| `id` | Stable id, e.g. `wt-dayfi-bill-{uuid}` or `wt-{collectionSequenceId}` for YC sends |
+| `status` | **`success-payment`**, **`failed-payment`**, etc. Failed debits with a ledger reversal are returned as **`failed-payment`** even if the stored row was legacy `success-payment` |
+| `fees` | USD fee from ledger `metadata.feeUsd` (e.g. `0.05` on cross-border sends) |
+| `reason` | Human label — pays: `MTN Airtime Topup · 080…`; YC sends: `Send to Name · Bank`; refunds: `Airtime Topup refund · MTN Airtime Topup` |
 | `ledger_currency` | Usually `USD` for hub debits/credits |
-| `ngn_amount`, `usd_credited`, `fx_ngn_to_usd` | Populated for NGN bank deposits (from joined ledger) |
-| `ledger_metadata` | Raw `ledger_movements.metadata` — `categoryCode`, `billerName`, `itemName`, `customerId`, `reversal`, etc. |
-| `beneficiary.name` | Action label (e.g. `Airtime Topup`, `Airtime Topup refund`) after repair |
+| `ngn_amount`, `usd_credited`, `fx_ngn_to_usd` | Populated for NGN bank deposits and cross-border sends (from joined ledger) |
+| `ledger_metadata` | Raw `ledger_movements.metadata` — `accountName`, `bankName`, `feeUsd`, `categoryCode`, `reversal`, etc. |
+| `beneficiary.name` | Resolved recipient (falls back from ledger `accountName` when DB says “Recipient”) |
+| `beneficiary.bankName` | Bank label for cross-border sends (e.g. `OPay`) |
+| `beneficiary.country` | Payout country (e.g. `NG` from `payoutCountry` / receive currency) |
 
 Bill detection on mobile: `id` / `external_reference` containing `dayfi-bill`, or `ledger_metadata.categoryCode`.
 
@@ -501,7 +505,7 @@ GET /notifications/unread-count → bell badge
 
 On pull-to-refresh or return to Home, mobile re-fetches wallet details, transactions, and notifications. Unread transaction alerts also surface as local notifications (Phase 1 inbox only; FCM push is Phase 2).
 
-**History tab:** use `reason`, `beneficiary.name`, and `ledger_metadata` for action titles (**Airtime Topup**, **Airtime Topup Refund**, etc.) — never generic “Bill payment” / “Bill refund”.
+**History tab:** use `reason`, `beneficiary.name`, `beneficiary.bankName`, and `ledger_metadata` for action titles (**Airtime Topup**, **Send to Name · Bank**, **Airtime Topup Refund**, etc.) — never generic “Bill payment” / “Recipient”. Map **`success-payment`** / **`success-collection`** → UI label **Success**; **`failed-payment`** → **Failed**.
 
 **DayBudget:** `/dayflow/*` is server-scoped per user; mobile caches plans/chat per user id locally.
 
@@ -595,7 +599,8 @@ Returns the user's inbox, newest first (default limit 50).
 | `type` | Emitted when |
 |--------|----------------|
 | `NGN_DEPOSIT` | Flutterwave NGN VA deposit credits USD ledger |
-| `BANK_SEND` | Nigeria bank transfer (Flutterwave payout) succeeds |
+| `BANK_SEND` | Nigeria bank transfer (Flutterwave payout or Yellow Card wallet send) succeeds |
+| `BANK_SEND_FAILED` | Wallet-funded Yellow Card bank send fails after USD debit is reversed |
 | `BILL_PAY` | Bill payment succeeds |
 | `BILL_PAY_FAILED` | Bill payment fails after USD debit is reversed |
 | `P2P_RECEIVE` | User receives a Dayfi-to-Dayfi transfer |
@@ -693,6 +698,7 @@ Onboarding creates **USD + NGN** ledger wallets via `ensureUserLedgerWallets`.
 
 | Date | Change |
 |------|--------|
+| 2026-06-05 | **Failed status:** reversed bill/YC debits → `failed-payment` in API + repair on fetch; `BANK_SEND_FAILED` notification; YC send labels (`Send to … · Bank`), `fees` from `feeUsd`, `beneficiary.bankName`; mobile **Success** / **Failed** labels |
 | 2026-06-06 | Bill refund `ngnAmount` on reversal metadata; `wallet-transactions` `ngn_amount` from ledger + original debit fallback; DayEarn **USD-only** (7% APY) |
 | 2026-06-05 | Bill history labels: action names (`Airtime Topup`, `Airtime Topup refund`); expanded repair on wallet-transactions fetch |
 | 2026-06-05 | Bill transaction labels: provider/category-specific `reason` + `ledger_metadata`; repair legacy bill rows on wallet-transactions fetch |

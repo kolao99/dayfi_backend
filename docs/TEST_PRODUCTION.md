@@ -42,13 +42,14 @@ VS Code → **Run and Debug**:
 **In-app checks after login:**
 
 1. Home / wallet loads  
-2. **Send** → Nigerian banks list (Flutterwave)  
-3. **Pay bills** → categories load; packages sorted low→high with formatted NGN; fixed-plan amount read-only; History shows **BILL TOPUP** / **BILL TOPUP REFUND** with **`₦100 = $0.07`** (not ₦0.07)  
-4. **History** → pull to refresh repairs bill labels; NGN deposit shows **`₦100 = $0.07`**  
-5. **Notifications** — correct NGN amounts (no dot-stripping bug); bell badge after deposit/send/bill/P2P  
-6. **DayEarn** — **USD only** (`$0.00` balance, 7% APY); not Naira  
-7. **DayBudget** — USD wallet (2 dp); autopay for scheduled bills/sends; new user empty plan per account  
-8. Cross-border / YC send path (Yellow Card)
+2. **Send** → Nigerian banks list (Flutterwave); YC cross-border send shows recipient + bank on history  
+3. **Pay bills** → categories load; packages sorted low→high with formatted NGN; fixed-plan amount read-only; **failed** bills show **Failed** in History + notification (not Success)  
+4. **History** → pull to refresh repairs labels + failed status; NGN deposit shows **`₦100 = $0.07`**; successes labeled **Success**  
+5. **Notifications** — `BILL_PAY_FAILED` and **`BANK_SEND_FAILED`** when payout fails; bell badge after deposit/send/bill/P2P  
+6. **People** — saved bank recipients show **Opay · NG** (not “Bank · NG”)  
+7. **DayEarn** — **USD only** (`$0.00` balance, 7% APY); not Naira  
+8. **DayBudget** — USD wallet (2 dp); autopay for scheduled bills/sends; new user empty plan per account  
+9. Cross-border / YC send — only successful attempt shows **Success**; failed retries show **Failed**
 
 ## 4. After tests pass
 

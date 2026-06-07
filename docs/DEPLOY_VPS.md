@@ -124,7 +124,27 @@ VS Code: **Flutter Dev (api.dayfi.co)** or **Flutter Pilot/Prod** — see `docs/
 flutter run --flavor pilot --dart-define=FLAVOR=pilot
 ```
 
-Ship a new build when ready so production users hit the VPS.
+Ship a new **mobile build** when backend history/status/notification changes land — History and People tabs depend on API + app UI together.
+
+After backend deploy, open **History** and pull to refresh once (page-1 repair runs server-side).
+
+---
+
+## 9. Redeploy after backend changes
+
+From your Mac (repo root):
+
+```bash
+./scripts/deploy-vps.sh
+```
+
+This rsyncs the tree (including `docs/`) and rebuilds the API container. Verify:
+
+```bash
+curl -s https://api.dayfi.co/api/v1/health/ready
+```
+
+Then rebuild/run the consumer Flutter app against `api.dayfi.co`.
 
 ---
 

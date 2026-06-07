@@ -49,8 +49,9 @@ flowchart TB
 | Module | File |
 |--------|------|
 | Balance / idempotency | `balanceService.ts` |
-| Wallet history mirror | `walletActivityService.ts` — `recordWalletActivity`, ledger backfill, P2P/bill repair |
-| Bills (Flutterwave) | `billsService.ts` — pay, reverse, labelled wallet rows |
+| Wallet history mirror | `walletActivityService.ts` — `recordWalletActivity`, ledger backfill, P2P/bill/YC repair, **`repairFailedWalletTransactionStatuses`** |
+| Bills (Flutterwave) | `billsService.ts` — pay, reverse on failure, **`BILL_PAY_FAILED`** notification |
+| Yellow Card wallet send | `services.ts` — `walletFundedYellowCardSend`; records activity only on success; **`failed-payment`** + **`BANK_SEND_FAILED`** on reversal |
 | Inflow FX + credit | `inflowService.ts` / `flutterwaveInflowService.ts` |
 | P2P USD transfer | `p2pService.ts` |
 | Send quote | `payoutQuoteService.ts` |
@@ -65,7 +66,7 @@ flowchart TB
 
 - `grey_virtual_accounts` — Grey account metadata per user/currency
 - `ledger_movements` — idempotent credits/debits (`source`: `flutterwave`, `bill_pay`, `p2p`, `manual`, …)
-- `wallet_transactions` — mobile history mirror (joined to ledger for FX + `ledger_metadata`)
+- `wallet_transactions` — mobile history mirror (joined to ledger for FX, fees, `ledger_metadata`; **status** derived from reversals)
 - `user_notifications` — Phase 1 in-app inbox
 - `dayflow_plans`, `dayflow_flows`, `dayflow_plan_templates` — DayBudget (per user)
 - `p2p_transfers`, `investment_pockets`, `investment_movements`

@@ -90,9 +90,15 @@ Authorization: Bearer <token>
 ```
 
 - Filter by `ledger_currency=USD` on the client for the global wallet tab.
-- **Bill pays:** use `reason`, `beneficiary.name`, and `ledger_metadata` for titles like **Airtime Topup** / **Airtime Topup Refund** — never “Bill payment” / “Bill refund”.
+- **Status:** `success-payment` / `success-collection` → show **Success**; `failed-payment` → **Failed** (reversed bill or YC send). Do not label successes as “Completed”.
+- **Bill pays:** use `reason`, `beneficiary.name`, and `ledger_metadata` for titles like **Airtime Topup** / **Airtime Topup Refund** — never “Bill payment” / “Bill refund”. Failed bills appear as **Failed** after server repair.
+- **YC bank sends:** `reason` like **`Send to Kolawole Oluwafemi · OPay`**; use `beneficiary.bankName`, `fees` / `ledger_metadata.feeUsd` (e.g. `$0.05`), and `ngn_amount` for subtitle FX.
 - **NGN deposits:** subtitle should say “received”, not “sent”; use `ngn_amount` + `usd_credited`.
-- First request on page 1 triggers server-side backfill/repair for legacy rows.
+- First request on page 1 triggers server-side backfill/repair for legacy rows (P2P, bills, YC sends, failed status).
+
+### Recipients (People tab)
+
+Saved + history-derived beneficiaries use `source.networkId` → bank name (e.g. **Opay · NG**). Resolve NG banks via Flutterwave list cached on tab open.
 
 ### Notifications (Phase 1)
 
@@ -103,7 +109,7 @@ PUT /api/v1/notifications/read-all
 PUT /api/v1/notifications/:id
 ```
 
-Refresh on Home pull-to-refresh and when returning from the inbox screen.
+Types include **`BILL_PAY_FAILED`** and **`BANK_SEND_FAILED`** (wallet not charged). Refresh on Home pull-to-refresh and when returning from the inbox screen.
 
 ### Bills
 
@@ -112,7 +118,7 @@ GET  /api/v1/payments/bills/categories
 POST /api/v1/payments/bills/pay
 ```
 
-Debits USD; shows in history as a labelled debit (outgoing). Failed pays reverse with a labelled credit.
+Debits USD; shows in history as a labelled debit (outgoing). Failed pays reverse USD and show **`failed-payment`** in history + **`BILL_PAY_FAILED`** in notifications.
 
 ### DayBudget (DayFlow)
 
@@ -138,7 +144,9 @@ To align merchant app with Grey hub would require a separate integration project
 - [ ] `API_BASE_URL=https://api.dayfi.co/api/v1` (or local `:3000/api/v1`)
 - [ ] Home calls `GET /payments/wallet-details` → `totalAvailableBalance`
 - [ ] Home refreshes `GET /notifications/unread-count` on pull / resume
-- [ ] History uses bill-specific labels from `ledger_metadata` / `reason`
+- [ ] History uses bill/YC-specific labels from `ledger_metadata` / `reason` / `beneficiary.bankName`
+- [ ] History status: **Success** / **Failed** (map from `success-payment` / `failed-payment`)
+- [ ] Recipients list shows bank name (e.g. **Opay · NG**), not generic “Bank · NG”
 - [ ] DayBudget local cache keyed by user id
 - [ ] Receive calls `GET /payments/grey/accounts`
 - [ ] Do **not** sum USD+NGN on home screen

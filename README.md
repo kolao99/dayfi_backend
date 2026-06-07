@@ -23,18 +23,27 @@ Grey (primary fiat), Yellow Card (Africa payouts), Stellar (USDC receive), Flutt
 
 ### Transaction history
 
-- **`GET /payments/wallet-transactions`** — mobile History tab; joins `ledger_movements` for deposit FX and bill metadata.
-- **Bill pays** — action-specific labels (e.g. **Airtime Topup**, **MTN Airtime Topup**; refunds **Airtime Topup Refund**). Never generic “Bill payment”. Metadata: `categoryCode`, `billerName`, `itemName`, `customerId`, **`ngnAmount`** (NGN face value) on ledger + `ledger_metadata` / `ngn_amount` in the API response.
+- **`GET /payments/wallet-transactions`** — mobile History tab; joins `ledger_movements` for deposit FX, bill metadata, **`fees`** (`feeUsd`), and **`beneficiary.bankName`** on bank sends.
+- **Status** — API derives **`failed-payment`** when a debit was reversed in ledger (failed bill pay or Yellow Card send). Mobile shows **Success** / **Failed** (not “Completed” for successes). Only successful debits stay **`success-payment`**.
+- **Yellow Card sends** — titles like **`Send to Kolawole Oluwafemi · OPay`**; deduped by collection id; failed attempts marked failed (not hidden).
+- **Bill pays** — action-specific labels (e.g. **Airtime Topup**, **MTN Airtime Topup**; refunds **Airtime Topup Refund**). Failed pays show **Failed** after reversal. Metadata: `categoryCode`, `billerName`, `itemName`, `customerId`, **`ngnAmount`**, **`feeUsd`** on ledger + API.
 - **History FX line (mobile)** — bill pay, refund, and NGN deposit rows show **`₦100 = $0.07`** (whole naira, USD to 2 dp). Refunds store `ngnAmount`; legacy rows fall back to the original bill debit.
-- **First page fetch** — backfills missing rows from `ledger_movements` and repairs legacy P2P, bill, and Flutterwave deposit labels (idempotent).
+- **First page fetch** — backfills missing rows from `ledger_movements` and repairs legacy P2P, bill, Flutterwave deposit, **Yellow Card send**, and **failed-status** rows (idempotent).
 
 ### Bills (Flutterwave)
 
-`GET /payments/bills/categories` → billers → items → `POST /payments/bills/pay` (debits USD, pays in NGN). Failed payout reverses USD with a labelled refund credit (`ngnAmount` on reversal metadata).
+`GET /payments/bills/categories` → billers → items → `POST /payments/bills/pay` (debits USD, pays in NGN). Failed payout reverses USD with a labelled refund credit (`ngnAmount` on reversal metadata). History + notifications show **failed** — wallet was not charged.
 
 ### In-app inbox (Phase 1)
 
-Deposit, bank send, bill pay, and P2P write to `user_notifications`. Mobile polls `GET /notifications` and shows an unread badge. Push (FCM) is Phase 2.
+Deposit, bank send, **failed bank send (YC wallet-funded)**, bill pay, **failed bill pay**, and P2P write to `user_notifications`. Mobile polls `GET /notifications` and shows an unread badge. Push (FCM) is Phase 2.
+
+| Notification `type` | When |
+|---------------------|------|
+| `BILL_PAY_FAILED` | Bill pay failed; USD reversed |
+| `BANK_SEND_FAILED` | Yellow Card / wallet-funded bank send failed; USD reversed |
+| `BANK_SEND` | Bank send succeeded |
+| `BILL_PAY` | Bill pay succeeded |
 
 ### DayEarn
 
