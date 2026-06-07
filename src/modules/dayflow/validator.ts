@@ -50,7 +50,7 @@ class DayflowValidator {
       periodLabel: Joi.string().trim().max(80).optional(),
       totalBudget: Joi.number().min(0).required(),
       spent: Joi.number().min(0).optional(),
-      currency: Joi.string().valid('NGN').optional(),
+      currency: Joi.string().valid('USD', 'NGN').optional(),
       summaryLine: Joi.string().trim().max(500).optional(),
       categories: Joi.array()
         .items(
@@ -137,7 +137,7 @@ class DayflowValidator {
         .optional(),
       periodLabel: Joi.string().trim().max(80).optional(),
       summaryLine: Joi.string().trim().max(500).optional(),
-      currency: Joi.string().valid('NGN').optional(),
+      currency: Joi.string().valid('USD', 'NGN').optional(),
       categories: Joi.array()
         .items(
           Joi.object({

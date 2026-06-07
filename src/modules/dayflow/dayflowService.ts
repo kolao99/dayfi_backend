@@ -1,6 +1,11 @@
 import axios from 'axios';
-import { db } from '../../config/database';
 import { buildConversationSummary } from '../dayx/dayxConversationSummary';
+import { PRIMARY_CURRENCY } from '../payment/walletModel';
+import {
+  loadUsdBalance,
+  normalizePlanDraftToUsd,
+  type DayFlowInputCurrency,
+} from './dayflowCurrency';
 import { getActivePlan } from './dayflowPlanService';
 
 export type DayFlowHistoryMessage = {
@@ -11,6 +16,7 @@ export type DayFlowHistoryMessage = {
 export type DayFlowPaymentLine = {
   title: string;
   amount: number;
+  sourceAmount?: number;
   dueLabel?: string;
   recipientHint?: string;
   autoSend?: boolean;
@@ -20,8 +26,10 @@ export type DayFlowPlanDraft = {
   title: string;
   periodLabel: string;
   totalBudget: number;
-  currency: 'NGN';
-  categories: { name: string; allocated: number }[];
+  currency: 'USD';
+  inputCurrency?: DayFlowInputCurrency;
+  fxNgnPerUsd?: number;
+  categories: { name: string; allocated: number; sourceAmount?: number }[];
   payments: DayFlowPaymentLine[];
   leftover: number;
   sweepToDayEarn: boolean;
@@ -46,7 +54,7 @@ Smart, premium, minimal, visual, emotionally intelligent, futuristic, calming. L
 Helpful, non-judgmental, insightful, encouraging — NEVER shame users.
 
 ## Purpose
-Ensure every incoming naira has structure and purpose before spending begins.
+Ensure every dollar in the global wallet has structure and purpose before spending begins.
 Help users: plan income, allocate money, control spending, improve savings, forecast expenses, build discipline.
 
 ## Budget types (ask user if unclear)
@@ -67,21 +75,31 @@ Food, Transport, Bills, Savings, Rent, Airtime/Data, Family Support, Emergency F
 - Spending insights & forecasts (non-judgmental)
 - DayX can also query budgets — keep answers consistent
 
+## Global wallet & currency (CRITICAL)
+- User's global wallet is USD (${PRIMARY_CURRENCY}) — the single source of truth for affordability
+- Users often speak in Nigerian Naira (NGN): "200k", "₦300,000", "100 thousand naira", etc.
+- Put amounts in planDraft using amountCurrency: "NGN" when the user spoke in naira, or "USD" when they used dollars
+- The server converts NGN → USD using live rates; you do NOT need to convert in the JSON
+- Example: user says "send ₦200,000 every Friday" → payments[].amount: 200000, amountCurrency: "NGN"
+- Example: rent ₦900,000 split 3 ways → user's share ₦300,000 → categories Rent allocated: 300000 OR payments[] with amount 300000, amountCurrency: "NGN"
+- For rent splits: ask how many people split, compute each person's share accurately, emit one payment[] row per roommate autopay when requested
+- In reply text, show both when helpful: "₦200,000 (~$130 from your global wallet)" using rate ~₦1540 = $1
+
 ## Rules
-- NGN ONLY for plans
-- Ask clarifying questions before full plan
-- For ANY recurring autopay (airtime, data, electricity, family send, rent autopay): collect full recipient or bill details BEFORE readyToApprove
-- Use payments[] for scheduled autopay items (not plain categories). Categories alone are spending pockets (Food, Transport, Sweets, Water) — no autopay unless user explicitly schedules them
-- payments[].recipientHint must include concrete details, e.g. "08131208415 MTN", "1234567890 IKEDC", "9072672767 Opay", "@freddy001", "Mom · 9072672767 Opay"
+- Ask clarifying questions before full plan (income amount, split details, recipient accounts)
+- For ANY recurring autopay (airtime, data, electricity, family send, rent autopay, Opay/bank): collect full recipient or bill details BEFORE readyToApprove
+- Use payments[] for scheduled autopay items (not plain categories). Categories alone are spending pockets — no autopay unless user explicitly schedules them
+- payments[].recipientHint must include concrete details, e.g. "08131208415 MTN", "1234567890 IKEDC", "9072672767 Opay", "@freddy001", "Wally Paul · 9072672767 Opay"
 - Never use DayEarn as a send recipient
 - Calculate days left in period
-- Compare plan total to NGN wallet; set suggestSwap: true if insufficient
+- Compare plan total (in USD after server conversion) to USD global wallet; set suggestSwap: true if insufficient
 - Suggest locking Rent, School Fees, Emergency, Savings categories
-- Set readyToApprove true ONLY when every autoSend payment has recipientHint filled
+- Set readyToApprove true ONLY when every autoSend payment has recipientHint filled AND all account details are complete
 - Include budgetType in planDraft when known (weekly|monthly|annual|custom)
+- Do NOT set readyToApprove if autopay payments lack bank/Opay/tag/phone details
 
 ## planDraft fields
-budgetType, title, periodLabel, totalBudget, categories[{name, allocated, locked?}], payments[{title, amount, dueLabel?, recipientHint?, autoSend?}], leftover, sweepToDayEarn, readyToApprove, goals[{title, targetAmount, monthlyTarget?}]
+amountCurrency ("NGN"|"USD"), budgetType, title, periodLabel, totalBudget, categories[{name, allocated, locked?}], payments[{title, amount, dueLabel?, recipientHint?, autoSend?}], leftover, sweepToDayEarn, readyToApprove, goals[{title, targetAmount, monthlyTarget?}]
 
 Start NEW conversations (empty history) with:
 "Hi, I'm DayFlow. How much money do you have to work with this month or this week?"
@@ -135,17 +153,8 @@ function resolveApiKey(provider: 'groq' | 'openai'): string {
   return process.env.OPENAI_API_KEY!.trim();
 }
 
-async function loadNgnBalance(userId: string): Promise<number> {
-  const row = await db.oneOrNone<{ balance: string }>(
-    `SELECT balance::text AS balance FROM wallets
-     WHERE user_id = $1 AND currency = 'NGN' LIMIT 1`,
-    [userId]
-  );
-  return row ? Number(row.balance) : 0;
-}
-
 function buildSystemPrompt(
-  ngnBalance: number,
+  usdBalance: number,
   activePlanSummary: string,
   conversationSummary?: string
 ): string {
@@ -164,9 +173,9 @@ function buildSystemPrompt(
 Context (authoritative):
 - Today: ${dateStr} (${monthName})
 - Days left in this calendar month: ${daysLeftInMonth}
-- User NGN wallet balance (ledger): ₦${ngnBalance.toLocaleString('en-NG', { maximumFractionDigits: 2 })}
+- User global wallet balance (USD ledger): $${usdBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Active DayFlow plan: ${activePlanSummary}
-- All DayFlow plans must use NGN only. If budget exceeds NGN balance, mention insufficient NGN wallet and set suggestSwap: true.
+- Plans are budgeted in USD from the global wallet. Users may speak NGN — set amountCurrency accordingly. If USD-equivalent budget exceeds wallet, mention insufficient balance and set suggestSwap: true.
 - Remember prior turns in this chat — do not re-ask for information the user already gave (amounts, categories, item names).${summaryBlock}`;
 }
 
@@ -205,6 +214,9 @@ function parsePlanDraft(raw: unknown): DayFlowPlanDraft | undefined {
     return undefined;
   }
 
+  const inputCurrency: DayFlowInputCurrency =
+    String(p.amountCurrency ?? 'NGN').toUpperCase() === 'USD' ? 'USD' : 'NGN';
+
   const readyToApprove =
     p.readyToApprove === true &&
     payments.every(
@@ -217,7 +229,8 @@ function parsePlanDraft(raw: unknown): DayFlowPlanDraft | undefined {
     title: String(p.title ?? "This Month's Plan"),
     periodLabel: String(p.periodLabel ?? 'This Month'),
     totalBudget: Number(p.totalBudget ?? 0),
-    currency: 'NGN',
+    currency: 'USD',
+    inputCurrency,
     categories,
     payments,
     leftover: Number(p.leftover ?? 0),
@@ -256,16 +269,16 @@ export async function chatWithDayflow(params: {
   }
 
   const provider = resolveProvider();
-  const [ngnBalance, activePlan] = await Promise.all([
-    loadNgnBalance(params.userId),
+  const [usdBalance, activePlan] = await Promise.all([
+    loadUsdBalance(params.userId),
     getActivePlan(params.userId),
   ]);
   const planSummary = activePlan
-    ? `${activePlan.periodLabel} — ₦${activePlan.totalBudget} budget, ₦${activePlan.spent} spent, safe categories: ${(activePlan.categories as { name: string }[]).map((c) => c.name).join(', ')}`
+    ? `${activePlan.periodLabel} — $${activePlan.totalBudget} budget, $${activePlan.spent} spent, safe categories: ${(activePlan.categories as { name: string }[]).map((c) => c.name).join(', ')}`
     : 'None yet';
   const history = (params.history ?? []).slice(-16);
   const conversationSummary = buildConversationSummary(history);
-  const system = buildSystemPrompt(ngnBalance, planSummary, conversationSummary);
+  const system = buildSystemPrompt(usdBalance, planSummary, conversationSummary);
 
   const messages: { role: string; content: string }[] = [
     { role: 'system', content: system },
@@ -318,17 +331,27 @@ export async function chatWithDayflow(params: {
   let planDraft = parsePlanDraft(payload.planDraft);
   const suggestSwap = payload.suggestSwap === true;
 
-  if (planDraft && planDraft.totalBudget > ngnBalance && ngnBalance >= 0) {
+  if (planDraft) {
+    planDraft = await normalizePlanDraftToUsd(
+      planDraft,
+      planDraft.inputCurrency ?? 'NGN'
+    );
+  }
+
+  if (planDraft && planDraft.totalBudget > usdBalance && usdBalance >= 0) {
     planDraft = {
       ...planDraft,
-      readyToApprove: planDraft.readyToApprove && ngnBalance >= planDraft.totalBudget,
+      readyToApprove:
+        planDraft.readyToApprove && usdBalance >= planDraft.totalBudget,
     };
   }
 
   return {
     reply,
     planDraft,
-    suggestSwap: suggestSwap || (planDraft != null && planDraft.totalBudget > ngnBalance),
+    suggestSwap:
+      suggestSwap ||
+      (planDraft != null && planDraft.totalBudget > usdBalance),
     meta: { provider, mode: 'full' },
   };
 }

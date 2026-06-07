@@ -72,6 +72,11 @@ async function loadNgnBalance(userId: string): Promise<number> {
   return row ? Number(row.balance) : 0;
 }
 
+async function loadUsdBalance(userId: string): Promise<number> {
+  const { loadUsdBalance: loadUsd } = await import('./dayflowCurrency');
+  return loadUsd(userId);
+}
+
 async function loadRecentCategorySpend(userId: string): Promise<
   { category: string; amount: number }[]
 > {
@@ -410,7 +415,7 @@ export async function upsertActivePlan(userId: string, input: DayflowPlanInput) 
         input.periodLabel ?? existing.periodLabel,
         input.totalBudget,
         input.spent ?? existing.spent,
-        input.currency ?? 'NGN',
+        input.currency ?? 'USD',
         input.summaryLine ?? existing.summaryLine,
         JSON.stringify(categories),
         JSON.stringify(upcoming),
@@ -439,7 +444,7 @@ export async function upsertActivePlan(userId: string, input: DayflowPlanInput) 
       input.periodLabel ?? 'This Month',
       input.totalBudget,
       input.spent ?? 0,
-      input.currency ?? 'NGN',
+      input.currency ?? 'USD',
       input.summaryLine ?? null,
       JSON.stringify(categories),
       JSON.stringify(upcoming),
@@ -501,8 +506,9 @@ export async function getDayflowDashboard(userId: string) {
     computeFreeToSpend,
   } = await import('./dayflowScheduleInstances');
 
-  const [ngnBalance, plan, recentSpend, pendingIncome, flowsDash, flowHeld] =
+  const [usdBalance, ngnBalance, plan, recentSpend, pendingIncome, flowsDash, flowHeld] =
     await Promise.all([
+      loadUsdBalance(userId),
       loadNgnBalance(userId),
       getActivePlan(userId),
       loadRecentCategorySpend(userId),
@@ -549,21 +555,23 @@ export async function getDayflowDashboard(userId: string) {
     flows: flowsForInstances,
   });
 
-  const planSafe = computeSafeToSpend(ngnBalance, plan);
-  const planReserved = Math.max(0, ngnBalance - planSafe);
+  const planSafe = computeSafeToSpend(usdBalance, plan);
+  const planReserved = Math.max(0, usdBalance - planSafe);
   const committedThisPeriod = scheduleInstances.committedThisPeriod;
   const freeToSpend = computeFreeToSpend(
-    ngnBalance,
+    usdBalance,
     committedThisPeriod,
     activeFlows.length > 0 ? 0 : planReserved
   );
   const safeToSpend = freeToSpend;
 
   const healthScore = computeHealthScore(plan);
-  const forecast = computeForecast(ngnBalance, plan);
+  const forecast = computeForecast(usdBalance, plan);
   const insights = buildInsights(plan, recentSpend);
 
   return {
+    walletBalance: usdBalance,
+    walletCurrency: 'USD',
     ngnBalance,
     safeToSpend,
     freeToSpend,

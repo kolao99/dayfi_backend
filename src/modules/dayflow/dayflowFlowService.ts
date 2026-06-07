@@ -4,7 +4,11 @@ import {
   creditWalletBalance,
   newReference,
 } from '../payment/balanceService';
-import { convertAmountToUsd } from '../payment/fxService';
+import {
+  convertAmountBetween,
+  convertAmountToUsd,
+} from '../payment/fxService';
+import { PRIMARY_CURRENCY } from '../payment/walletModel';
 import { createBudget, computeNextRunAt } from '../payment/budgetService';
 import type { BudgetFrequency } from '../payment/budgetService';
 import PaymentService from '../payment/services';
@@ -101,6 +105,21 @@ async function loadNgnWallet(userId: string) {
   );
 }
 
+async function loadUsdWallet(userId: string) {
+  return db.oneOrNone<{ wallet_id: string; balance: string }>(
+    `SELECT wallet_id, balance::text AS balance FROM wallets
+     WHERE user_id = $1 AND currency = $2 LIMIT 1`,
+    [userId, PRIMARY_CURRENCY]
+  );
+}
+
+async function loadWalletForCurrency(userId: string, currency: string) {
+  const c = String(currency).toUpperCase();
+  if (c === PRIMARY_CURRENCY) return loadUsdWallet(userId);
+  if (c === 'NGN') return loadNgnWallet(userId);
+  return null;
+}
+
 function formatFlow(row: FlowRow) {
   const categories = Array.isArray(row.categories) ? row.categories : [];
   const schedules = Array.isArray(row.schedules) ? row.schedules : [];
@@ -155,7 +174,8 @@ function earliestNextRun(schedules: DayflowFlowSchedule[]): Date | null {
 async function linkBudgetsForSchedules(
   userId: string,
   flowId: string,
-  schedules: DayflowFlowSchedule[]
+  schedules: DayflowFlowSchedule[],
+  currency: string = PRIMARY_CURRENCY
 ): Promise<DayflowFlowSchedule[]> {
   const updated: DayflowFlowSchedule[] = [];
   for (const s of schedules) {
@@ -170,7 +190,7 @@ async function linkBudgetsForSchedules(
         name: copy.title,
         type: copy.paymentType === 'bill' ? 'bill_reminder' : 'recurring_send',
         amount: copy.amount,
-        currency: 'NGN',
+        currency,
         frequency: freq,
         recipientId: copy.recipientId ?? null,
         metadata: {
@@ -234,8 +254,10 @@ async function executeSchedulePayment(params: {
   flowTitle: string;
   schedule: DayflowFlowSchedule;
   payOnDue?: boolean;
+  flowCurrency?: string;
 }): Promise<void> {
   const { userId, walletId, flowId, flowTitle, schedule, payOnDue } = params;
+  const flowCurrency = String(params.flowCurrency ?? PRIMARY_CURRENCY).toUpperCase();
   const amount = Number(schedule.amount ?? 0);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error('Invalid schedule amount');
@@ -245,12 +267,12 @@ async function executeSchedulePayment(params: {
 
   if (!payOnDue) {
     const releaseRef = newReference('dayflow-exec-release');
-    const { usdAmount } = await convertAmountToUsd(amount, 'NGN');
+    const { usdAmount } = await convertAmountToUsd(amount, flowCurrency);
     await creditWalletBalance({
       userId,
       walletId,
       amount,
-      currency: 'NGN',
+      currency: flowCurrency,
       usdEquivalent: usdAmount,
       source: 'dayflow',
       idempotencyKey: `dayflow-exec-release:${flowId}:${schedule.id ?? schedule.title}`,
@@ -268,7 +290,7 @@ async function executeSchedulePayment(params: {
 
   if (paymentType === 'savings') {
     const toCurrency = String(schedule.execution?.toCurrency ?? 'USD').toUpperCase();
-    await paymentService.swapCurrency(userId, 'NGN', toCurrency, amount);
+    await paymentService.swapCurrency(userId, flowCurrency, toCurrency, amount);
     return;
   }
 
@@ -277,13 +299,17 @@ async function executeSchedulePayment(params: {
     if (!bill?.categoryCode || !bill?.billerCode || !bill?.itemCode || !bill?.customerId) {
       throw new Error('Bill autopay requires biller, item and customer details');
     }
+    const billAmount =
+      flowCurrency === PRIMARY_CURRENCY
+        ? (await convertAmountBetween(amount, PRIMARY_CURRENCY, 'NGN')).amount
+        : amount;
     await billsService.payBill({
       userId,
       categoryCode: bill.categoryCode,
       billerCode: bill.billerCode,
       itemCode: bill.itemCode,
       customerId: bill.customerId,
-      amount,
+      amount: billAmount,
       billerName: bill.billerName,
       itemName: bill.itemName ?? schedule.title,
     });
@@ -303,7 +329,7 @@ async function executeSchedulePayment(params: {
     senderWalletId: walletId,
     recipientDayfiId: recipientTag,
     amount,
-    currency: 'NGN',
+    currency: flowCurrency,
   });
 }
 
@@ -333,7 +359,7 @@ export async function getFlow(userId: string, flowId: string) {
 }
 
 /**
- * Create a flow: register schedules and pay from NGN wallet when each is due.
+ * Create a flow: register schedules and pay from the global USD wallet when each is due.
  */
 export async function createAndActivateFlow(
   userId: string,
@@ -366,15 +392,15 @@ export async function createAndActivateFlow(
   const title =
     input.title?.trim() || buildSmartFlowTitle(naming);
   const flowType = inferFlowType(naming);
-  const currency = (input.currency ?? 'NGN').toUpperCase();
+  const currency = (input.currency ?? PRIMARY_CURRENCY).toUpperCase();
 
-  if (currency !== 'NGN') {
-    throw new Error('DayFlow envelopes currently support NGN only');
+  if (currency !== PRIMARY_CURRENCY && currency !== 'NGN') {
+    throw new Error('DayFlow envelopes support USD and NGN only');
   }
 
-  const wallet = await loadNgnWallet(userId);
+  const wallet = await loadWalletForCurrency(userId, currency);
   if (!wallet) {
-    throw new Error('NGN wallet not found');
+    throw new Error(`${currency} wallet not found`);
   }
 
   const flowRef = newReference('dayflow-commit');
@@ -408,7 +434,8 @@ export async function createAndActivateFlow(
   const linkedSchedules = await linkBudgetsForSchedules(
     userId,
     row.id,
-    schedules
+    schedules,
+    currency
   );
 
   if (linkedSchedules.length > 0) {
@@ -503,8 +530,8 @@ export async function runDueSchedulesForUser(userId: string) {
     };
   }
 
-  const wallet = await loadNgnWallet(userId);
-  if (!wallet) {
+  const usdWallet = await loadUsdWallet(userId);
+  if (!usdWallet) {
     return {
       processed: 0,
       succeeded: 0,
@@ -534,7 +561,12 @@ export async function runDueSchedulesForUser(userId: string) {
     let changed = false;
     let flowSpentDelta = 0;
     const payOnDue = isPayOnDueFlow(flow);
-    const walletBalance = Number(wallet.balance);
+    const flowCurrency = String(flow.currency ?? PRIMARY_CURRENCY).toUpperCase();
+    const wallet =
+      flowCurrency === PRIMARY_CURRENCY
+        ? usdWallet
+        : await loadNgnWallet(userId);
+    const walletBalance = wallet ? Number(wallet.balance) : 0;
 
     for (const schedule of schedules) {
       if (!schedule?.autoPay) continue;
@@ -563,7 +595,7 @@ export async function runDueSchedulesForUser(userId: string) {
       if (payOnDue) {
         if (walletBalance < amount) {
           schedule.lastStatus = 'failed';
-          schedule.lastError = 'Insufficient NGN wallet balance for autopay';
+          schedule.lastError = `Insufficient ${flowCurrency} wallet balance for autopay`;
           schedule.lastRunAt = new Date().toISOString();
           schedule.runCount = (schedule.runCount ?? 0) + 1;
           changed = true;
@@ -603,6 +635,15 @@ export async function runDueSchedulesForUser(userId: string) {
       }
 
       try {
+        if (!wallet) {
+          schedule.lastStatus = 'failed';
+          schedule.lastError = `${flowCurrency} wallet not found`;
+          schedule.lastRunAt = new Date().toISOString();
+          schedule.runCount = (schedule.runCount ?? 0) + 1;
+          changed = true;
+          failed += 1;
+          continue;
+        }
         await executeSchedulePayment({
           userId,
           walletId: wallet.wallet_id,
@@ -610,6 +651,7 @@ export async function runDueSchedulesForUser(userId: string) {
           flowTitle: flow.title,
           schedule,
           payOnDue,
+          flowCurrency,
         });
         const next = computeScheduleNextRunAfterExecution(schedule);
         schedule.nextRunAt = next?.toISOString() ?? null;
