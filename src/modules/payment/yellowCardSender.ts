@@ -38,27 +38,6 @@ type UserKycRow = {
   id_number: string | null;
 };
 
-/** Display name on the recipient's bank / wallet alert (NIP originator is short). */
-export function formatYellowCardSenderDisplayName(
-  firstName: string,
-  lastName: string,
-  brandSuffix = 'DayFi'
-): string {
-  const first = firstName.trim();
-  const last = lastName.trim();
-  const base = [first, last].filter(Boolean).join(' ').replace(/\s+/g, ' ');
-  if (!base) return brandSuffix || 'DayFi User';
-
-  const viaBrand = `${base} via ${brandSuffix}`;
-  if (viaBrand.length <= 30) return viaBrand;
-
-  const initial = last ? `${last.charAt(0)}.` : '';
-  const compact = [first, initial, brandSuffix].filter(Boolean).join(' ');
-  if (compact.length <= 30) return compact;
-
-  return base.slice(0, 30).trim();
-}
-
 function formatYellowCardDob(raw: string | null | undefined): string {
   const s = String(raw ?? '').trim();
   if (!s) return '01/01/1990';
@@ -145,8 +124,14 @@ export async function loadYellowCardRetailSender(
   const country = resolveSenderCountry(row);
   const ids = resolveNigeriaIds(row);
 
+  const name = [firstName, lastName]
+    .map((p) => String(p ?? '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ');
+
   return {
-    name: formatYellowCardSenderDisplayName(firstName, lastName),
+    name: name || 'DayFi User',
     email: String(row.email ?? 'user@dayfi.co').trim() || 'user@dayfi.co',
     phone: normalizeRecipientPhone(row.phone_number, country),
     country,
@@ -174,23 +159,3 @@ export async function buildYellowCardSendPartyFields(
   };
 }
 
-/** Nigeria disbursements require verified sender BVN + NIN for retail originator name. */
-export function assertNigeriaSenderKyc(
-  sender: YellowCardRetailSender,
-  payoutCountry: string
-): void {
-  if (String(payoutCountry).toUpperCase() !== 'NG') return;
-
-  const hasBvn =
-    sender.additionalIdType === 'BVN' &&
-    /^\d{11}$/.test(String(sender.additionalIdNumber ?? ''));
-  const hasNin =
-    String(sender.idType).toUpperCase() === 'NIN' &&
-    /^\d{11}$/.test(String(sender.idNumber ?? ''));
-
-  if (!hasBvn || !hasNin) {
-    throw new Error(
-      'Complete BVN and NIN verification in your DayFi profile before sending to Nigerian bank accounts. This ensures your name — not our company name — appears to the recipient.'
-    );
-  }
-}

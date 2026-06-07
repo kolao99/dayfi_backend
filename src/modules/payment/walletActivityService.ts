@@ -170,11 +170,40 @@ export async function recordWalletActivity(
     params.title ||
     (direction === 'credit' ? `${currency} deposit` : `${currency} transfer`);
 
-  const existing = await db.oneOrNone<{ id: string }>(
-    `SELECT id FROM wallet_transactions WHERE id = $1 LIMIT 1`,
+  const existing = await db.oneOrNone<{ id: string; status: string | null }>(
+    `SELECT id, status FROM wallet_transactions WHERE id = $1 LIMIT 1`,
     [id]
   );
-  if (existing) return { recorded: false };
+  if (existing) {
+    const nextStatus = defaultStatus(direction, params.status);
+    const nextReason =
+      params.reason?.trim() || params.title?.trim() || undefined;
+    if (
+      nextReason ||
+      (nextStatus && existing.status !== nextStatus)
+    ) {
+      await db.none(
+        `UPDATE wallet_transactions
+         SET status = COALESCE($2, status),
+             reason = COALESCE($3, reason)
+         WHERE id = $1`,
+        [id, nextStatus, nextReason ?? null]
+      );
+      if (params.beneficiaryName?.trim()) {
+        const benId = await db.oneOrNone<{ beneficiary_id: string | null }>(
+          `SELECT beneficiary_id FROM wallet_transactions WHERE id = $1`,
+          [id]
+        );
+        if (benId?.beneficiary_id) {
+          await db.none(`UPDATE beneficiaries SET name = $2 WHERE id = $1`, [
+            benId.beneficiary_id,
+            params.beneficiaryName.trim(),
+          ]);
+        }
+      }
+    }
+    return { recorded: false };
+  }
 
   if (extRef) {
     const existingByRef = await db.oneOrNone<{ id: string }>(
@@ -311,15 +340,31 @@ export async function repairFailedWalletTransactionStatuses(
      SET status = 'failed-payment'
      WHERE wt.user_id = $1
        AND wt.activity_kind = 'withdrawal'
-       AND wt.status = 'success-payment'
+       AND wt.status IN ('success-payment', 'pending-payment')
        AND EXISTS (
          SELECT 1
-         FROM ledger_movements lm_rev
-         WHERE lm_rev.user_id = wt.user_id
-           AND lm_rev.direction = 'credit'
-           AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
-           AND lm_rev.external_reference =
-             regexp_replace(COALESCE(wt.id, ''), '^wt-', '') || '-reversal'
+         FROM ledger_movements lm_d
+         INNER JOIN ledger_movements lm_rev
+           ON lm_rev.user_id = lm_d.user_id
+          AND lm_rev.direction = 'credit'
+          AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
+          AND (
+            lm_rev.external_reference = lm_d.external_reference || '-reversal'
+            OR lm_rev.metadata->>'originalReference' = lm_d.external_reference
+          )
+         WHERE lm_d.user_id = wt.user_id
+           AND lm_d.direction = 'debit'
+           AND lm_d.source IN ('yellowcard', 'bill_pay')
+           AND (
+             lm_d.external_reference =
+               regexp_replace(COALESCE(wt.id, ''), '^wt-', '')
+             OR (
+               wt.send_amount IS NOT NULL
+               AND ABS(lm_d.amount::numeric - wt.send_amount::numeric) < 0.02
+               AND lm_d.created_at >= wt.timestamp - interval '15 minutes'
+               AND lm_d.created_at <= wt.timestamp + interval '15 minutes'
+             )
+           )
        )
      RETURNING wt.id`,
     [userId]
@@ -451,6 +496,13 @@ export async function backfillWalletActivitiesFromLedger(
       isBillPay || isBillReversal
         ? formatBillCategoryLabel(String(meta.categoryCode ?? ''))
         : '';
+    const metaSendAmount = Number(meta.sendAmount);
+    const displayDebitAmount =
+      isYellowCardDebit &&
+      Number.isFinite(metaSendAmount) &&
+      metaSendAmount > 0
+        ? metaSendAmount
+        : Number(row.amount);
     const isGreyCredit = row.source === 'grey' && row.direction === 'credit';
     const ycAccountName = String(meta.accountName ?? '').trim();
     const ycBankName = String(meta.bankName ?? '').trim();
@@ -470,7 +522,8 @@ export async function backfillWalletActivitiesFromLedger(
       userId: row.user_id,
       id: txId,
       direction: row.direction === 'credit' ? 'credit' : 'debit',
-      amount: Number(row.amount),
+      amount:
+        row.direction === 'credit' ? Number(row.amount) : displayDebitAmount,
       currency: row.currency,
       source: row.source as LedgerSource,
       title: isSwap
@@ -914,6 +967,70 @@ export async function repairBillWalletTransactions(
 export async function repairYellowCardWalletTransactions(
   userId: string
 ): Promise<{ repaired: number }> {
+  await db.none(
+    `UPDATE wallet_transactions wt
+     SET send_amount = (lm.metadata->>'sendAmount')::numeric
+     FROM ledger_movements lm
+     WHERE wt.user_id = $1
+       AND lm.user_id = wt.user_id
+       AND lm.direction = 'debit'
+       AND lm.source = 'yellowcard'
+       AND (lm.metadata->>'sendAmount') ~ '^[0-9]+(\\.[0-9]+)?$'
+       AND (lm.metadata->>'sendAmount')::numeric > 0
+       AND (
+         lm.external_reference = regexp_replace(wt.id, '^wt-', '')
+         OR (
+           wt.send_amount IS NOT NULL
+           AND ABS(lm.amount::numeric - wt.send_amount::numeric) < 0.02
+           AND lm.created_at >= wt.timestamp - interval '15 minutes'
+           AND lm.created_at <= wt.timestamp + interval '15 minutes'
+         )
+         OR (
+           wt.send_amount IS NOT NULL
+           AND (lm.metadata->>'feeUsd') ~ '^[0-9]+(\\.[0-9]+)?$'
+           AND ABS(
+             lm.amount::numeric
+             - wt.send_amount::numeric
+             - (lm.metadata->>'feeUsd')::numeric
+           ) < 0.02
+           AND lm.created_at >= wt.timestamp - interval '15 minutes'
+           AND lm.created_at <= wt.timestamp + interval '15 minutes'
+         )
+       )
+       AND wt.send_amount IS DISTINCT FROM (lm.metadata->>'sendAmount')::numeric`,
+    [userId]
+  );
+
+  await db.none(
+    `UPDATE wallet_transactions wt
+     SET reason = COALESCE(
+           NULLIF(TRIM(lm.metadata->>'activityTitle'), ''),
+           CASE
+             WHEN TRIM(lm.metadata->>'bankName') <> ''
+             THEN 'Send to ' || TRIM(lm.metadata->>'accountName')
+                  || ' · ' || TRIM(lm.metadata->>'bankName')
+             ELSE 'Send to ' || TRIM(lm.metadata->>'accountName')
+           END
+         )
+     FROM ledger_movements lm
+     WHERE wt.user_id = $1
+       AND lm.user_id = wt.user_id
+       AND lm.direction = 'debit'
+       AND lm.source = 'yellowcard'
+       AND TRIM(lm.metadata->>'accountName') <> ''
+       AND (
+         lm.external_reference = regexp_replace(wt.id, '^wt-', '')
+         OR (
+           wt.send_amount IS NOT NULL
+           AND ABS(lm.amount::numeric - wt.send_amount::numeric) < 0.02
+           AND lm.created_at >= wt.timestamp - interval '15 minutes'
+           AND lm.created_at <= wt.timestamp + interval '15 minutes'
+         )
+       )
+       AND COALESCE(wt.reason, '') NOT ILIKE 'send to %'`,
+    [userId]
+  );
+
   const rows = await db.manyOrNone<{
     id: string;
     reason: string | null;
@@ -934,17 +1051,17 @@ export async function repairYellowCardWalletTransactions(
        ON lm.user_id = wt.user_id
       AND lm.direction = 'debit'
       AND lm.source = 'yellowcard'
-      AND lm.external_reference = regexp_replace(wt.id, '^wt-', '')
+      AND (
+        lm.external_reference = regexp_replace(wt.id, '^wt-', '')
+        OR (
+          wt.send_amount IS NOT NULL
+          AND ABS(lm.amount::numeric - wt.send_amount::numeric) < 0.02
+          AND lm.created_at >= wt.timestamp - interval '15 minutes'
+          AND lm.created_at <= wt.timestamp + interval '15 minutes'
+        )
+      )
      WHERE wt.user_id = $1
        AND wt.activity_kind = 'withdrawal'
-       AND NOT EXISTS (
-         SELECT 1
-         FROM ledger_movements lm_rev
-         WHERE lm_rev.user_id = wt.user_id
-           AND lm_rev.direction = 'credit'
-           AND lm_rev.external_reference = lm.external_reference || '-reversal'
-           AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
-       )
        AND (
          LOWER(COALESCE(b.name, '')) IN ('recipient', '')
          OR COALESCE(wt.reason, '') NOT ILIKE 'send to %'

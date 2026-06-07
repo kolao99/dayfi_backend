@@ -16,7 +16,6 @@ import {
 import { normalizeRecipientPhone } from './recipientPhone';
 import {
   buildYellowCardSendPartyFields,
-  assertNigeriaSenderKyc,
 } from './yellowCardSender';
 import {
   enqueueCryptoWalletProvision,
@@ -972,7 +971,6 @@ class PaymentController {
       const paymentSequenceId = crypto.randomUUID();
       const userId = String(req.user?.user_id ?? '');
       const ycParty = await buildYellowCardSendPartyFields(userId);
-      assertNigeriaSenderKyc(ycParty.sender, String(country).toUpperCase());
 
       const payload = {
         sequenceId: paymentSequenceId,

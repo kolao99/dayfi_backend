@@ -46,9 +46,9 @@ import {
 } from './yellowCardNetworkResolver';
 import YellowCardService from './yellowCardService';
 import {
-  assertNigeriaSenderKyc,
   buildYellowCardSendPartyFields,
 } from './yellowCardSender';
+import { assertYellowCardSendWithinLimits } from './yellowCardSendLimits';
 import { createVirtualAccount } from './flutterwaveService';
 import {
   recordWalletActivity,
@@ -85,6 +85,10 @@ function walletTransactionQuality(row: WalletTransactionRow): number {
     .trim()
     .toLowerCase();
   if (reason.startsWith('send to ')) score += 8;
+  const status = String((row as { status?: string | null }).status ?? '')
+    .toLowerCase();
+  if (status === 'failed-payment') score -= 20;
+  if (status === 'success-payment') score += 3;
   return score;
 }
 
@@ -1530,6 +1534,28 @@ class PaymentService {
     }
 
     const { usdAmount: sendUsd } = await convertAmountToUsd(sendAmount, payWith);
+
+    /** Yellow Card minimum send (USD equivalent). Default $1. */
+    const ycMinSendUsd = Number(process.env.YC_MIN_SEND_USD ?? 1);
+    if (
+      Number.isFinite(ycMinSendUsd) &&
+      ycMinSendUsd > 0 &&
+      sendUsd < ycMinSendUsd
+    ) {
+      throw new Error(
+        `Minimum send amount is $${ycMinSendUsd.toFixed(2)}. Increase your amount and try again.`
+      );
+    }
+
+    assertYellowCardSendWithinLimits({
+      country: params.country,
+      receiveCurrency: params.receiveCurrency,
+      receiveAmount,
+      channelId: params.channelId,
+      networkId: params.networkId,
+    });
+
+    const ycLocalAmount = receiveAmount;
     const totalUsd = Number((sendUsd + feeUsd).toFixed(8));
     const usdWallet = await this.ensureUsdWallet(params.userId);
     const collectionSequenceId = crypto.randomUUID();
@@ -1548,7 +1574,6 @@ class PaymentService {
       'Bank';
 
     const ycParty = await buildYellowCardSendPartyFields(params.userId);
-    assertNigeriaSenderKyc(ycParty.sender, params.country);
 
     const activityTitle = `Send to ${params.accountName} · ${bankName}`;
     const fxRate =
@@ -1575,7 +1600,7 @@ class PaymentService {
         accountName: params.accountName,
         bankName,
         activityTitle,
-        ngnAmount: receiveCurrency === 'NGN' ? receiveAmount : undefined,
+        ngnAmount: receiveCurrency === 'NGN' ? ycLocalAmount : undefined,
         rate: fxRate,
       },
     });
@@ -1585,7 +1610,7 @@ class PaymentService {
       channelId: params.channelId,
       currency: receiveCurrency,
       country: params.country,
-      localAmount: receiveAmount,
+      localAmount: ycLocalAmount,
       reason,
       forceAccept: true,
       customerType: ycParty.customerType,
@@ -1605,7 +1630,6 @@ class PaymentService {
       metadata: {
         collectionSequenceId,
         fundSource: 'dayfi_wallet',
-        senderDisplayName: ycParty.sender.name,
       },
     };
 
@@ -1616,7 +1640,7 @@ class PaymentService {
         userId: params.userId,
         id: buildWalletActivityTxId(collectionSequenceId),
         direction: 'debit',
-        amount: totalUsd,
+        amount: sendUsd,
         currency: payWith,
         source: 'yellowcard',
         title: activityTitle,
@@ -1629,7 +1653,7 @@ class PaymentService {
         networkId: ycNetworkId,
         bankName,
         beneficiaryCountry: params.country,
-        receiveAmount,
+        receiveAmount: ycLocalAmount,
         receiveCurrency,
         externalReference: paymentSequenceId,
       });
@@ -1654,7 +1678,7 @@ class PaymentService {
         userId: params.userId,
         id: buildWalletActivityTxId(collectionSequenceId),
         direction: 'debit',
-        amount: totalUsd,
+        amount: sendUsd,
         currency: payWith,
         source: 'yellowcard',
         title: activityTitle,
@@ -1667,7 +1691,7 @@ class PaymentService {
         networkId: ycNetworkId,
         bankName,
         beneficiaryCountry: params.country,
-        receiveAmount,
+        receiveAmount: ycLocalAmount,
         receiveCurrency,
         externalReference: paymentSequenceId,
       }).catch(() => undefined);

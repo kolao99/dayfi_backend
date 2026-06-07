@@ -210,12 +210,28 @@ export const paymentQueries: PaymentQueries = {
                 AND wt.status::text ILIKE '%payment%'
                 AND EXISTS (
                   SELECT 1
-                  FROM ledger_movements lm_rev
-                  WHERE lm_rev.user_id = wt.user_id
-                    AND lm_rev.direction = 'credit'
-                    AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
-                    AND lm_rev.external_reference =
-                      regexp_replace(COALESCE(wt.id, ''), '^wt-', '') || '-reversal'
+                  FROM ledger_movements lm_d
+                  INNER JOIN ledger_movements lm_rev
+                    ON lm_rev.user_id = lm_d.user_id
+                   AND lm_rev.direction = 'credit'
+                   AND COALESCE(lm_rev.metadata->>'reversal', 'false') = 'true'
+                   AND (
+                     lm_rev.external_reference = lm_d.external_reference || '-reversal'
+                     OR lm_rev.metadata->>'originalReference' = lm_d.external_reference
+                   )
+                  WHERE lm_d.user_id = wt.user_id
+                    AND lm_d.direction = 'debit'
+                    AND lm_d.source IN ('yellowcard', 'bill_pay')
+                    AND (
+                      lm_d.external_reference =
+                        regexp_replace(COALESCE(wt.id, ''), '^wt-', '')
+                      OR (
+                        wt.send_amount IS NOT NULL
+                        AND ABS(lm_d.amount::numeric - wt.send_amount::numeric) < 0.02
+                        AND lm_d.created_at >= wt.timestamp - interval '15 minutes'
+                        AND lm_d.created_at <= wt.timestamp + interval '15 minutes'
+                      )
+                    )
                 )
               THEN 'failed-payment'
               ELSE wt.status
@@ -258,6 +274,8 @@ export const paymentQueries: PaymentQueries = {
             json_build_object(
                     'id', b.id,
                     'name', CASE
+                      WHEN COALESCE(wt.reason, '') ILIKE 'send to %' THEN
+                        TRIM(SPLIT_PART(SUBSTRING(TRIM(wt.reason) FROM 9), ' · ', 1))
                       WHEN b.name IS NOT NULL
                         AND TRIM(b.name) <> ''
                         AND LOWER(TRIM(b.name)) NOT IN ('recipient', 'wallet top up')
@@ -309,18 +327,38 @@ export const paymentQueries: PaymentQueries = {
         FROM wallet_transactions wt
                  LEFT JOIN source s ON wt.source_id = s.id
                  LEFT JOIN beneficiaries b ON wt.beneficiary_id = b.id
-                 LEFT JOIN ledger_movements lm
-                   ON lm.user_id = wt.user_id
-                  AND (
-                    (wt.external_reference IS NOT NULL
-                      AND lm.external_reference = wt.external_reference)
-                    OR lm.external_reference = regexp_replace(wt.id, '^wt-', '')
-                  )
-                  AND lm.direction = CASE
-                    WHEN wt.status::text ILIKE '%payment%' OR wt.send_amount IS NOT NULL
-                      THEN 'debit'
-                    ELSE 'credit'
-                  END
+                 LEFT JOIN LATERAL (
+                   SELECT lm_inner.metadata,
+                          lm_inner.usd_equivalent,
+                          lm_inner.external_reference
+                   FROM ledger_movements lm_inner
+                   WHERE lm_inner.user_id = wt.user_id
+                     AND lm_inner.direction = CASE
+                       WHEN wt.status::text ILIKE '%payment%' OR wt.send_amount IS NOT NULL
+                         THEN 'debit'
+                       ELSE 'credit'
+                     END
+                     AND (
+                       lm_inner.external_reference =
+                         regexp_replace(COALESCE(wt.id, ''), '^wt-', '')
+                       OR (
+                         wt.send_amount IS NOT NULL
+                         AND lm_inner.source IN ('yellowcard', 'bill_pay')
+                         AND ABS(lm_inner.amount::numeric - wt.send_amount::numeric) < 0.02
+                         AND lm_inner.created_at >= wt.timestamp - interval '15 minutes'
+                         AND lm_inner.created_at <= wt.timestamp + interval '15 minutes'
+                       )
+                     )
+                   ORDER BY
+                     CASE
+                       WHEN lm_inner.external_reference =
+                         regexp_replace(COALESCE(wt.id, ''), '^wt-', '')
+                       THEN 0
+                       ELSE 1
+                     END,
+                     lm_inner.created_at DESC
+                   LIMIT 1
+                 ) lm ON true
         WHERE wt.user_id = $1
           AND ($2 IS NULL OR wt.status = $2)
           AND ($3 IS NULL OR wt.timestamp::date >= $3::date)
