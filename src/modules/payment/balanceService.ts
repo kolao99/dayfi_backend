@@ -303,6 +303,97 @@ export async function debitUsdBalance(params: {
   };
 }
 
+export type YellowCardReversalResult = {
+  reversed: boolean;
+  amountUsd?: number;
+  duplicate?: boolean;
+};
+
+/**
+ * Credit back a Yellow Card wallet-funded send when the payout fails.
+ * Idempotent — safe to call from webhooks, status sync, and repair jobs.
+ */
+export async function reverseYellowCardWalletDebit(params: {
+  userId: string;
+  collectionSequenceId: string;
+  reason?: string;
+}): Promise<YellowCardReversalResult> {
+  const userId = String(params.userId || '').trim();
+  const collectionId = String(params.collectionSequenceId || '').trim();
+  if (!userId || !collectionId) return { reversed: false };
+
+  const reversalIdempotencyKey = `${buildIdempotencyKey('yc_send', collectionId)}-reversal`;
+  const reversalExternalRef = `${collectionId}-reversal`;
+
+  const existingByKey = await findMovementByKey(reversalIdempotencyKey);
+  if (existingByKey) {
+    return {
+      reversed: false,
+      duplicate: true,
+      amountUsd: Number(existingByKey.usd_equivalent),
+    };
+  }
+
+  const existingByRef = await db.oneOrNone<{ usd_equivalent: string }>(
+    `SELECT usd_equivalent
+     FROM ledger_movements
+     WHERE user_id = $1
+       AND direction = 'credit'
+       AND external_reference = $2
+       AND COALESCE(metadata->>'reversal', 'false') = 'true'
+     LIMIT 1`,
+    [userId, reversalExternalRef]
+  );
+  if (existingByRef) {
+    return {
+      reversed: false,
+      duplicate: true,
+      amountUsd: Number(existingByRef.usd_equivalent),
+    };
+  }
+
+  const debit = await db.oneOrNone<{
+    wallet_id: string;
+    amount: string;
+    usd_equivalent: string;
+  }>(
+    `SELECT wallet_id, amount, usd_equivalent
+     FROM ledger_movements
+     WHERE user_id = $1
+       AND direction = 'debit'
+       AND source = 'yellowcard'
+       AND external_reference = $2
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [userId, collectionId]
+  );
+  if (!debit) return { reversed: false };
+
+  const totalUsd = Number(debit.usd_equivalent ?? debit.amount);
+  if (!Number.isFinite(totalUsd) || totalUsd <= 0) return { reversed: false };
+
+  await creditUsdBalance({
+    userId,
+    walletId: debit.wallet_id,
+    amount: totalUsd,
+    fromCurrency: PRIMARY_CURRENCY,
+    source: 'yellowcard',
+    idempotencyKey: reversalIdempotencyKey,
+    externalReference: reversalExternalRef,
+    metadata: {
+      reversal: true,
+      originalReference: collectionId,
+      reason: params.reason ?? 'yellowcard_payment_failed',
+    },
+  });
+
+  console.info(
+    `[reverseYellowCardWalletDebit] credited $${totalUsd.toFixed(2)} user=${userId} ref=${collectionId}`
+  );
+
+  return { reversed: true, amountUsd: totalUsd };
+}
+
 export function buildIdempotencyKey(
   source: string,
   externalRef: string

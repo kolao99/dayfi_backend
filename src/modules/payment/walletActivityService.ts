@@ -1184,6 +1184,55 @@ export async function repairYellowCardWalletTransactions(
   return { repaired };
 }
 
+/**
+ * Credit back Yellow Card wallet debits that failed but never received a ledger reversal.
+ * Repairs balances for users who were debited when YC later rejected the payout.
+ */
+export async function repairUnreversedFailedYellowCardDebits(
+  userId: string
+): Promise<{ reversed: number; totalUsd: number }> {
+  const { reverseYellowCardWalletDebit } = await import('./balanceService');
+
+  const rows = await db.manyOrNone<{
+    collection_sequence_id: string | null;
+    id: string;
+  }>(
+    `SELECT wt.collection_sequence_id, wt.id
+     FROM wallet_transactions wt
+     WHERE wt.user_id = $1
+       AND wt.activity_kind = 'withdrawal'
+       AND wt.send_channel = 'bank'
+       AND wt.status = 'failed-payment'
+       AND (
+         wt.collection_sequence_id IS NOT NULL
+         OR wt.id LIKE 'wt-%'
+       )`,
+    [userId]
+  );
+
+  let reversed = 0;
+  let totalUsd = 0;
+
+  for (const row of rows ?? []) {
+    const collectionId =
+      String(row.collection_sequence_id ?? '').trim() ||
+      (row.id.startsWith('wt-') ? row.id.slice(3) : '');
+    if (!collectionId) continue;
+
+    const result = await reverseYellowCardWalletDebit({
+      userId,
+      collectionSequenceId: collectionId,
+      reason: 'repair_failed_yc_send',
+    });
+    if (result.reversed) {
+      reversed += 1;
+      totalUsd += result.amountUsd ?? 0;
+    }
+  }
+
+  return { reversed, totalUsd };
+}
+
 /** Align wallet row status with Yellow Card provider (Pending_provider → pending-payment). */
 export async function syncYellowCardPaymentStatusesForUser(
   userId: string
@@ -1197,9 +1246,10 @@ export async function syncYellowCardPaymentStatusesForUser(
     id: string;
     payment_sequence_id: string | null;
     external_reference: string | null;
+    collection_sequence_id: string | null;
     status: string;
   }>(
-    `SELECT id, payment_sequence_id, external_reference, status
+    `SELECT id, payment_sequence_id, external_reference, collection_sequence_id, status
      FROM wallet_transactions
      WHERE user_id = $1
        AND activity_kind = 'withdrawal'
@@ -1208,6 +1258,8 @@ export async function syncYellowCardPaymentStatusesForUser(
        AND timestamp > NOW() - interval '30 days'`,
     [userId]
   );
+
+  const { reverseYellowCardWalletDebit } = await import('./balanceService');
 
   let synced = 0;
   for (const row of rows ?? []) {
@@ -1225,6 +1277,24 @@ export async function syncYellowCardPaymentStatusesForUser(
         console.info(
           `[yellowcard] status sync ${seq}: ${row.status} → ${mapped}`
         );
+        if (mapped === 'failed-payment') {
+          const collectionId =
+            String(row.collection_sequence_id ?? '').trim() ||
+            (row.id.startsWith('wt-') ? row.id.slice(3) : '');
+          if (collectionId) {
+            await reverseYellowCardWalletDebit({
+              userId,
+              collectionSequenceId: collectionId,
+              reason: 'yellowcard_status_sync_failed',
+            }).catch((err: unknown) => {
+              console.warn(
+                `[yellowcard] reversal after status sync failed ${collectionId}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`
+              );
+            });
+          }
+        }
       }
     } catch (err) {
       console.warn(

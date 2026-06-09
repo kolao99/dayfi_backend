@@ -289,6 +289,24 @@ class PaymentController {
         );
       }
 
+      try {
+        const { repairUnreversedFailedYellowCardDebits } = await import(
+          './walletActivityService'
+        );
+        const repair = await repairUnreversedFailedYellowCardDebits(userId);
+        if (repair.reversed > 0) {
+          console.info(
+            `[getWalletDetails] reversed ${repair.reversed} failed YC debits ($${repair.totalUsd.toFixed(2)}) user=${userId}`
+          );
+        }
+      } catch (repairErr: unknown) {
+        console.warn(
+          `[getWalletDetails] YC reversal repair skipped for user=${userId}: ${
+            repairErr instanceof Error ? repairErr.message : String(repairErr)
+          }`
+        );
+      }
+
       const wallets = await this.paymentService.getWalletsByUserId(
         userId
       );

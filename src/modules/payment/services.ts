@@ -35,6 +35,7 @@ import {
   creditUsdBalance,
   buildIdempotencyKey,
   newReference,
+  reverseYellowCardWalletDebit,
 } from './balanceService';
 import { transferByDayfiTag } from './p2pService';
 import { normalizeRecipientPhone } from './recipientPhone';
@@ -59,6 +60,7 @@ import {
   repairP2pWalletTransactions,
   repairYellowCardWalletTransactions,
   repairFailedWalletTransactionStatuses,
+  repairUnreversedFailedYellowCardDebits,
 } from './walletActivityService';
 import {
   notifyBankSend,
@@ -1149,6 +1151,20 @@ class PaymentService {
         );
       }
       try {
+        const repair = await repairUnreversedFailedYellowCardDebits(userId);
+        if (repair.reversed > 0) {
+          console.info(
+            `[fetchWalletTransactions] reversed ${repair.reversed} failed YC debits ($${repair.totalUsd.toFixed(2)}) user=${userId}`
+          );
+        }
+      } catch (err: unknown) {
+        console.warn(
+          `[fetchWalletTransactions] YC reversal repair skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      try {
         const { repairFlutterwaveDepositActivities } = await import(
           './flutterwaveInflowService'
         );
@@ -1452,13 +1468,46 @@ class PaymentService {
       [id, status],
       enums.PAYMENT_QUERY
     );
-    if (updated) return updated;
+    const row =
+      updated ??
+      (await this.dbService.singleTransaction<any>(
+        'updateWalletTransactionPaymentByRef',
+        [id, status],
+        enums.PAYMENT_QUERY
+      ));
 
-    return this.dbService.singleTransaction<any>(
-      'updateWalletTransactionPaymentByRef',
-      [id, status],
-      enums.PAYMENT_QUERY
-    );
+    if (row && status === 'failed-payment') {
+      await this.reverseFailedYellowCardSendIfNeeded(row).catch((err: unknown) => {
+        console.warn(
+          `[updateTransactionPaymentStatus] reversal skipped ref=${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
+    }
+
+    return row;
+  }
+
+  /** Credit USD back when a wallet-funded Yellow Card payout fails after debit. */
+  private async reverseFailedYellowCardSendIfNeeded(tx: {
+    user_id?: string;
+    collection_sequence_id?: string | null;
+    id?: string;
+  }): Promise<void> {
+    const userId = String(tx.user_id ?? '').trim();
+    const collectionId =
+      String(tx.collection_sequence_id ?? '').trim() ||
+      (String(tx.id ?? '').startsWith('wt-')
+        ? String(tx.id).slice(3)
+        : '');
+    if (!userId || !collectionId) return;
+
+    await reverseYellowCardWalletDebit({
+      userId,
+      collectionSequenceId: collectionId,
+      reason: 'yellowcard_payment_failed',
+    });
   }
 
   async getUserBeneficiaries(
@@ -1680,6 +1729,14 @@ class PaymentService {
         paymentSequenceId,
         collectionSequenceId,
       });
+
+      if (txStatus === 'failed-payment') {
+        await reverseYellowCardWalletDebit({
+          userId: params.userId,
+          collectionSequenceId,
+          reason: 'yellowcard_create_failed',
+        }).catch(() => undefined);
+      }
 
       return { collectionSequenceId, paymentSequenceId, payment };
     } catch (err: unknown) {
