@@ -489,7 +489,7 @@ export async function creditWalletBalance(params: {
     if (params.source === 'dayearn' && meta.action === 'withdraw') {
       creditTitle = potName ? `DayEarn · ${potName}` : 'DayEarn withdrawal';
       creditReason = potName
-        ? `Withdrawal from ${potName} pot`
+        ? `Withdrawal from ${potName} DayEarn pot`
         : 'Withdrawal from DayEarn pot';
       creditBeneficiary = 'DayEarn';
       creditAccountType = 'dayearn';

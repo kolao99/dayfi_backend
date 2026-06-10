@@ -647,6 +647,27 @@ export async function withdrawFromDayEarnPot(params: {
     },
   });
 
+  // Mirror deposit/create — always write wallet history (idempotent on reference).
+  try {
+    await recordWalletActivity({
+      userId: params.userId,
+      id: buildWalletActivityTxId(reference),
+      direction: 'credit',
+      amount: withdrawAmount,
+      currency,
+      source: 'dayearn',
+      title: `DayEarn · ${row.name}`,
+      reason: `Withdrawal from ${row.name} DayEarn pot`,
+      externalReference: reference,
+      channel: 'wallet',
+      beneficiaryName: 'DayEarn',
+      accountType: 'dayearn',
+      accountNumber: row.name,
+    });
+  } catch {
+    /* non-fatal */
+  }
+
   const updated = closePot
     ? null
     : await getPotRow(params.userId, params.potId);
