@@ -138,7 +138,7 @@ class DayflowValidator {
     const schema = Joi.object({
       title: Joi.string().trim().max(120).optional(),
       budgetType: Joi.string()
-        .valid('weekly', 'monthly', 'annual', 'custom')
+        .valid('once', 'weekly', 'biweekly', 'monthly', 'annual', 'custom')
         .optional(),
       periodLabel: Joi.string().trim().max(80).optional(),
       summaryLine: Joi.string().trim().max(500).optional(),
@@ -154,6 +154,9 @@ class DayflowValidator {
         )
         .optional(),
       schedules: Joi.array().items(scheduleSchema).optional(),
+      metadata: Joi.object({
+        endsAt: Joi.string().isoDate().optional(),
+      }).optional(),
     }).or('categories', 'schedules');
 
     return this.validateRequestBody(req, res, next, schema);
@@ -163,6 +166,7 @@ class DayflowValidator {
     const schema = Joi.object({
       title: Joi.string().trim().min(1).max(120).optional(),
       amount: Joi.number().positive().optional(),
+      sourceAmount: Joi.number().positive().optional(),
       recipientHint: Joi.string().trim().max(200).allow('', null).optional(),
       recipientId: Joi.string().trim().max(255).allow(null, '').optional(),
       paymentType: Joi.string().valid('send', 'bill', 'savings').optional(),

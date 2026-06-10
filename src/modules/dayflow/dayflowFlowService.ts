@@ -67,6 +67,9 @@ export type CreateFlowInput = {
   schedules?: DayflowFlowSchedule[];
   currency?: string;
   summaryLine?: string;
+  metadata?: {
+    endsAt?: string;
+  };
 };
 
 type FlowRow = {
@@ -186,7 +189,8 @@ async function linkBudgetsForSchedules(
   userId: string,
   flowId: string,
   schedules: DayflowFlowSchedule[],
-  currency: string = PRIMARY_CURRENCY
+  currency: string = PRIMARY_CURRENCY,
+  flowMetadata?: { endsAt?: string }
 ): Promise<DayflowFlowSchedule[]> {
   const updated: DayflowFlowSchedule[] = [];
   for (const s of schedules) {
@@ -210,6 +214,7 @@ async function linkBudgetsForSchedules(
           scheduleId: copy.id,
           recipientHint: copy.recipientHint,
           paymentType: copy.paymentType ?? 'send',
+          ...(flowMetadata?.endsAt ? { endsAt: flowMetadata.endsAt } : {}),
         },
       });
       copy.budgetId = budget.id;
@@ -433,6 +438,15 @@ export async function createAndActivateFlow(
 
   const flowRef = newReference('dayflow-commit');
   const nextRunAt = earliestNextRun(schedules);
+  const endsAt =
+    typeof input.metadata?.endsAt === 'string' && input.metadata.endsAt.trim()
+      ? input.metadata.endsAt.trim()
+      : undefined;
+  const flowMetadata = {
+    payOnDue: true,
+    commitRef: flowRef,
+    ...(endsAt ? { endsAt } : {}),
+  };
 
   const row = await db.one<FlowRow>(
     `INSERT INTO dayflow_flows (
@@ -451,7 +465,7 @@ export async function createAndActivateFlow(
       currency,
       JSON.stringify(categories),
       JSON.stringify(schedules),
-      JSON.stringify({ payOnDue: true, commitRef: flowRef }),
+      JSON.stringify(flowMetadata),
       input.periodLabel ?? null,
       input.budgetType ?? 'monthly',
       input.summaryLine ?? null,
@@ -463,7 +477,8 @@ export async function createAndActivateFlow(
     userId,
     row.id,
     schedules,
-    currency
+    currency,
+    endsAt ? { endsAt } : undefined
   );
 
   if (linkedSchedules.length > 0) {
@@ -768,6 +783,7 @@ export type UpdateFlowScheduleInput = Partial<
     DayflowFlowSchedule,
     | 'title'
     | 'amount'
+    | 'sourceAmount'
     | 'recipientHint'
     | 'recipientId'
     | 'paymentType'
