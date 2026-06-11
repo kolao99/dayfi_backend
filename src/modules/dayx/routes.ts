@@ -28,4 +28,34 @@ Router.post(
   dayxController.flowTurn
 );
 
+Router.get(
+  '/v2/status',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayxController.v2Status
+);
+
+Router.post(
+  '/v2/chat',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayxValidator.v2Chat,
+  dayxController.v2Chat
+);
+
+Router.get(
+  '/voices',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayxController.voices
+);
+
+Router.post(
+  '/tts',
+  authMiddleware.getAuthToken,
+  authMiddleware.validateUserAuthToken,
+  dayxValidator.tts,
+  dayxController.tts
+);
+
 export const dayxRouter = Router;

@@ -228,7 +228,7 @@ function maskAccount(accountNumber?: string | null): string | undefined {
   return accountNumber.slice(-4);
 }
 
-async function loadWalletSummary(userId: string): Promise<string> {
+export async function loadWalletSummary(userId: string): Promise<string> {
   const rows = await db.any<{ currency: string; balance: string }>(
     `SELECT currency, balance::text AS balance
      FROM wallets WHERE user_id = $1
@@ -241,7 +241,7 @@ async function loadWalletSummary(userId: string): Promise<string> {
     .join(', ');
 }
 
-async function loadBeneficiarySummary(userId: string): Promise<string> {
+export async function loadBeneficiarySummary(userId: string): Promise<string> {
   const rows = await db.any<{
     id: string;
     name: string;
@@ -268,7 +268,7 @@ async function loadBeneficiarySummary(userId: string): Promise<string> {
     .join('; ');
 }
 
-async function loadRecentPayeesSummary(userId: string): Promise<string> {
+export async function loadRecentPayeesSummary(userId: string): Promise<string> {
   const rows = await db.any<{
     name: string | null;
     amount: string;
@@ -395,7 +395,7 @@ function parseSpendingInsights(raw: unknown): DayxSpendingInsight[] | undefined 
   return insights.length ? insights : undefined;
 }
 
-function parseModelPayload(content: string): Omit<DayxChatResult, 'meta'> {
+export function parseModelPayload(content: string): Omit<DayxChatResult, 'meta'> {
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(content) as Record<string, unknown>;

@@ -41,6 +41,36 @@ class DayxValidator {
     return this.validateRequestBody(req, res, next, schema);
   };
 
+  v2Chat = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      message: Joi.string().trim().min(1).max(2000).required(),
+      history: Joi.array()
+        .items(
+          Joi.object({
+            role: Joi.string().valid('user', 'assistant').required(),
+            content: Joi.string().trim().min(1).max(4000).required(),
+          })
+        )
+        .max(20)
+        .optional(),
+      voiceName: Joi.string().trim().min(1).max(40).optional(),
+      firstName: Joi.string().trim().min(1).max(80).optional(),
+      isFirstSession: Joi.boolean().optional(),
+    });
+    return this.validateRequestBody(req, res, next, schema);
+  };
+
+  tts = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      text: Joi.string().trim().min(1).max(2000).required(),
+      voice: Joi.string().trim().max(40).optional(),
+      format: Joi.string()
+        .valid('mp3', 'wav', 'opus', 'flac')
+        .optional(),
+    });
+    return this.validateRequestBody(req, res, next, schema);
+  };
+
   flowTurn = (req: Request, res: Response, next: NextFunction) => {
     const schema = Joi.object({
       flow: Joi.string()
