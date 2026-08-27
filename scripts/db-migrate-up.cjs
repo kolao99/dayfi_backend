@@ -3,6 +3,7 @@
  * (typical on Heroku / Render / Railway), copies it so database.json resolves.
  */
 require('dotenv').config();
+require('dotenv').config({ path: require('node:path').join(__dirname, '..', '.env.local'), override: true });
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');

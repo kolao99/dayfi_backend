@@ -12,25 +12,74 @@ export type YellowCardWebhookPayload = {
   executedAt?: string;
 };
 
+export class YellowCardWebhookAuthError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'YellowCardWebhookAuthError';
+    this.status = status;
+  }
+}
+
+export function resolveYellowCardWebhookSecret(): string {
+  return String(
+    config?.YELLOWCARD_API_SECRET ||
+      process.env.DAYFI_YELLOWCARD_API_SECRET ||
+      process.env.YELLOWCARD_API_SECRET ||
+      ''
+  ).trim();
+}
+
+export function signYellowCardWebhook(
+  rawBody: string | Buffer,
+  secret: string
+): string {
+  return crypto.createHmac('sha256', secret).update(rawBody).digest('base64');
+}
+
 export function verifyYellowCardWebhookSignature(
   rawBody: string | Buffer,
-  signatureHeader: string | undefined
+  signatureHeader: string | undefined,
+  secretOverride?: string
 ): boolean {
-  const secret = String(config?.YELLOWCARD_API_SECRET ?? '').trim();
+  const secret = String(
+    secretOverride !== undefined ? secretOverride : resolveYellowCardWebhookSecret()
+  ).trim();
   if (!secret || !signatureHeader?.trim()) return false;
 
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(rawBody)
-    .digest('base64');
+  const expected = signYellowCardWebhook(rawBody, secret);
 
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signatureHeader.trim()),
-      Buffer.from(expected)
-    );
+    const provided = Buffer.from(signatureHeader.trim());
+    const computed = Buffer.from(expected);
+    if (provided.length !== computed.length) return false;
+    return crypto.timingSafeEqual(provided, computed);
   } catch {
-    return signatureHeader.trim() === expected;
+    return false;
+  }
+}
+
+/** Reject missing/invalid signatures before any lifecycle or ledger write. */
+export function assertYellowCardWebhookAuthenticated(
+  rawBody: string | Buffer,
+  signatureHeader: string | undefined,
+  secretOverride?: string
+): void {
+  const secret = String(
+    secretOverride !== undefined ? secretOverride : resolveYellowCardWebhookSecret()
+  ).trim();
+  if (!secret) {
+    throw new YellowCardWebhookAuthError(
+      'Yellow Card webhook secret is not configured',
+      503
+    );
+  }
+  if (!String(signatureHeader || '').trim()) {
+    throw new YellowCardWebhookAuthError('Missing webhook signature', 401);
+  }
+  if (!verifyYellowCardWebhookSignature(rawBody, signatureHeader, secret)) {
+    throw new YellowCardWebhookAuthError('Invalid webhook signature', 401);
   }
 }
 

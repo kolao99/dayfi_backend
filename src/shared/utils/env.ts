@@ -3,6 +3,7 @@ import Joi from 'joi';
 import config from '../../config/env';
 
 configDotenv();
+configDotenv({ path: '.env.local', override: true });
 
 export default class Env {
   private static validatedEnv: any;

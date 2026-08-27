@@ -1,6 +1,11 @@
 node_modules
 .env
 deploy/.env
+.env.local
+.testnet-treasury.local.json
+.testnet-treasury-b.local.json
+.testnet-deposit-sender.local.json
+.testnet-e-onchain-fee-payer.local.json
 dist
 build
 logs

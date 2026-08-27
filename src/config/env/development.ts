@@ -1,6 +1,7 @@
 import { configDotenv } from 'dotenv';
 import process from 'node:process';
 configDotenv();
+configDotenv({ path: '.env.local', override: true });
 
 const resolvedDatabaseUrl = () => {
   const raw =

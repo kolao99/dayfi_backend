@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "es6",
     "module": "commonjs",
-    "lib": ["dom", "es6", "es2017", "esnext.asynciterable"],
+    "lib": ["dom", "es6", "es2017", "es2020.bigint", "esnext.asynciterable"],
     "skipLibCheck": true,
     "sourceMap": true,
     "outDir": "./dist",
@@ -22,9 +22,8 @@
     "experimentalDecorators": true,
     "resolveJsonModule": true,
     "typeRoots": ["./src/types", "./node_modules/@types"],
-    "types": ["node", "express",],
-    "baseUrl": "."
+    "types": ["node", "express"]
   },
-  "exclude": ["node_modules","dist", "**/*spec.ts"],
+  "exclude": ["node_modules", "dist", "**/*spec.ts"],
   "include": ["./src/**/*.ts", "tests", "./winston-papertrail.d.ts"]
 }

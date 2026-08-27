@@ -3,6 +3,13 @@
  * Logs current_user / is_superuser so you can spot connecting to the wrong server (e.g. local :5432 vs Docker :5433).
  */
 const { Client } = require('pg');
+const path = require('node:path');
+
+require('dotenv').config();
+require('dotenv').config({
+  path: path.join(__dirname, '..', '.env.local'),
+  override: true,
+});
 
 let url = (process.env.DAYFI_DATABASE_URL || process.env.DATABASE_URL || '').trim();
 // docker env_file / dotenv may leave surrounding quotes
@@ -16,18 +23,31 @@ if (!url) {
   console.error('Set DAYFI_DATABASE_URL in .env');
   process.exit(1);
 }
-if (url.includes('railway.internal')) {
+if (url.includes('railway.internal') && !process.env.RAILWAY_ENVIRONMENT) {
   console.error(
     'DAYFI_DATABASE_URL uses railway.internal — that only works on Railway. Use the public *.railway.app URL from Postgres → Connect → Public networking.'
   );
   process.exit(1);
 }
 
+function useSsl(connectionUrl) {
+  try {
+    const host = new URL(connectionUrl).hostname;
+    return !(host === 'localhost' || host === '127.0.0.1');
+  } catch {
+    return true;
+  }
+}
+
 const deadline = Date.now() + 90000;
 
 async function main() {
   while (Date.now() < deadline) {
-    const c = new Client({ connectionString: url, connectionTimeoutMillis: 5000 });
+    const c = new Client({
+      connectionString: url,
+      connectionTimeoutMillis: 5000,
+      ...(useSsl(url) ? { ssl: { rejectUnauthorized: false } } : {}),
+    });
     try {
       await c.connect();
       const r = await c.query(

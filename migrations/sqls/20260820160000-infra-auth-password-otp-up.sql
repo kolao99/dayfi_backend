@@ -1,0 +1,6 @@
+ALTER TABLE infra_members
+  ADD COLUMN IF NOT EXISTS otp_purpose VARCHAR(32);
+
+ALTER TABLE infra_members
+  ADD COLUMN IF NOT EXISTS first_name VARCHAR(120),
+  ADD COLUMN IF NOT EXISTS last_name VARCHAR(120);

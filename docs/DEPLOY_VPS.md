@@ -4,6 +4,8 @@ Railway **free** tier uses **dynamic outbound IPs**, which breaks Flutterwave an
 
 Target hostname: **`https://api.dayfi.co`** (aligns with mobile prod `flavors.dart`).
 
+**If `api.dayfi.co` is down:** see **[NEW_INFRA_SETUP.md](./NEW_INFRA_SETUP.md)** (new Railway project + Hetzner reprovision).
+
 ---
 
 ## 1. Provision VPS
