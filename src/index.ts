@@ -54,6 +54,11 @@ async function main(app: Express): Promise<void> {
   await syncWalletExchangeRatesFromMarket();
   startWalletFxSyncScheduler();
 
+  const { startYellowCardPublicRatesScheduler } = await import(
+    './modules/payment/ycPublicRatesService'
+  );
+  startYellowCardPublicRatesScheduler();
+
   const { startDayflowAutopayScheduler } = await import(
     './modules/dayflow/dayflowAutomationService'
   );

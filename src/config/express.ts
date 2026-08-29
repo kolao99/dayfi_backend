@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { Router, ROUTE_BASE } from '../routes';
 import { infraRouter } from '../modules/infra/routes';
+import { publicRates } from '../modules/payment/publicRatesController';
 import { GlobalErrorCatcherMiddleware } from '../shared/middlewares/global-error-catcher.middleware';
 
 const app = express();
@@ -25,6 +26,7 @@ app.disable('x-powered-by');
 
 app.use(ROUTE_BASE.V1_PATH, Router);
 app.use('/api/infra/v1', infraRouter);
+app.get('/api/public/rates', publicRates);
 
 app.use(GlobalErrorCatcherMiddleware);
 
