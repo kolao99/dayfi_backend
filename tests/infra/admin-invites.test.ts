@@ -19,9 +19,11 @@ import {
   decodeOperatorToken,
   INVITE_WRITE_ROLES,
   ORG_READ_ROLES,
+  ORG_WRITE_ROLES,
   roleAtLeast,
   listOrganizations,
   getOrganization,
+  updateOrganizationVerificationStatus,
   listOrganizationMembers,
   listAdminTransactions,
   getAdminTransaction,
@@ -340,6 +342,71 @@ describe('infra back office organizations', function () {
     expect(item.memberCount).to.equal(1);
     expect(item.contactEmail).to.equal(memberEmail);
     expect(JSON.stringify(item)).to.not.match(/password|bvn|otp|secret|private/i);
+  });
+
+  it('updates verification status and writes operator audit', async () => {
+    const opsEmail = `ops-verify-${Date.now()}@dayfi.co`;
+    const hash = await HashText.getHash('test-ops-pass');
+    const opsRow = await db.one<{ id: string }>(
+      `INSERT INTO infra_operators (email, password_hash, name, role)
+       VALUES ($1, $2, 'Verify Tester', 'ops')
+       RETURNING id`,
+      [opsEmail, hash]
+    );
+    const login = await operatorLogin(opsEmail, 'test-ops-pass');
+    const updated = await updateOrganizationVerificationStatus({
+      orgId,
+      verificationStatus: 'verified',
+      operator: login.operator,
+    });
+    expect(updated.verificationStatus).to.equal('verified');
+    const audit = await db.oneOrNone<{ action: string; metadata: Record<string, unknown> }>(
+      `SELECT action, metadata FROM infra_operator_audit
+       WHERE resource_id = $1 AND action = 'ORG_VERIFICATION_UPDATED'
+       ORDER BY created_at DESC LIMIT 1`,
+      [orgId]
+    );
+    expect(audit?.action).to.equal('ORG_VERIFICATION_UPDATED');
+    expect(audit?.metadata?.previousStatus).to.equal('pending');
+    expect(audit?.metadata?.newStatus).to.equal('verified');
+    expect(audit?.metadata?.liveAccess).to.equal('enabled');
+    await db.none(`DELETE FROM infra_operator_audit WHERE operator_id = $1`, [
+      opsRow.id,
+    ]);
+    await db.none(`DELETE FROM infra_operators WHERE id = $1`, [opsRow.id]);
+    await db.none(
+      `UPDATE infra_organizations SET verification_status = 'pending' WHERE id = $1`,
+      [orgId]
+    );
+  });
+
+  it('rejects invalid verification status', async () => {
+    const opsEmail = `ops-bad-${Date.now()}@dayfi.co`;
+    const hash = await HashText.getHash('test-ops-pass');
+    const opsRow = await db.one<{ id: string }>(
+      `INSERT INTO infra_operators (email, password_hash, name, role)
+       VALUES ($1, $2, 'Bad Status Tester', 'ops')
+       RETURNING id`,
+      [opsEmail, hash]
+    );
+    const login = await operatorLogin(opsEmail, 'test-ops-pass');
+    try {
+      await updateOrganizationVerificationStatus({
+        orgId,
+        verificationStatus: 'approved',
+        operator: login.operator,
+      });
+      expect.fail('invalid status should fail');
+    } catch (err: any) {
+      expect(err.message).to.match(/invalid verification status/i);
+      expect(err.status).to.equal(400);
+    }
+    await db.none(`DELETE FROM infra_operators WHERE id = $1`, [opsRow.id]);
+  });
+
+  it('viewer cannot write organization verification', () => {
+    expect(roleAtLeast('viewer', ORG_WRITE_ROLES)).to.equal(false);
+    expect(roleAtLeast('ops', ORG_WRITE_ROLES)).to.equal(true);
   });
 
   it('lists organization members without secrets', async () => {

@@ -279,12 +279,12 @@ describe('infra P0 integrity', function () {
         bankName?: string | null;
       };
       expect(instructions.accountNumber).to.match(/^\d+$/);
-      expect(instructions.bankName).to.equal('Dayfi');
+      expect(instructions.bankName).to.equal('Flutterwave MFB');
       const after = await getOrgBalance(orgId, 'test');
       expect(after.available).to.equal(before.available);
     });
 
-    it('LIVE without Yellow Card persists failed, no synthetic account, no credit', async () => {
+    it('LIVE without Flutterwave for NG NGN fails closed (no synthetic account)', async () => {
       stubYellowCard({ configured: false });
       const before = await getOrgBalance(orgId, 'live');
       let caught: InfraRailError | null = null;
@@ -295,6 +295,7 @@ describe('infra P0 integrity', function () {
           amount: 2000,
           currency: 'NGN',
           country: 'NG',
+          customerEmail: 'buyer@example.com',
         });
         expect.fail('LIVE collect should fail closed');
       } catch (err) {
@@ -313,7 +314,7 @@ describe('infra P0 integrity', function () {
       expect(row.status).to.equal('failed');
       expect(row.metadata?.instructions).to.equal(null);
       expect(JSON.stringify(row.metadata)).to.not.include('Dayfi Collections');
-      expect(String(row.metadata?.providerError || '')).to.match(/not configured/i);
+      expect(String(row.metadata?.providerError || '')).to.match(/Flutterwave|not configured/i);
 
       const after = await getOrgBalance(orgId, 'live');
       expect(after.available).to.equal(before.available);
@@ -334,8 +335,9 @@ describe('infra P0 integrity', function () {
           orgId,
           env: 'live',
           amount: 3000,
-          currency: 'NGN',
-          country: 'NG',
+          currency: 'KES',
+          country: 'KE',
+          customerEmail: 'buyer@example.com',
         });
         expect.fail('LIVE collect should not succeed');
       } catch (err) {

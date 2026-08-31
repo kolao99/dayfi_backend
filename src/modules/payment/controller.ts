@@ -1502,7 +1502,7 @@ class PaymentController {
     }
   };
 
-  /** Flutterwave collection webhook → credit NGN wallet */
+  /** Flutterwave collection webhook → infra org ledger, then consumer wallets. */
   flutterwaveWebhook = async (req: Request, res: Response): Promise<any> => {
     try {
       const body = req.body as Record<string, unknown>;
@@ -1514,11 +1514,28 @@ class PaymentController {
 
       const { parseFlutterwaveDepositWebhook, processFlutterwaveDeposit } =
         await import('./flutterwaveInflowService');
+      const { applyInfraFlutterwaveWebhook } = await import(
+        '../infra/infraLifecycleService'
+      );
 
       const payload = parseFlutterwaveDepositWebhook(body);
       if (!payload) {
         console.warn('[flutterwaveWebhook] ignored payload (not a successful charge)');
         return res.status(200).json({ received: true, ignored: true });
+      }
+
+      const infraResult = await applyInfraFlutterwaveWebhook(body, payload);
+      if (infraResult.handled) {
+        console.log(
+          '[flutterwaveWebhook] infra collection %s tx=%s',
+          infraResult.action,
+          infraResult.transactionId
+        );
+        return res.status(200).json({
+          received: true,
+          infra: infraResult.action,
+          transactionId: infraResult.transactionId,
+        });
       }
 
       const result = await processFlutterwaveDeposit(payload);

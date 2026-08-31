@@ -1,9 +1,28 @@
-# Production stack: Dayfi API + Caddy (TLS).
+# Production stack: Dayfi API + Caddy (TLS) + Postgres.
 # Usage (from repo root):
-#   cp .env deploy/.env   # production secrets — never commit
+#   cp deploy/.env.example deploy/.env   # production secrets — never commit
 #   docker compose -f deploy/docker-compose.prod.yml up -d --build
+#
+# VPS Postgres: set DAYFI_POSTGRES_PASSWORD and DAYFI_DATABASE_URL in deploy/.env:
+#   DAYFI_DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@postgres:5432/dayfi
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DAYFI_POSTGRES_PASSWORD:?Set DAYFI_POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: dayfi
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d dayfi']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   api:
     build:
       context: ..
@@ -16,6 +35,9 @@ services:
     restart: unless-stopped
     expose:
       - '3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   caddy:
     image: caddy:2-alpine
@@ -31,5 +53,6 @@ services:
       - api
 
 volumes:
+  postgres_data:
   caddy_data:
   caddy_config:

@@ -65,11 +65,11 @@ export function parseFlutterwaveDepositWebhook(
 
   const currency = String(data.currency ?? 'NGN').trim().toUpperCase();
   const reference = pickString(
+    data.tx_ref,
+    body.tx_ref,
     data.flw_ref,
     data.id,
-    data.tx_ref,
-    body.flw_ref,
-    body.tx_ref
+    body.flw_ref
   );
   if (!reference) return null;
 

@@ -25,6 +25,12 @@ import {
 } from './infraService';
 import { redeemInviteCode, getInviteByCode, deriveInviteStatus } from './infraAdminService';
 import {
+  listWebhookEndpoints,
+  createWebhookEndpoint,
+  revokeWebhookEndpoint,
+  listWebhookDeliveries,
+} from './infraWebhookService';
+import {
   createCollection,
   createPayout,
   InfraRailError,
@@ -777,6 +783,79 @@ export async function apiKeysAudit(
   try {
     const data = await listKeyAudit(req.infra!.orgId!);
     success(res, 'API key audit', 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function webhookEndpointsList(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const items = await listWebhookEndpoints(req.infra!.orgId!, req.infraEnv || 'test');
+    success(res, 'Webhook endpoints', 200, { items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function webhookEndpointsCreate(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const item = await createWebhookEndpoint(
+      req.infra!.orgId!,
+      req.infraEnv || 'test',
+      {
+        label: req.body?.label,
+        url: req.body?.url,
+        events: req.body?.events,
+      },
+      req.infra!
+    );
+    success(res, 'Webhook endpoint created', 201, { item });
+  } catch (err: any) {
+    if (err?.status) {
+      errorResponse(res, err.message || 'Unable to create webhook endpoint', err.status);
+      return;
+    }
+    next(err);
+  }
+}
+
+export async function webhookEndpointsRevoke(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ok = await revokeWebhookEndpoint(
+      req.infra!.orgId!,
+      req.infraEnv || 'test',
+      String(req.params.id)
+    );
+    if (!ok) {
+      errorResponse(res, 'Webhook endpoint not found', 404);
+      return;
+    }
+    success(res, 'Webhook endpoint removed', 200, { ok: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function webhookDeliveriesList(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const items = await listWebhookDeliveries(req.infra!.orgId!, req.infraEnv || 'test');
+    success(res, 'Webhook deliveries', 200, { items });
   } catch (err) {
     next(err);
   }

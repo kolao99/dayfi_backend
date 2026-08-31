@@ -574,4 +574,56 @@ export async function applyInfraYellowCardWebhook(
   return { handled: false };
 }
 
+/** Match Flutterwave charge.completed to infra collection by tx_ref (= sequenceId). */
+export async function applyInfraFlutterwaveWebhook(
+  body: Record<string, unknown>,
+  payload: { amount: number; currency: string; reference: string; transactionId: string | null }
+): Promise<{ handled: boolean; action?: string; transactionId?: string }> {
+  const data = (body.data ?? body) as Record<string, unknown>;
+  const txRef = String(data.tx_ref ?? body.tx_ref ?? payload.reference ?? '').trim();
+  if (!txRef) return { handled: false };
+
+  const row = await loadTxByExternalId(txRef);
+  if (!row || row.direction !== 'payment') return { handled: false };
+
+  const meta = row.metadata || {};
+  if (String(meta.rail || '') !== 'flutterwave') return { handled: false };
+
+  const currency = String(payload.currency || row.currency || 'NGN').toUpperCase();
+  if (currency !== 'NGN') return { handled: false };
+
+  const expected = Number(row.amount);
+  const received = Number(payload.amount);
+  if (!Number.isFinite(received) || received <= 0) {
+    return { handled: true, action: 'invalid_amount', transactionId: row.id };
+  }
+  if (Math.abs(received - expected) > 1) {
+    await patchTx(row.id, row.status, {
+      providerWarning: 'flutterwave_amount_mismatch',
+      expectedAmount: expected,
+      receivedAmount: received,
+    });
+    return { handled: true, action: 'amount_mismatch', transactionId: row.id };
+  }
+
+  const settled = ['settled', 'completed', 'success'].includes(
+    String(row.status).toLowerCase()
+  );
+  if (settled) {
+    return {
+      handled: true,
+      action: 'collection_already_settled',
+      transactionId: row.id,
+    };
+  }
+
+  await settleCollectionCredit({
+    orgId: row.org_id,
+    transactionId: row.id,
+    providerEventId: String(payload.transactionId || payload.reference || txRef),
+    source: 'flutterwave_webhook',
+  });
+  return { handled: true, action: 'collection_credit', transactionId: row.id };
+}
+
 export { InfraLedgerError };

@@ -7,6 +7,7 @@ import HashText from '../../shared/services/hashing';
 import { db } from '../../config/database';
 import { errorResponse, success } from '../../shared/lib/api-response';
 import { sendVerificationEmail } from '../../config/email';
+import { buildOtpEmail } from '../../config/email/templates';
 import { verifyGoogleAuthToken } from '../authentication/googleVerify';
 import { convertAmountToUsd, resolveExchangeRate } from '../payment/fxService';
 import { bootstrapOrgWallets } from './infraLedgerService';
@@ -297,21 +298,14 @@ async function issueAndSendOtp(
 
   console.log(`[infra-auth] OTP (${purpose}) for ${email}: ${otp}`);
 
-  const subject =
-    purpose === 'password_reset'
-      ? 'Reset your Dayfi Infrastructure password'
-      : 'Your Dayfi Infrastructure verification code';
+  const mail = buildOtpEmail(otp, purpose, 30);
 
   try {
     await sendVerificationEmail(
       email,
-      subject,
-      `Your Dayfi verification code is ${otp}. It expires in 30 minutes.`,
-      `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#111">
-        <p>Your Dayfi Infrastructure verification code:</p>
-        <p style="font-size:28px;font-weight:700;letter-spacing:4px">${otp}</p>
-        <p>This code expires in 30 minutes.</p>
-      </div>`,
+      mail.subject,
+      mail.text,
+      mail.html,
       { throwOnFailure: false }
     );
   } catch (err) {

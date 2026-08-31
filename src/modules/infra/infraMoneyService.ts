@@ -19,6 +19,10 @@ import {
   settleCollectionCredit,
 } from './infraLifecycleService';
 import {
+  createDynamicNgnVirtualAccount,
+  isFlutterwaveConfigured,
+} from '../payment/flutterwaveService';
+import {
   destinationToPayoutFields,
   resolveDestinationForPayout,
 } from './infraRecipientService';
@@ -510,7 +514,36 @@ export function listCryptoNetworks(asset?: string) {
   };
 }
 
-function testCollectionInstructions(sequenceId: string): {
+function build3v3ntsNarration(description?: string | null): string {
+  const raw = String(description || 'Gathering').trim();
+  const title = raw.replace(/^Ticket\s*·\s*/i, '').trim() || 'Gathering';
+  return `3v3nts / ${title}`.slice(0, 64);
+}
+
+function splitCustomerName(name?: string | null): { firstname: string; lastname: string } {
+  const parts = String(name || 'Guest').trim().split(/\s+/).filter(Boolean);
+  return {
+    firstname: parts[0] || 'Guest',
+    lastname: parts.slice(1).join(' ') || 'Customer',
+  };
+}
+
+function testAccountNumberFromSequence(sequenceId: string): string {
+  const hash = crypto.createHash('sha256').update(sequenceId).digest('hex');
+  let digits = '';
+  for (let i = 0; i < hash.length && digits.length < 10; i++) {
+    digits += String(parseInt(hash[i], 16) % 10);
+  }
+  return digits.padEnd(10, '0').slice(0, 10);
+}
+
+/** Corridor-realistic pay-in details for TEST (mirrors Yellow Card LIVE shape). */
+function testCollectionInstructions(
+  sequenceId: string,
+  country = 'NG',
+  method = 'bank',
+  narration?: string
+): {
   accountName: string | null;
   accountNumber: string | null;
   bankName: string | null;
@@ -518,12 +551,53 @@ function testCollectionInstructions(sequenceId: string): {
   note?: string;
   expiresAt?: string;
 } {
+  const cc = String(country || 'NG').toUpperCase();
+  const methodHint = String(method || 'bank').toLowerCase();
+  const reference = `DAYFI-${sequenceId.slice(0, 8).toUpperCase()}`;
+  const accountNumber = testAccountNumberFromSequence(sequenceId);
+
+  if (methodHint === 'momo') {
+    const momoByCountry: Record<string, { bankName: string; accountName: string }> = {
+      GH: { bankName: 'MTN Mobile Money', accountName: 'YELLOW CARD / DAYFI' },
+      KE: { bankName: 'M-PESA', accountName: 'YELLOW CARD / DAYFI' },
+      UG: { bankName: 'MTN MoMo', accountName: 'YELLOW CARD / DAYFI' },
+      TZ: { bankName: 'M-PESA', accountName: 'YELLOW CARD / DAYFI' },
+      RW: { bankName: 'MTN MoMo', accountName: 'YELLOW CARD / DAYFI' },
+    };
+    const corridor =
+      momoByCountry[cc] || { bankName: 'Mobile Money', accountName: 'YELLOW CARD / DAYFI' };
+    return {
+      accountName: corridor.accountName,
+      accountNumber,
+      bankName: corridor.bankName,
+      reference,
+    };
+  }
+
+  const bankByCountry: Record<string, { bankName: string; accountName: string }> = {
+    NG: {
+      bankName: 'Flutterwave MFB',
+      accountName: narration || '3v3nts / Gathering',
+    },
+    ZA: { bankName: 'Standard Bank', accountName: 'YELLOW CARD / DAYFI' },
+    BW: { bankName: 'First National Bank', accountName: 'YELLOW CARD / DAYFI' },
+  };
+  const corridor =
+    bankByCountry[cc] || { bankName: 'Wema Bank', accountName: narration || '3v3nts / Gathering' };
+  if (narration && cc === 'NG') {
+    return {
+      accountName: narration,
+      accountNumber,
+      bankName: 'Flutterwave MFB',
+      reference,
+    };
+  }
+
   return {
-    accountName: 'Dayfi Collections',
-    accountNumber: `9${String(Date.now()).slice(-9)}`,
-    bankName: 'Dayfi',
-    reference: `DAYFI-${sequenceId.slice(0, 8).toUpperCase()}`,
-    note: 'Dayfi pay-in details — use Mark as paid to simulate settlement.',
+    accountName: corridor.accountName,
+    accountNumber,
+    bankName: corridor.bankName,
+    reference,
   };
 }
 
@@ -646,9 +720,13 @@ export async function createCollection(input: CreateCollectionInput) {
   });
 
   if (input.env !== 'live') {
+    const narration = build3v3ntsNarration(input.description);
     const instructions = {
-      ...testCollectionInstructions(sequenceId),
-      note: 'Dayfi TEST pay-in details — valid about 30 minutes. Mark as paid to simulate settlement.',
+      ...testCollectionInstructions(sequenceId, country, methodHint, narration),
+      note:
+        country === 'NG' && currency === 'NGN' && methodHint !== 'momo'
+          ? 'Transfer the exact amount from any bank account. Payer name does not need to match your ticket name. TEST mode — mark as paid to simulate settlement.'
+          : 'Transfer the exact amount with the reference within about 30 minutes. TEST mode — mark as paid to simulate settlement.',
       expiresAt,
     };
     const row = await insertTx({
@@ -664,6 +742,7 @@ export async function createCollection(input: CreateCollectionInput) {
       metadata: collectionMeta({
         instructions: { ...instructions, expiresAt },
         provider: null,
+        rail: country === 'NG' && currency === 'NGN' ? 'flutterwave' : 'local',
       }),
       ...idem,
     });
@@ -695,6 +774,84 @@ export async function createCollection(input: CreateCollectionInput) {
     });
     throw new InfraRailError(message, 502, row.id);
   };
+
+  const useFlutterwaveNgBank =
+    country === 'NG' &&
+    currency === 'NGN' &&
+    methodHint !== 'momo' &&
+    methodHint !== 'crypto' &&
+    !input.asset;
+
+  if (useFlutterwaveNgBank) {
+    if (!isFlutterwaveConfigured()) {
+      return failLiveCollection('Flutterwave is not configured for LIVE NGN collections');
+    }
+    const email = String(input.customerEmail || '').trim().toLowerCase();
+    if (!email) {
+      return failLiveCollection('customerEmail is required for NGN bank transfer collections');
+    }
+
+    const narration = build3v3ntsNarration(input.description);
+    const { firstname, lastname } = splitCustomerName(input.customerName);
+
+    try {
+      const provider = await createDynamicNgnVirtualAccount({
+        email,
+        amount,
+        txRef: sequenceId,
+        narration,
+        firstname,
+        lastname,
+      });
+
+      const accountNumber = String(provider.account_number ?? '').trim();
+      if (!accountNumber) {
+        throw new Error('Flutterwave did not return a virtual account number');
+      }
+
+      const expiresAtFw = provider.expiry_date
+        ? new Date(String(provider.expiry_date)).toISOString()
+        : expiresAt;
+
+      const instructions = {
+        accountName: narration,
+        accountNumber,
+        bankName: String(provider.bank_name || 'Flutterwave MFB'),
+        reference: sequenceId,
+        note: 'Transfer the exact amount from any Nigerian bank account. The payer name does not need to match your ticket name.',
+        expiresAt: expiresAtFw,
+      };
+
+      const row = await insertTx({
+        orgId: input.orgId,
+        env: input.env,
+        amount,
+        currency,
+        country,
+        status: 'pending',
+        method,
+        direction: 'payment',
+        externalId: sequenceId,
+        metadata: collectionMeta({
+          rail: 'flutterwave',
+          instructions: { ...instructions, expiresAt: expiresAtFw },
+          provider,
+        }),
+        ...idem,
+      });
+
+      return {
+        ...mapTx(row),
+        instructions: { ...instructions, expiresAt: expiresAtFw },
+        sequenceId,
+        expiresAt: expiresAtFw,
+      };
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Flutterwave collection failed';
+      return failLiveCollection(message);
+    }
+  }
 
   const yc = new YellowCardService();
   if (!yc.isConfigured()) {

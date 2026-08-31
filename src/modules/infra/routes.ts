@@ -13,6 +13,7 @@ import {
   adminAuditList,
   adminOrganizationsList,
   adminOrganizationGet,
+  adminOrganizationUpdateVerification,
   adminOrganizationMembers,
   adminTransactionsList,
   adminTransactionGet,
@@ -22,8 +23,10 @@ import {
   adminCollectionGet,
   adminPayoutsList,
   adminPayoutGet,
+  adminWebhookEndpointsList,
   INVITE_WRITE_ROLES,
   ORG_READ_ROLES,
+  ORG_WRITE_ROLES,
   TX_READ_ROLES,
   WALLET_READ_ROLES,
   COLLECTION_READ_ROLES,
@@ -48,6 +51,10 @@ import {
   apiKeysCreate,
   apiKeysRotate,
   apiKeysAudit,
+  webhookEndpointsList,
+  webhookEndpointsCreate,
+  webhookEndpointsRevoke,
+  webhookDeliveriesList,
   emailCheck,
   emailStart,
   emailVerifyOtp,
@@ -150,6 +157,11 @@ adminRouter.get(
   requireOperatorRoles(ORG_READ_ROLES),
   adminOrganizationGet
 );
+adminRouter.patch(
+  '/organizations/:id/verification',
+  requireOperatorRoles(ORG_WRITE_ROLES),
+  adminOrganizationUpdateVerification
+);
 adminRouter.get(
   '/organizations/:id/members',
   requireOperatorRoles(ORG_READ_ROLES),
@@ -194,6 +206,11 @@ adminRouter.get(
   '/payouts/:id',
   requireOperatorRoles(PAYOUT_READ_ROLES),
   adminPayoutGet
+);
+adminRouter.get(
+  '/webhook-endpoints',
+  requireOperatorRoles(ORG_READ_ROLES),
+  adminWebhookEndpointsList
 );
 infraRouter.use('/admin', adminRouter);
 
@@ -278,5 +295,10 @@ infraRouter.get('/developers/api-keys', apiKeysList);
 infraRouter.post('/developers/api-keys', apiKeysCreate);
 infraRouter.get('/developers/api-keys/audit', apiKeysAudit);
 infraRouter.post('/developers/api-keys/:id/rotate', apiKeysRotate);
+
+infraRouter.get('/developers/webhook-endpoints', webhookEndpointsList);
+infraRouter.post('/developers/webhook-endpoints', webhookEndpointsCreate);
+infraRouter.delete('/developers/webhook-endpoints/:id', webhookEndpointsRevoke);
+infraRouter.get('/developers/webhook-deliveries', webhookDeliveriesList);
 
 export { infraRouter };

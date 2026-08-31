@@ -30,6 +30,15 @@ export function flutterwaveV3Headers(): Record<string, string> {
   };
 }
 
+export function isFlutterwaveConfigured(): boolean {
+  try {
+    secretKey();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Prod merchants often lack BVN lookup until Flutterwave enables it on the dashboard. */
 export function isFlutterwaveBvnServiceUnavailable(message: string): boolean {
   const m = String(message || '').toLowerCase();
@@ -257,6 +266,46 @@ export const createVirtualAccount = async (
     { headers: v3Headers() }
   );
 };
+
+/** One-time NGN virtual account for bank transfer (no hosted Flutterwave UI). Expires ~1 hour. */
+export type CreateDynamicNgnVirtualAccountInput = {
+  email: string;
+  amount: number;
+  txRef: string;
+  narration: string;
+  firstname?: string;
+  lastname?: string;
+  phonenumber?: string;
+  bankCode?: string;
+};
+
+export async function createDynamicNgnVirtualAccount(
+  input: CreateDynamicNgnVirtualAccountInput
+): Promise<Record<string, unknown>> {
+  const email = String(input.email || '').trim().toLowerCase();
+  if (!email) throw new Error('Customer email is required for Flutterwave collection');
+  const amount = Number(input.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Amount must be greater than zero');
+  }
+  const txRef = String(input.txRef || '').trim();
+  if (!txRef) throw new Error('tx_ref is required');
+
+  const body: Record<string, unknown> = {
+    email,
+    amount,
+    currency: 'NGN',
+    tx_ref: txRef,
+    is_permanent: false,
+    narration: String(input.narration || '3v3nts').slice(0, 64),
+  };
+  if (input.firstname) body.firstname = input.firstname;
+  if (input.lastname) body.lastname = input.lastname;
+  if (input.phonenumber) body.phonenumber = input.phonenumber;
+  if (input.bankCode) body.bank_code = input.bankCode;
+
+  return flutterwavePost<Record<string, unknown>>('/v3/virtual-account-numbers', body);
+}
 
 /** V3 bank transfer payout (debits Flutterwave balance). */
 export const initiateTransfer = async (

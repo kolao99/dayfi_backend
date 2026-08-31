@@ -8,8 +8,14 @@ const connectionString =
 function useSsl(url?: string): boolean {
   if (!url) return false;
   try {
-    const host = new URL(url).hostname;
-    return !(host === 'localhost' || host === '127.0.0.1');
+    const u = new URL(url);
+    const host = u.hostname;
+    const sslmode = u.searchParams.get('sslmode');
+    if (sslmode === 'disable' || sslmode === 'no-verify') return false;
+    if (host === 'localhost' || host === '127.0.0.1' || host === 'postgres') {
+      return false;
+    }
+    return true;
   } catch {
     return true;
   }

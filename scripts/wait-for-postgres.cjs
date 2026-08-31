@@ -32,8 +32,14 @@ if (url.includes('railway.internal') && !process.env.RAILWAY_ENVIRONMENT) {
 
 function useSsl(connectionUrl) {
   try {
-    const host = new URL(connectionUrl).hostname;
-    return !(host === 'localhost' || host === '127.0.0.1');
+    const u = new URL(connectionUrl);
+    const host = u.hostname;
+    const sslmode = u.searchParams.get('sslmode');
+    if (sslmode === 'disable' || sslmode === 'no-verify') return false;
+    if (host === 'localhost' || host === '127.0.0.1' || host === 'postgres') {
+      return false;
+    }
+    return true;
   } catch {
     return true;
   }

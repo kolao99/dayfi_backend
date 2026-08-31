@@ -55,6 +55,7 @@
     "test:infra-fiat-offramp": "mocha -r ./tests/preload-env.cjs -r ts-node/register tests/infra/fiat-offramp.test.ts --timeout 90000",
     "test:infra-treasury": "mocha -r ./tests/preload-env.cjs -r ts-node/register tests/infra/treasury.test.ts --timeout 90000",
     "test:infra-admin": "mocha -r ./tests/preload-env.cjs -r ts-node/register tests/infra/admin-invites.test.ts --timeout 30000",
+    "test:infra-open-signup": "mocha -r ./tests/preload-env.cjs -r ts-node/register tests/infra/open-signup.test.ts --timeout 30000",
     "proof:infra-c-testnet": "ts-node -r dotenv/config scripts/infra-testnet-c-proof.ts",
     "proof:infra-d-testnet": "ts-node -r dotenv/config scripts/infra-testnet-d-proof.ts",
     "proof:infra-f-testnet": "ts-node -r ./tests/preload-env.cjs scripts/infra-testnet-f-proof.ts",

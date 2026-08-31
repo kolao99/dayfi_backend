@@ -8,6 +8,7 @@ import {
   listOperatorAudit,
   listOrganizations,
   getOrganization,
+  updateOrganizationVerificationStatus,
   listOrganizationMembers,
   listAdminTransactions,
   getAdminTransaction,
@@ -19,11 +20,13 @@ import {
   getAdminWallet,
   INVITE_WRITE_ROLES,
   ORG_READ_ROLES,
+  ORG_WRITE_ROLES,
   TX_READ_ROLES,
   WALLET_READ_ROLES,
   COLLECTION_READ_ROLES,
   PAYOUT_READ_ROLES,
 } from './infraAdminService';
+import { listAdminWebhookEndpoints } from './infraWebhookService';
 
 export async function adminOperatorLogin(
   req: Request,
@@ -160,6 +163,36 @@ export async function adminOrganizationMembers(
     const status =
       err.status || (err.message === 'Organization not found' ? 404 : 400);
     errorResponse(res, err.message || 'Unable to load members', status);
+  }
+}
+
+export async function adminOrganizationUpdateVerification(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    if (!req.operator) {
+      errorResponse(res, 'Unauthorized', 401);
+      return;
+    }
+    const verificationStatus = String(
+      req.body?.verificationStatus || req.body?.verification_status || ''
+    );
+    const item = await updateOrganizationVerificationStatus({
+      orgId: String(req.params.id),
+      verificationStatus,
+      operator: req.operator,
+    });
+    success(res, 'Organization verification updated', 200, { item });
+  } catch (err: any) {
+    const status =
+      err.status ||
+      (err.message === 'Organization not found'
+        ? 404
+        : err.message === 'Invalid verification status'
+          ? 400
+          : 400);
+    errorResponse(res, err.message || 'Unable to update verification', status);
   }
 }
 
@@ -308,9 +341,29 @@ export async function adminPayoutGet(
   }
 }
 
+export async function adminWebhookEndpointsList(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const data = await listAdminWebhookEndpoints({
+      search: String(req.query.search || ''),
+      orgId: String(req.query.orgId || req.query.org_id || ''),
+      environment: String(req.query.environment || req.query.env || ''),
+      limit: req.query.limit != null ? Number(req.query.limit) : undefined,
+      offset: req.query.offset != null ? Number(req.query.offset) : undefined,
+    });
+    success(res, 'Webhook endpoints', 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export {
   INVITE_WRITE_ROLES,
   ORG_READ_ROLES,
+  ORG_WRITE_ROLES,
   TX_READ_ROLES,
   WALLET_READ_ROLES,
   COLLECTION_READ_ROLES,

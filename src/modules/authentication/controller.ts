@@ -6,6 +6,7 @@ import { success, errorResponse } from '../../shared/lib/api-response';
 import HashText from '../../shared/services/hashing';
 import Helper from '../../shared/utils/helper';
 import { sendVerificationEmail } from '../../config/email';
+import { buildMessageEmail, buildOtpEmail } from '../../config/email/templates';
 import { bootstrapWalletsOnAuth } from '../payment/authWalletBootstrap';
 import { AuthProviderConflictError } from './socialAuth';
 
@@ -180,18 +181,17 @@ class AuthController {
       const newUser = await this.authService.createUser(userData);
 
       const otp = await this.authService.sendOtp(newUser?.email);
+      const mail = buildOtpEmail(
+        String(otp.verification_token),
+        'signup',
+        30,
+        newUser?.first_name
+      );
       await sendVerificationEmail(
         newUser?.email.toLowerCase(),
-        'Signup Successful',
-        'Hello,\n\nYour registration was successful! Welcome to Dayfi.\n\nBest,\nDayfi Team',
-        `
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-      <p>Hello,</p>
-      <p>Your registration was successful! Welcome to <strong>Dayfi</strong>.</p>
-      <p><strong>Your OTP is:</strong> ${otp.verification_token}</p>
-      <p>Best regards,<br>Dayfi Team</p>
-    </div>
-  `
+        mail.subject,
+        mail.text,
+        mail.html
       );
 
       return success(res, enums.CREATED_SUCCESSFULLY('User'), enums.HTTP_OK, {
@@ -557,11 +557,20 @@ class AuthController {
         `${enums.CURRENT_TIME_STAMP}, Info: OTP verified successfully auth.controller.js`
       );
       if (body.type === 'email') {
+        const welcome = buildMessageEmail({
+          subject: 'Welcome to Dayfi',
+          heading: 'You’re verified',
+          preheader: 'Your email is verified — welcome to Dayfi.',
+          paragraphs: [
+            'Your verification was successful.',
+            'You can now sign in and start using Dayfi.',
+          ],
+        });
         await sendVerificationEmail(
           data.email.toLowerCase(),
-          'Verification Successful',
-          'Hello,\n\nYour verification was successful! Welcome to Dayfi.\n\nBest,\nDayfi Team',
-          `<p>Hello,</p><p>Your verification was successful! Welcome to Dayfi.</p><p>Best,<br>Dayfi Team</p>`,
+          welcome.subject,
+          welcome.text,
+          welcome.html,
           { throwOnFailure: false }
         );
       }
@@ -599,18 +608,17 @@ class AuthController {
         otp: data.verification_token,
       };
 
+      const resetMail = buildOtpEmail(
+        String(userData.otp),
+        'password_reset',
+        30,
+        user?.first_name
+      );
       await sendVerificationEmail(
         email.toLowerCase(),
-        'Reset password initiation Successful',
-        'Hello,\n\nYour reset password initiation was successful.\n\nBest,\nDayfi Team',
-        `
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-      <p>Hello,</p>
-      <p>Your Reset password initiation was successful!</p>
-      <p><strong>Your OTP is:</strong> ${userData.otp}</p>
-      <p>Best regards,<br>Dayfi Team</p>
-    </div>
-  `
+        resetMail.subject,
+        resetMail.text,
+        resetMail.html
       );
       return success(
         res,
@@ -646,18 +654,17 @@ class AuthController {
         otp: data.verification_token,
       };
 
+      const pinMail = buildOtpEmail(
+        String(userData.otp),
+        'transaction_pin',
+        30,
+        user?.first_name
+      );
       await sendVerificationEmail(
         email.toLowerCase(),
-        'Reset transaction pin Successful',
-        'Hello,\n\nYour reset transaction pin initiation was successful.\n\nBest,\nDayfi Team',
-        `
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-      <p>Hello,</p>
-      <p>Your Reset transaction pin initiation was successful!</p>
-      <p><strong>Your OTP is:</strong> ${userData.otp}</p>
-      <p>Best regards,<br>Dayfi Team</p>
-    </div>
-  `
+        pinMail.subject,
+        pinMail.text,
+        pinMail.html
       );
       return success(
         res,

@@ -554,6 +554,22 @@ export const ORG_READ_ROLES: OperatorRole[] = [
   'admin',
 ];
 
+/** Operator roles that may update organization verification / LIVE eligibility. */
+export const ORG_WRITE_ROLES: OperatorRole[] = ['ops', 'treasury', 'admin'];
+
+const ORG_VERIFICATION_STATUSES = ['unverified', 'pending', 'verified'] as const;
+type OrgVerificationStatus = (typeof ORG_VERIFICATION_STATUSES)[number];
+
+function normalizeOrgVerificationStatus(raw: string): OrgVerificationStatus {
+  const status = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (!ORG_VERIFICATION_STATUSES.includes(status as OrgVerificationStatus)) {
+    throw Object.assign(new Error('Invalid verification status'), { status: 400 });
+  }
+  return status as OrgVerificationStatus;
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -762,6 +778,49 @@ export async function getOrganization(
     [id]
   );
   return serializeOrgDetail(row, counts.member_count, counts.contact_email);
+}
+
+/**
+ * Operator action: move organization through unverified → pending → verified.
+ * verified enables LIVE (enforced separately by requireVerifiedForLiveMiddleware).
+ */
+export async function updateOrganizationVerificationStatus(input: {
+  orgId: string;
+  verificationStatus: string;
+  operator: OperatorAuth;
+}): Promise<ReturnType<typeof serializeOrgDetail>> {
+  const orgId = String(input.orgId || '');
+  if (!UUID_RE.test(orgId)) {
+    throw Object.assign(new Error('Organization not found'), { status: 404 });
+  }
+  const nextStatus = normalizeOrgVerificationStatus(input.verificationStatus);
+  const existing = await db.oneOrNone<{ verification_status: string }>(
+    `SELECT verification_status FROM infra_organizations WHERE id = $1`,
+    [orgId]
+  );
+  if (!existing) {
+    throw Object.assign(new Error('Organization not found'), { status: 404 });
+  }
+  const previousStatus = existing.verification_status;
+  if (previousStatus !== nextStatus) {
+    await db.none(
+      `UPDATE infra_organizations SET verification_status = $2 WHERE id = $1`,
+      [orgId, nextStatus]
+    );
+    await writeOperatorAudit({
+      operatorId: input.operator.operatorId,
+      operatorEmail: input.operator.email,
+      action: 'ORG_VERIFICATION_UPDATED',
+      resourceType: 'organization',
+      resourceId: orgId,
+      metadata: {
+        previousStatus,
+        newStatus: nextStatus,
+        liveAccess: nextStatus === 'verified' ? 'enabled' : 'disabled',
+      },
+    });
+  }
+  return getOrganization(orgId);
 }
 
 export async function listOrganizationMembers(
