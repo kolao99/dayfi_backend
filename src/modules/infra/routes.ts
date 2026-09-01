@@ -108,6 +108,12 @@ import {
   treasuryRebalanceCreate,
   treasuryRebalanceApprove,
   treasuryRebalanceSubmit,
+  billsCategoriesList,
+  billsBillersList,
+  billsItemsList,
+  billsValidate,
+  billsPay,
+  billsStatus,
 } from './controller';
 
 const infraRouter = express.Router();
@@ -265,6 +271,14 @@ infraRouter.post('/bulk/:id/preflight', bulkPreflight);
 infraRouter.post('/bulk/:id/confirm', bulkConfirm);
 infraRouter.post('/bulk/:id/cancel', bulkCancel);
 infraRouter.post('/bulk/:id/refresh', bulkRefresh);
+
+/** Bill payments (Flutterwave VAS — org ledger). */
+infraRouter.get('/bills/categories', billsCategoriesList);
+infraRouter.get('/bills/categories/:category/billers', billsBillersList);
+infraRouter.get('/bills/billers/:billerCode/items', billsItemsList);
+infraRouter.post('/bills/validate', billsValidate);
+infraRouter.post('/bills/pay', billsPay);
+infraRouter.get('/bills/status/:reference', billsStatus);
 
 infraRouter.get('/settlements', settlements);
 infraRouter.get('/settlements/:id', settlementGet);

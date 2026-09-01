@@ -47,6 +47,15 @@ import {
   applyInfraYellowCardWebhook,
 } from './infraLifecycleService';
 import {
+  getInfraBillStatus,
+  InfraBillError,
+  listInfraBillBillers,
+  listInfraBillCategories,
+  listInfraBillItems,
+  payInfraBill,
+  validateInfraBill,
+} from './infraBillsService';
+import {
   assertYellowCardWebhookAuthenticated,
   YellowCardWebhookAuthError,
 } from '../payment/yellowCardWebhook';
@@ -1500,5 +1509,101 @@ export async function treasuryRebalanceSubmit(
   } catch (err: any) {
     const code = err instanceof InfraTreasuryError ? err.status : 400;
     errorResponse(res, err?.message || 'Unable to submit rebalance', code);
+  }
+}
+
+export async function billsCategoriesList(_req: Request, res: Response): Promise<void> {
+  try {
+    const data = await listInfraBillCategories();
+    success(res, 'Bill categories', 200, data);
+  } catch (err: any) {
+    errorResponse(res, err.message || 'Unable to list bill categories', 400);
+  }
+}
+
+export async function billsBillersList(req: Request, res: Response): Promise<void> {
+  try {
+    const category = String(req.params.category || '').toUpperCase();
+    if (!category) {
+      errorResponse(res, 'Category is required', 400);
+      return;
+    }
+    const data = await listInfraBillBillers(category);
+    success(res, 'Bill billers', 200, data);
+  } catch (err: any) {
+    errorResponse(res, err.message || 'Unable to list billers', 400);
+  }
+}
+
+export async function billsItemsList(req: Request, res: Response): Promise<void> {
+  try {
+    const billerCode = String(req.params.billerCode || '').trim();
+    if (!billerCode) {
+      errorResponse(res, 'Biller code is required', 400);
+      return;
+    }
+    const data = await listInfraBillItems(billerCode);
+    success(res, 'Bill items', 200, data);
+  } catch (err: any) {
+    errorResponse(res, err.message || 'Unable to list bill items', 400);
+  }
+}
+
+export async function billsValidate(req: Request, res: Response): Promise<void> {
+  try {
+    const body = req.body || {};
+    const data = await validateInfraBill({
+      categoryCode: String(body.categoryCode || ''),
+      billerCode: String(body.billerCode || ''),
+      itemCode: String(body.itemCode || ''),
+      customerId: String(body.customerId || ''),
+    });
+    success(res, 'Bill validated', 200, data);
+  } catch (err: any) {
+    errorResponse(res, err.message || 'Unable to validate bill', 400);
+  }
+}
+
+export async function billsPay(req: Request, res: Response): Promise<void> {
+  try {
+    const env = req.infraEnv || 'test';
+    const idempotencyKey = readIdempotencyKey(req);
+    if (env === 'live' && !idempotencyKey) {
+      errorResponse(res, 'Idempotency-Key is required for LIVE', 400);
+      return;
+    }
+    const body = req.body || {};
+    const data = await payInfraBill({
+      orgId: req.infra!.orgId!,
+      env,
+      idempotencyKey,
+      categoryCode: String(body.categoryCode || ''),
+      billerCode: String(body.billerCode || ''),
+      itemCode: String(body.itemCode || ''),
+      customerId: String(body.customerId || ''),
+      amount: Number(body.amount),
+      billerName: body.billerName,
+      itemName: body.itemName,
+    });
+    success(res, 'Bill payment completed', 201, data);
+  } catch (err: any) {
+    const code =
+      err instanceof InfraBillError
+        ? err.status
+        : err instanceof InfraLedgerError
+          ? err.status
+          : 400;
+    errorResponse(res, err.message || 'Unable to pay bill', code);
+  }
+}
+
+export async function billsStatus(req: Request, res: Response): Promise<void> {
+  try {
+    const reference = String(req.params.reference || '').trim();
+    const data = await getInfraBillStatus(req.infra!.orgId!, reference);
+    success(res, 'Bill payment status', 200, data);
+  } catch (err: any) {
+    const code = err instanceof InfraBillError ? err.status : 400;
+    errorResponse(res, err.message || 'Unable to get bill status', code);
   }
 }
