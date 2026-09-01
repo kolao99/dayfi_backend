@@ -4,17 +4,48 @@ export type PersistedButton = ChoiceButton & {
   selected?: boolean;
 };
 
+/** Strip leading emoji / whitespace from a button label for display. */
+export function stripButtonEmoji(label: string): string {
+  return (
+    label
+      .replace(
+        /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\s]+/gu,
+        ''
+      )
+      .trim() || label
+  );
+}
+
+export function buttonUserText(button: ChoiceButton): string {
+  return button.userText || stripButtonEmoji(button.label);
+}
+
+function selectedButtonLabel(button: ChoiceButton): string {
+  const base = stripButtonEmoji(button.label);
+  const spoken = buttonUserText(button);
+  if (spoken.toLowerCase() === base.toLowerCase()) {
+    return `✅ ${base}`;
+  }
+  return `✅ ${base} - ${spoken}`;
+}
+
 /**
  * Global Four button rule: clicked buttons stay visible but become disabled.
- * Selected buttons show a ✓ prefix in Telegram.
+ * Selected buttons show ✅ and the spoken user phrase after a hyphen.
  */
 export function applyButtonSelection(
   buttons: PersistedButton[],
   selectedId: string
 ): PersistedButton[] {
-  return buttons.map((b) =>
-    b.id === selectedId ? { ...b, disabled: true, selected: true } : b
-  );
+  return buttons.map((b) => {
+    if (b.id !== selectedId) return b;
+    return {
+      ...b,
+      disabled: true,
+      selected: true,
+      label: selectedButtonLabel(b),
+    };
+  });
 }
 
 export function buildChoiceKeyboard(
@@ -31,10 +62,9 @@ export function buildChoiceKeyboard(
   if (buttons.length > 0) {
     rows.push(
       buttons.map((b) => {
-        const prefix = b.disabled || b.selected ? '✓ ' : '';
         const suffix = options?.callbackExtra ? `:${options.callbackExtra}` : '';
         return {
-          text: `${prefix}${b.label}`,
+          text: b.label,
           callback_data: b.disabled
             ? `four:noop:${scope}:${b.id}${suffix}`
             : `four:${scope}:${b.id}${suffix}`,

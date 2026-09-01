@@ -9,8 +9,12 @@ import {
   type EngineReply,
 } from '../engine/conversationEngine';
 import { getIntentForUser, updateIntent } from '../intent/intentService';
-import { applyButtonSelection } from './buttonState';
 import {
+  applyButtonSelection,
+  buttonUserText,
+} from './buttonState';
+import {
+  CAPABILITY_BUTTONS,
   capabilitiesIntro,
   createUserWallet,
   FUND_BUTTONS,
@@ -77,8 +81,8 @@ async function ensureConversation(userId: string) {
   return conversation;
 }
 
-async function deliverReplies(
-  chatId: number,
+export async function deliverReplies(
+  chatId: number | string,
   userId: string,
   conversationId: string,
   replies: RoutedReply[]
@@ -120,23 +124,59 @@ async function deliverReplies(
   }
 }
 
-export async function routeTelegramText(input: {
+export async function sendCapabilitiesIntro(
+  chatId: number | string,
+  userId: string,
+  telegramUserId: number | string
+): Promise<void> {
+  const conversation = await ensureConversation(userId);
+  await deliverReplies(chatId, userId, conversation.id, [
+    {
+      role: 'assistant',
+      type: 'choice',
+      content: capabilitiesIntro(),
+      buttons: CAPABILITY_BUTTONS.map((b) => ({ ...b })),
+      scope: 'capability',
+    },
+  ]);
+  await markIntroShown(telegramUserId);
+}
+
+async function recordUserSelection(input: {
+  userId: string;
+  conversationId: string;
+  userText: string;
+}): Promise<void> {
+  await appendMessage({
+    userId: input.userId,
+    conversationId: input.conversationId,
+    role: 'user',
+    type: 'text',
+    content: input.userText,
+    metadata: { source: 'button' },
+  });
+}
+
+async function processUserUtterance(input: {
   userId: string;
   telegramUserId: number;
   chatId: number;
   text: string;
   firstName?: string;
+  recordUserMessage?: boolean;
 }): Promise<void> {
   const conversation = await ensureConversation(input.userId);
   const stage = await getOnboardingStage(input.userId, input.telegramUserId);
 
-  await appendMessage({
-    userId: input.userId,
-    conversationId: conversation.id,
-    role: 'user',
-    type: 'text',
-    content: input.text,
-  });
+  if (input.recordUserMessage !== false) {
+    await appendMessage({
+      userId: input.userId,
+      conversationId: conversation.id,
+      role: 'user',
+      type: 'text',
+      content: input.text,
+    });
+  }
 
   if (stage === 'ready') {
     if (isGreeting(input.text)) {
@@ -211,15 +251,72 @@ export async function routeTelegramText(input: {
   }
 
   if (stage === 'intro_pending') {
-    await markIntroShown(input.telegramUserId);
     await deliverReplies(input.chatId, input.userId, conversation.id, [
       {
         role: 'assistant',
-        type: 'text',
+        type: 'choice',
         content: capabilitiesIntro(),
+        buttons: CAPABILITY_BUTTONS.map((b) => ({ ...b })),
+        scope: 'capability',
       },
     ]);
   }
+}
+
+export async function routeTelegramText(input: {
+  userId: string;
+  telegramUserId: number;
+  chatId: number;
+  text: string;
+  firstName?: string;
+}): Promise<void> {
+  await processUserUtterance({ ...input, recordUserMessage: true });
+}
+
+async function markSelectedButtons(input: {
+  chatId: number;
+  messageId: number;
+  scope: string;
+  action: string;
+  buttons: ChoiceButton[];
+}): Promise<ChoiceButton[]> {
+  const updated = applyButtonSelection(input.buttons, input.action);
+  await editMessageReplyMarkup({
+    chatId: input.chatId,
+    messageId: input.messageId,
+    replyMarkup: buildInlineKeyboard(updated, { scope: input.scope }),
+  });
+  return updated;
+}
+
+async function handleButtonSelection(input: {
+  chatId: number;
+  messageId: number;
+  userId: string;
+  conversationId: string;
+  scope: string;
+  action: string;
+  buttons: ChoiceButton[];
+}): Promise<ChoiceButton | null> {
+  const button = input.buttons.find((b) => b.id === input.action);
+  if (!button) return null;
+
+  const userText = buttonUserText(button);
+  await markSelectedButtons({
+    chatId: input.chatId,
+    messageId: input.messageId,
+    scope: input.scope,
+    action: input.action,
+    buttons: input.buttons,
+  });
+
+  await recordUserSelection({
+    userId: input.userId,
+    conversationId: input.conversationId,
+    userText,
+  });
+
+  return button;
 }
 
 export async function routeTelegramCallback(
@@ -234,12 +331,9 @@ export async function routeTelegramCallback(
 
   if (chatId == null || telegramMessageId == null) return;
 
-  const activeChatId = chatId;
-  const activeMessageId = telegramMessageId;
-
   const session = await resolveTelegramSession({
     telegramUserId,
-    chatId: activeChatId,
+    chatId,
     firstName: query.from.first_name,
     username: query.from.username,
   });
@@ -253,17 +347,16 @@ export async function routeTelegramCallback(
   const action = parts[2] ?? '';
   const extra = parts[3] ?? '';
 
-  async function markSelected(buttons: ChoiceButton[]): Promise<void> {
-    const updated = applyButtonSelection(buttons, action);
-    await editMessageReplyMarkup({
-      chatId: activeChatId,
-      messageId: activeMessageId,
-      replyMarkup: buildInlineKeyboard(updated, { scope }),
-    });
-  }
-
   if (scope === 'onboard' && action === 'create_wallet') {
-    await markSelected([{ ...ONBOARDING_BUTTONS.createWallet }]);
+    await handleButtonSelection({
+      chatId,
+      messageId: telegramMessageId,
+      userId: session.user.user_id,
+      conversationId: conversation.id,
+      scope,
+      action,
+      buttons: [{ ...ONBOARDING_BUTTONS.createWallet }],
+    });
     await createUserWallet(session.user.user_id);
     await deliverReplies(chatId, session.user.user_id, conversation.id, [
       {
@@ -278,8 +371,98 @@ export async function routeTelegramCallback(
     return;
   }
 
+  if (scope === 'capability' && action.startsWith('cap_')) {
+    const button = await handleButtonSelection({
+      chatId,
+      messageId: telegramMessageId,
+      userId: session.user.user_id,
+      conversationId: conversation.id,
+      scope,
+      action,
+      buttons: CAPABILITY_BUTTONS.map((b) => ({ ...b })),
+    });
+    if (!button) return;
+
+    await markIntroShown(telegramUserId);
+
+    if (action === 'cap_balance') {
+      const result = await handleUserText({
+        userId: session.user.user_id,
+        conversationId: conversation.id,
+        text: "What's my balance?",
+      });
+      await deliverReplies(
+        chatId,
+        session.user.user_id,
+        conversation.id,
+        result.replies
+      );
+      return;
+    }
+
+    if (action === 'cap_send') {
+      await deliverReplies(chatId, session.user.user_id, conversation.id, [
+        {
+          role: 'assistant',
+          type: 'text',
+          content:
+            'Sure. Tell me who to send to and how much. Example: Send ₦20,000 to Kola.',
+        },
+      ]);
+      return;
+    }
+
+    if (action === 'cap_fund') {
+      await deliverReplies(chatId, session.user.user_id, conversation.id, [
+        {
+          role: 'assistant',
+          type: 'choice',
+          content: 'How would you like to fund your wallet?',
+          buttons: FUND_BUTTONS.map((b) => ({ ...b })),
+          scope: 'fund',
+        },
+      ]);
+      return;
+    }
+
+    if (action === 'cap_airtime') {
+      await deliverReplies(chatId, session.user.user_id, conversation.id, [
+        {
+          role: 'assistant',
+          type: 'text',
+          content:
+            'Sure. Tell me the amount and phone number. Example: Top up my number with ₦500.',
+        },
+      ]);
+      return;
+    }
+
+    if (action === 'cap_bills') {
+      await deliverReplies(chatId, session.user.user_id, conversation.id, [
+        {
+          role: 'assistant',
+          type: 'text',
+          content:
+            'Sure. Tell me which bill to pay. Example: Pay my electricity bill.',
+        },
+      ]);
+      return;
+    }
+
+    return;
+  }
+
   if (scope === 'menu' && action.startsWith('menu_')) {
-    await markSelected(MENU_BUTTONS.map((b) => ({ ...b })));
+    const button = await handleButtonSelection({
+      chatId,
+      messageId: telegramMessageId,
+      userId: session.user.user_id,
+      conversationId: conversation.id,
+      scope,
+      action,
+      buttons: MENU_BUTTONS.map((b) => ({ ...b })),
+    });
+    if (!button) return;
 
     if (action === 'menu_balance') {
       const result = await handleUserText({
@@ -302,7 +485,7 @@ export async function routeTelegramCallback(
           role: 'assistant',
           type: 'text',
           content:
-            'Sure. Tell me who to send to and how much.\n\nExample: Send ₦20,000 to Kola',
+            'Sure. Tell me who to send to and how much. Example: Send ₦20,000 to Kola.',
         },
       ]);
       return;
@@ -327,15 +510,24 @@ export async function routeTelegramCallback(
           role: 'assistant',
           type: 'text',
           content:
-            "Just tell me what you need in plain language.\n\nTry:\n• What's my balance?\n• Send 20k to Kola\n• /menu",
+            "Just tell me what you need in plain language. Try: What's my balance?, Send 20k to Kola, or /menu.",
         },
       ]);
-      return;
     }
+    return;
   }
 
   if (scope === 'fund') {
-    await markSelected(FUND_BUTTONS.map((b) => ({ ...b })));
+    const button = await handleButtonSelection({
+      chatId,
+      messageId: telegramMessageId,
+      userId: session.user.user_id,
+      conversationId: conversation.id,
+      scope,
+      action,
+      buttons: FUND_BUTTONS.map((b) => ({ ...b })),
+    });
+    if (!button) return;
 
     if (action === 'fund_crypto') {
       await deliverReplies(chatId, session.user.user_id, conversation.id, [
@@ -343,7 +535,7 @@ export async function routeTelegramCallback(
           role: 'assistant',
           type: 'text',
           content:
-            "Sure. Tell me what asset you want to deposit and the network it's on.\n\nExample: **USDC on Solana**\n\nCrypto deposits do not require BVN.",
+            "Sure. Tell me what asset you want to deposit and the network it's on. Example: USDC on Solana. Crypto deposits do not require BVN.",
         },
       ]);
       return;
@@ -355,11 +547,11 @@ export async function routeTelegramCallback(
           role: 'assistant',
           type: 'text',
           content:
-            'To use bank transfer, please complete KYC with your BVN first.\n\nSend /kyc to get started.',
+            'To use bank transfer, please complete KYC with your BVN first. Send /kyc to get started.',
         },
       ]);
-      return;
     }
+    return;
   }
 
   if (scope === 'send' && action === 'confirm_send' && extra) {
@@ -373,9 +565,19 @@ export async function routeTelegramCallback(
       return;
     }
 
-    await markSelected([
-      { id: 'confirm_send', label: 'Confirm send', disabled: false },
-    ]);
+    await markSelectedButtons({
+      chatId,
+      messageId: telegramMessageId,
+      scope,
+      action,
+      buttons: [{ id: 'confirm_send', label: 'Confirm send', userText: 'Confirm send' }],
+    });
+
+    await recordUserSelection({
+      userId: session.user.user_id,
+      conversationId: conversation.id,
+      userText: 'Confirm send',
+    });
 
     await updateIntent(session.user.user_id, intentId, {
       status: 'AWAITING_AUTHORIZATION',
@@ -385,7 +587,7 @@ export async function routeTelegramCallback(
       {
         role: 'assistant',
         type: 'review',
-        content: '🔐 Tap below to confirm with your PIN.',
+        content: 'Tap below to confirm with your PIN. 🔐',
         metadata: {
           intentId,
           buttons: [{ id: 'confirm_send', label: 'Confirm send', disabled: true }],
@@ -414,7 +616,7 @@ export async function routeTelegramCallback(
       {
         role: 'assistant',
         type: 'review',
-        content: '🔐 Tap below to confirm with your PIN.',
+        content: 'Tap below to confirm with your PIN. 🔐',
         metadata: {
           intentId,
           buttons: [{ id: 'confirm_send', label: 'Confirm send', disabled: true }],

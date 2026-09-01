@@ -3,14 +3,9 @@ import HashText from '../../../shared/services/hashing';
 import { FourError } from '../errors';
 import { getUserById } from '../auth/identityService';
 import { getLinkByUserId } from '../telegram/telegramLinkService';
-import {
-  sendTelegramMessage,
-} from '../telegram/telegramClient';
-import {
-  capabilitiesIntro,
-  markIntroShown,
-  pinSecuredMessage,
-} from '../telegram/onboardingService';
+import { sendTelegramMessage } from '../telegram/telegramClient';
+import { pinSecuredMessage } from '../telegram/onboardingService';
+import { sendCapabilitiesIntro } from '../telegram/telegramRouter';
 
 export async function setupTransactionPin(input: {
   userId: string;
@@ -48,11 +43,11 @@ export async function setupTransactionPin(input: {
       chatId: link.chat_id,
       text: pinSecuredMessage(),
     });
-    await sendTelegramMessage({
-      chatId: link.chat_id,
-      text: capabilitiesIntro(),
-    });
-    await markIntroShown(link.telegram_user_id);
+    await sendCapabilitiesIntro(
+      link.chat_id,
+      input.userId,
+      link.telegram_user_id
+    );
   }
 
   return { ok: true };
