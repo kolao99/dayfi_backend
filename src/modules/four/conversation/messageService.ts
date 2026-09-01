@@ -201,6 +201,20 @@ export async function listMessages(
   };
 }
 
+export async function updateMessageMetadata(
+  userId: string,
+  messageId: string,
+  patch: Record<string, unknown>
+): Promise<FourMessage | null> {
+  return db.oneOrNone<FourMessage>(
+    `UPDATE four_messages
+        SET metadata = metadata || $3::jsonb
+      WHERE id = $1 AND user_id = $2
+      RETURNING ${COLUMNS}`,
+    [messageId, userId, JSON.stringify(patch)]
+  );
+}
+
 export async function countMessages(
   userId: string,
   conversationId: string

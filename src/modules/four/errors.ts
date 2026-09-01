@@ -27,6 +27,8 @@ export type FourErrorCode =
   | 'account_inactive'
   | 'pin_invalid'
   | 'pin_not_set'
+  | 'pin_already_set'
+  | 'pin_mismatch'
   | 'intent_not_found'
   | 'intent_invalid_state'
   | 'telegram_auth_invalid'
@@ -46,6 +48,8 @@ const STATUS: Record<FourErrorCode, number> = {
   account_inactive: HTTP_FORBIDDEN,
   pin_invalid: HTTP_BAD_REQUEST,
   pin_not_set: HTTP_BAD_REQUEST,
+  pin_already_set: HTTP_CONFLICT,
+  pin_mismatch: HTTP_BAD_REQUEST,
   intent_not_found: HTTP_NOT_FOUND,
   intent_invalid_state: HTTP_BAD_REQUEST,
   telegram_auth_invalid: HTTP_UNAUTHORIZED,
@@ -68,6 +72,8 @@ const MESSAGE: Record<FourErrorCode, string> = {
   account_inactive: 'This account is not active. Please contact support.',
   pin_invalid: 'That PIN is incorrect.',
   pin_not_set: 'Create a transaction PIN before sending money.',
+  pin_already_set: 'Your transaction PIN is already set.',
+  pin_mismatch: 'Those PINs do not match.',
   intent_not_found: 'That request was not found or has expired.',
   intent_invalid_state: 'That request is no longer ready to authorize.',
   telegram_auth_invalid: 'Telegram verification failed. Please open this from Four in Telegram.',

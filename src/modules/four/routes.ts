@@ -121,4 +121,11 @@ fourRouter.post(
   fourController.authorizeIntent
 );
 
+fourRouter.post(
+  '/security/setup-pin',
+  requireFourSessionOrTelegramWebApp,
+  fourValidator.setupPin,
+  fourController.setupPin
+);
+
 export { fourRouter };

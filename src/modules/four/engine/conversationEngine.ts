@@ -258,5 +258,10 @@ export function replyMarkupForReview(
     disabled?: boolean;
   }>) ?? [];
   if (!buttons.length && reply.type !== 'review') return undefined;
-  return buildInlineKeyboard(buttons, intentId ?? String(reply.metadata?.intentId ?? ''));
+  const resolvedIntentId =
+    intentId ?? String(reply.metadata?.intentId ?? '');
+  return buildInlineKeyboard(buttons, {
+    scope: 'send',
+    intentId: resolvedIntentId || undefined,
+  });
 }

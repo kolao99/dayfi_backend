@@ -35,6 +35,7 @@ import {
   getIntentForMiniApp,
   toMiniAppReview,
 } from './intent/miniAppService';
+import { setupTransactionPin } from './security/pinSetupService';
 
 /**
  * Four API controller — auth, conversations, Telegram vertical slice.
@@ -392,6 +393,20 @@ class FourController {
       return success(res, 'Authorized.', enums.HTTP_OK, result);
     } catch (err) {
       return fail(res, err, 'authorizeIntent');
+    }
+  };
+
+  /** POST /api/v1/four/security/setup-pin — Telegram Mini App PIN creation */
+  setupPin = async (req: Request, res: Response): Promise<any> => {
+    try {
+      await setupTransactionPin({
+        userId: req.four!.userId,
+        pin: String(req.body.pin),
+        confirmPin: String(req.body.confirmPin),
+      });
+      return success(res, 'PIN secured.', enums.HTTP_OK, { ok: true });
+    } catch (err) {
+      return fail(res, err, 'setupPin');
     }
   };
 }

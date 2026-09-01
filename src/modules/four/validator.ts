@@ -144,6 +144,20 @@ class FourValidator {
     });
     return this.validateBody(req, res, next, schema);
   };
+
+  setupPin = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      pin: Joi.string()
+        .trim()
+        .pattern(/^\d{4}$/)
+        .required(),
+      confirmPin: Joi.string()
+        .trim()
+        .pattern(/^\d{4}$/)
+        .required(),
+    });
+    return this.validateBody(req, res, next, schema);
+  };
 }
 
 export default new FourValidator();

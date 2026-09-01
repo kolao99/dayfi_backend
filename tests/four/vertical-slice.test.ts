@@ -32,6 +32,25 @@ const paymentService = new PaymentService();
 
 const STUB_CODE = '123456';
 const createdPhones: string[] = [];
+const createdTelegramIds: number[] = [];
+
+async function makeUserReadyForTelegram(input: {
+  userId: string;
+  telegramUserId: number;
+}): Promise<void> {
+  await paymentService.ensureUserLedgerWallets(input.userId);
+  const pinHash = await HashText.hash('1234');
+  await db.none(`UPDATE users SET transaction_pin = $2 WHERE user_id = $1`, [
+    input.userId,
+    pinHash,
+  ]);
+  await db.none(
+    `UPDATE four_telegram_links
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"introShown": true}'::jsonb
+      WHERE telegram_user_id = $1`,
+    [String(input.telegramUserId)]
+  );
+}
 
 function randomNgPhone(): string {
   const nsn = `80${crypto.randomInt(10_000_000, 99_999_999)}`;
@@ -85,6 +104,16 @@ describe('four: vertical slice', function () {
       await db.none(`DELETE FROM users WHERE phone_e164 = ANY($1::text[])`, [
         createdPhones,
       ]);
+    }
+    if (createdTelegramIds.length > 0) {
+      await db.none(
+        `DELETE FROM users
+          WHERE user_id IN (
+            SELECT user_id FROM four_telegram_links
+             WHERE telegram_user_id = ANY($1::bigint[])
+          )`,
+        [createdTelegramIds]
+      );
     }
   });
 
@@ -172,9 +201,10 @@ describe('four: vertical slice', function () {
     expect((intent?.slots as any).amount).to.equal(15000);
   });
 
-  it('processes Telegram webhook for linked users', async () => {
+  it('processes Telegram webhook for ready users', async () => {
     resetStubOutbound();
-    const { telegramUserId } = await createLinkedUser();
+    const { userId, telegramUserId } = await createLinkedUser();
+    await makeUserReadyForTelegram({ userId, telegramUserId });
 
     await processTelegramUpdate({
       update_id: 1,
@@ -191,22 +221,28 @@ describe('four: vertical slice', function () {
     expect(outbound[0].text.toLowerCase()).to.match(/balance|fund/);
   });
 
-  it('prompts unlinked Telegram users to verify', async () => {
+  it('welcomes new Telegram users without OTP', async () => {
     resetStubOutbound();
     const strangerId = crypto.randomInt(100_000_000, 999_999_999);
+    createdTelegramIds.push(strangerId);
 
     await processTelegramUpdate({
       update_id: 2,
       message: {
         message_id: 2,
-        from: { id: strangerId, first_name: 'Stranger' },
+        from: { id: strangerId, first_name: 'Kolawole' },
         chat: { id: strangerId, type: 'private' },
-        text: 'Hi',
+        text: 'Hey Four',
       },
     });
 
     const outbound = drainStubOutbound();
-    expect(outbound[0].text.toLowerCase()).to.include('link');
+    expect(outbound[0].text).to.include('Welcome to Four');
+    expect(outbound[0].text).to.include('Kolawole');
+    const keyboard = outbound[0].replyMarkup as {
+      inline_keyboard?: Array<Array<{ text?: string }>>;
+    };
+    expect(keyboard.inline_keyboard?.[0]?.[0]?.text).to.include('Create wallet');
   });
 
   it('rejects invalid PIN on authorize', async () => {
