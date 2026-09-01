@@ -113,9 +113,19 @@ export function miniAppUrl(options?: {
   const base = String(process.env.FOUR_TELEGRAM_MINI_APP_URL || '').trim();
   if (!base) return null;
 
+  if (options?.mode === 'setup') {
+    try {
+      const url = new URL(base);
+      url.pathname = '/setup-pin';
+      url.search = '';
+      return url.toString();
+    } catch {
+      return base.replace(/\/authorize\/?(\?.*)?$/, '/setup-pin');
+    }
+  }
+
   const params = new URLSearchParams();
   if (options?.intent) params.set('intent', options.intent);
-  if (options?.mode) params.set('mode', options.mode);
 
   const qs = params.toString();
   if (!qs) return base;
