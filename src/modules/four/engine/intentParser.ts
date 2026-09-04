@@ -351,6 +351,8 @@ function bankHintFromRemainder(trimmed: string, accountNumber: string): string {
   return trimmed
     .replace(accountNumber, '')
     .replace(/[,'"]/g, ' ')
+    // "Send to OPay 813…" → remainder may still include a stray "to"
+    .replace(/\bto\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -425,14 +427,36 @@ export function parseSendMessage(text: string): {
     return { amount, recipientName: dest.recipientName };
   }
 
+  // "Send to OPay 813120841" / "Send to Kola" — destination only (no amount before "to")
+  const sendToOnly = trimmed.match(/^send\s+to\s+(.+)$/i);
+  if (sendToOnly) {
+    const dest = parseDestinationPart(sendToOnly[1]);
+    if (dest.bankTarget) {
+      return { amount: null, recipientName: null, bankTarget: dest.bankTarget };
+    }
+    if (dest.recipientName) {
+      return { amount: null, recipientName: dest.recipientName };
+    }
+  }
+
   // Teen pattern: "Send Kola 5k" / "Send Kola ₦5,000" (name then amount, no "to")
   const nameThenAmount = trimmed.match(
     /^send\s+([a-z][a-z0-9 .'-]{0,40}?)\s+((?:₦|ngn\s*)?\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*k?|(?:₦|ngn\s*)?\d+(?:\.\d+)?\s*k?)\s*$/i
   );
   if (nameThenAmount) {
     const namePart = nameThenAmount[1].trim();
-    if (!/\d{7,}/.test(namePart) && !isLikelyBankNameOnlyForSend(namePart)) {
-      const amount = parseAmount(nameThenAmount[2]);
+    const amountRaw = nameThenAmount[2].trim();
+    const amountDigits = amountRaw.replace(/\D/g, '');
+    // Don't steal bank destinations: "Send to OPay 813120841" or "Send OPay 8131208415"
+    const amountLooksLikeAccount =
+      /^\d{7,10}$/.test(amountDigits) && !/[₦k]|ngn|,/i.test(amountRaw);
+    if (
+      !/^to\b/i.test(namePart) &&
+      !amountLooksLikeAccount &&
+      !/\d{7,}/.test(namePart) &&
+      !isLikelyBankNameOnlyForSend(namePart)
+    ) {
+      const amount = parseAmount(amountRaw);
       const dest = parseDestinationPart(namePart);
       if (!dest.bankTarget && dest.recipientName && amount != null) {
         return { amount, recipientName: dest.recipientName };

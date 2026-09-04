@@ -99,6 +99,40 @@ describe('four: intent parser', () => {
     }
   });
 
+  it('parses Send to OPay <account> without treating "to OPay" as a contact', () => {
+    for (const text of [
+      'Send to OPay 813120841',
+      'Send to OPay 8131208415',
+      'send to opay 8131277777',
+    ]) {
+      const parsed = parseUserMessage(text);
+      expect(parsed.kind, text).to.equal('send');
+      if (parsed.kind === 'send') {
+        expect(parsed.recipientName, text).to.equal(null);
+        expect(parsed.amount, text).to.equal(null);
+        expect(parsed.bankTarget?.bankHint, text).to.match(/^opay$/i);
+        expect(parsed.bankTarget?.accountNumber, text).to.match(/^\d{7,10}$/);
+      }
+    }
+
+    const incomplete = parseUserMessage('Send to OPay 813120841');
+    expect(incomplete.kind).to.equal('send');
+    if (incomplete.kind === 'send') {
+      expect(incomplete.bankTarget).to.deep.equal({
+        accountNumber: '813120841',
+        bankHint: 'OPay',
+        incomplete: true,
+      });
+    }
+  });
+
+  it('still parses Send Kola 5k as name-then-amount', () => {
+    const parsed = parseSendMessage('Send Kola 5k');
+    expect(parsed.amount).to.equal(5000);
+    expect(parsed.recipientName).to.equal('Kola');
+    expect(parsed.bankTarget).to.equal(undefined);
+  });
+
   it('parses destination follow-ups without treating them as amounts', () => {
     const dest = parseUserMessage('OPay 8131208415');
     expect(dest.kind).to.equal('destination_update');
