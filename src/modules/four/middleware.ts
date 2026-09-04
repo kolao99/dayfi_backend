@@ -9,6 +9,13 @@ import {
   validateTelegramWebAppInitData,
 } from './telegram/telegramWebAppAuth';
 import { FourError, isFourError } from './errors';
+import { validateMetaWebhookSignature } from './whatsapp/metaCloudProvider';
+import {
+  isMetaWhatsappProvider,
+  resolveWhatsappProvider,
+} from './whatsapp/whatsappProviderEnv';
+import { isWhatsappStubMode } from './whatsapp/whatsappClient';
+import { verifyWhatsappSecureToken } from './whatsapp/whatsappSecureToken';
 
 /**
  * Every /api/v1/four route except the two OTP endpoints runs behind this.
@@ -23,7 +30,7 @@ import { FourError, isFourError } from './errors';
 
 export type FourAuthContext = {
   userId: string;
-  authMethod: 'session' | 'telegram_webapp';
+  authMethod: 'session' | 'telegram_webapp' | 'whatsapp_secure';
   sessionId?: string;
   /** Raw bearer token, needed by logout to revoke this exact session. */
   token?: string;
@@ -108,6 +115,115 @@ export function requireTelegramWebhookSecret(
   return next();
 }
 
+/** Validate Twilio webhook signatures for WhatsApp inbound messages. */
+export function requireTwilioWhatsappWebhook(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): any {
+  if (isWhatsappStubMode()) return next();
+
+  const authToken = String(process.env.TWILIO_AUTH_TOKEN || '').trim();
+  if (!authToken) return next();
+
+  const signature = String(req.headers['x-twilio-signature'] || '');
+  if (!signature) {
+    console.warn('[four/whatsapp] webhook rejected: missing x-twilio-signature');
+    return errorResponse(res, 'Unauthorized.', enums.HTTP_UNAUTHORIZED);
+  }
+
+  const url = resolveTwilioWebhookUrl(req);
+  const params = twilioWebhookParams(req.body);
+
+  const valid = validateTwilioWebhookSignature({
+    authToken,
+    signature,
+    url,
+    params,
+  });
+
+  if (!valid) {
+    console.warn(
+      `[four/whatsapp] webhook signature invalid for url=${url} sid=${params.AccountSid ?? 'unknown'}`
+    );
+    return errorResponse(res, 'Unauthorized.', enums.HTTP_UNAUTHORIZED);
+  }
+
+  return next();
+}
+
+/** Validate Meta Cloud API webhook signatures (POST). */
+export function requireMetaWhatsappWebhook(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): any {
+  if (resolveWhatsappProvider() === 'stub') return next();
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  const bodyBuffer =
+    rawBody && rawBody.length
+      ? rawBody
+      : Buffer.from(JSON.stringify(req.body ?? {}));
+
+  const signature = String(req.headers['x-hub-signature-256'] || '');
+  if (
+    !validateMetaWebhookSignature(bodyBuffer, signature || undefined)
+  ) {
+    console.warn('[four/whatsapp] Meta webhook signature invalid or missing');
+    return errorResponse(res, 'Unauthorized.', enums.HTTP_UNAUTHORIZED);
+  }
+
+  return next();
+}
+
+/** POST webhook auth — Meta or Twilio depending on FOUR_WHATSAPP_PROVIDER. */
+export function requireWhatsappWebhookPost(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): any {
+  if (isMetaWhatsappProvider()) {
+    return requireMetaWhatsappWebhook(req, res, next);
+  }
+  return requireTwilioWhatsappWebhook(req, res, next);
+}
+
+function resolveTwilioWebhookUrl(req: Request): string {
+  const configured = String(process.env.FOUR_WHATSAPP_WEBHOOK_URL || '').trim();
+  if (configured) return configured.replace(/\/$/, '');
+
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https');
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
+  return `${proto}://${host}${req.originalUrl}`.replace(/\/$/, '');
+}
+
+function twilioWebhookParams(body: unknown): Record<string, string> {
+  const params: Record<string, string> = {};
+  for (const [key, value] of Object.entries(body ?? {})) {
+    if (value == null) continue;
+    params[key] = Array.isArray(value) ? String(value[0]) : String(value);
+  }
+  return params;
+}
+
+function validateTwilioWebhookSignature(input: {
+  authToken: string;
+  signature: string;
+  url: string;
+  params: Record<string, string>;
+}): boolean {
+  // Lazy import keeps middleware load light in tests.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Twilio = require('twilio') as typeof import('twilio');
+  return Twilio.validateRequest(
+    input.authToken,
+    input.signature,
+    input.url,
+    input.params
+  );
+}
+
 function readInitData(req: Request): string {
   const header = String(req.headers['x-telegram-init-data'] || '').trim();
   if (header) return header;
@@ -126,6 +242,16 @@ export async function requireFourSessionOrTelegramWebApp(
 ): Promise<any> {
   const token = bearerToken(req);
   if (token) {
+    const secure = verifyWhatsappSecureToken(token);
+    if (secure.ok) {
+      req.four = {
+        userId: secure.userId,
+        authMethod: 'whatsapp_secure',
+        token,
+      };
+      touchLastSeen(secure.userId).catch(() => undefined);
+      return next();
+    }
     return requireFourSession(req, res, next);
   }
 
@@ -176,7 +302,7 @@ export async function requireFourSessionOrTelegramWebApp(
     console.error('[four/middleware] telegram webapp auth failed', err);
     return errorResponse(
       res,
-      'Telegram verification failed. Please open this from Four in Telegram.',
+      'Telegram verification failed. Please open this from Azap in Telegram.',
       enums.HTTP_UNAUTHORIZED
     );
   }

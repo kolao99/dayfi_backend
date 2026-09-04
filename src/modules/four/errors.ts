@@ -76,9 +76,9 @@ const MESSAGE: Record<FourErrorCode, string> = {
   pin_mismatch: 'Those PINs do not match.',
   intent_not_found: 'That request was not found or has expired.',
   intent_invalid_state: 'That request is no longer ready to authorize.',
-  telegram_auth_invalid: 'Telegram verification failed. Please open this from Four in Telegram.',
+  telegram_auth_invalid: 'Telegram verification failed. Please open this from Azap in Telegram.',
   telegram_not_linked:
-    'Link your phone number to Four before authorizing payments.',
+    'Link your phone number to Azap before authorizing payments.',
   transfer_failed:
     "We couldn't complete that transfer. Your money wasn't sent.",
 };

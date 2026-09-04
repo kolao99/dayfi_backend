@@ -158,6 +158,19 @@ class FourValidator {
     });
     return this.validateBody(req, res, next, schema);
   };
+
+  verifyKycBvn = (req: Request, res: Response, next: NextFunction) => {
+    const schema = Joi.object({
+      bvn: Joi.string()
+        .trim()
+        .pattern(/^\d{11}$/)
+        .required()
+        .messages({ 'string.pattern.base': 'BVN must be exactly 11 digits' }),
+      firstName: Joi.string().trim().min(1).max(100).optional(),
+      lastName: Joi.string().trim().min(1).max(100).optional(),
+    });
+    return this.validateBody(req, res, next, schema);
+  };
 }
 
 export default new FourValidator();

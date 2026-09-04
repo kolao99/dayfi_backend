@@ -237,12 +237,14 @@ describe('four: vertical slice', function () {
     });
 
     const outbound = drainStubOutbound();
-    expect(outbound[0].text).to.include('Welcome to Four');
+    expect(outbound[0].text).to.include('Welcome to Azap');
+    expect(outbound[0].text).to.include('Azap by Dayfi');
     expect(outbound[0].text).to.include('Kolawole');
+    expect(outbound[0].text).to.not.match(/\bMONY\b/i);
     const keyboard = outbound[0].replyMarkup as {
-      inline_keyboard?: Array<Array<{ text?: string }>>;
+      keyboard?: Array<Array<{ text?: string }>>;
     };
-    expect(keyboard.inline_keyboard?.[0]?.[0]?.text).to.include('Create wallet');
+    expect(keyboard.keyboard?.[0]?.[0]?.text).to.include('Create wallet');
   });
 
   it('rejects invalid PIN on authorize', async () => {

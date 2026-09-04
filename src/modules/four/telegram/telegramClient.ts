@@ -108,7 +108,7 @@ export async function answerCallbackQuery(
 
 export function miniAppUrl(options?: {
   intent?: string;
-  mode?: 'setup' | 'authorize';
+  mode?: 'setup' | 'authorize' | 'kyc';
 }): string | null {
   const base = String(process.env.FOUR_TELEGRAM_MINI_APP_URL || '').trim();
   if (!base) return null;
@@ -121,6 +121,17 @@ export function miniAppUrl(options?: {
       return url.toString();
     } catch {
       return base.replace(/\/authorize\/?(\?.*)?$/, '/setup-pin');
+    }
+  }
+
+  if (options?.mode === 'kyc') {
+    try {
+      const url = new URL(base);
+      url.pathname = '/kyc';
+      url.search = '';
+      return url.toString();
+    } catch {
+      return base.replace(/\/authorize\/?(\?.*)?$/, '/kyc');
     }
   }
 

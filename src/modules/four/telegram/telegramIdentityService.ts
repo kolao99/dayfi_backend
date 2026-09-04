@@ -85,3 +85,9 @@ export async function getLinkMetadata(
   );
   return row?.metadata ?? {};
 }
+
+export async function markIntroShown(
+  telegramUserId: number | string
+): Promise<void> {
+  await updateLinkMetadata(telegramUserId, { introShown: true });
+}

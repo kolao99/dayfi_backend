@@ -9,14 +9,13 @@ import {
 import { executeBankSend, verifyUserPin } from '../finance/sendExecutor';
 import type { ResolvedRecipient } from '../finance/recipientResolver';
 import { formatMoney } from '../../payment/walletModel';
-import {
-  getLinkByUserId,
-} from '../telegram/telegramLinkService';
-import { sendTelegramMessage } from '../telegram/telegramClient';
+import { deliverAzapPush } from '../finance/azapNotifyService';
 
 const AUTHORIZABLE = new Set(['AWAITING_AUTHORIZATION']);
 
-export function sanitizeIntentForMiniApp(intent: ReturnType<typeof toPublicIntent>) {
+export function sanitizeIntentForMiniApp(
+  intent: ReturnType<typeof toPublicIntent>
+) {
   const slots = { ...(intent.slots as Record<string, unknown>) };
   const recipient = slots.recipient as Record<string, unknown> | undefined;
   if (recipient?.accountNumber) {
@@ -44,7 +43,7 @@ export async function authorizeIntentWithPin(input: {
   if (!AUTHORIZABLE.has(intent.status)) {
     throw new FourError('intent_invalid_state');
   }
-  if (intent.intent !== 'SEND_MONEY') {
+  if (intent.intent !== 'SEND_MONEY' && intent.intent !== 'SEND_CRYPTO' && intent.intent !== 'PAY_BILL' && intent.intent !== 'SEND_YC') {
     throw new FourError('intent_invalid_state');
   }
 
@@ -61,24 +60,80 @@ export async function authorizeIntentWithPin(input: {
     throw new FourError('pin_invalid');
   }
 
-  const slots = intent.slots as {
-    amount?: number;
-    currency?: string;
-    recipient?: ResolvedRecipient;
-  };
-
-  if (!slots.amount || !slots.recipient) {
-    throw new FourError('intent_invalid_state');
-  }
-
   await updateIntent(input.userId, intent.id, { status: 'PROCESSING' });
 
   try {
-    const execution = await executeBankSend({
-      userId: input.userId,
-      amount: Number(slots.amount),
-      recipient: slots.recipient,
-    });
+    let execution: { reference: string; message: string };
+
+    if (intent.intent === 'SEND_CRYPTO') {
+      const cryptoSlots = intent.slots as {
+        amount?: string;
+        asset?: string;
+        network?: string;
+        to?: string;
+      };
+      if (
+        !cryptoSlots.amount ||
+        !cryptoSlots.asset ||
+        !cryptoSlots.network ||
+        !cryptoSlots.to
+      ) {
+        throw new FourError('intent_invalid_state');
+      }
+      const { executeCryptoSendFromSlots } = await import(
+        '../finance/cryptoSendFlow'
+      );
+      const { recordCryptoOutboundLedger } = await import(
+        '../../payment/cryptoOutboundLedgerService'
+      );
+      const sent = await executeCryptoSendFromSlots({
+        userId: input.userId,
+        amount: String(cryptoSlots.amount),
+        asset: String(cryptoSlots.asset),
+        network: String(cryptoSlots.network),
+        to: String(cryptoSlots.to),
+      });
+      await recordCryptoOutboundLedger({
+        userId: input.userId,
+        amount: String(cryptoSlots.amount),
+        asset: String(cryptoSlots.asset),
+        network: String(cryptoSlots.network),
+        txHash: sent.hash,
+        to: String(cryptoSlots.to),
+        from: '',
+      });
+      execution = { reference: sent.hash, message: sent.message };
+    } else if (intent.intent === 'PAY_BILL') {
+      const { executeBillPayFromSlots } = await import(
+        '../finance/billPaymentFlow'
+      );
+      execution = await executeBillPayFromSlots({
+        userId: input.userId,
+        slots: intent.slots as Record<string, unknown>,
+      });
+    } else if (intent.intent === 'SEND_YC') {
+      const { executeYellowCardSendFromSlots } = await import(
+        '../finance/yellowCardSendFlow'
+      );
+      execution = await executeYellowCardSendFromSlots({
+        userId: input.userId,
+        slots: intent.slots as Record<string, unknown>,
+      });
+    } else {
+      const slots = intent.slots as {
+        amount?: number;
+        currency?: string;
+        recipient?: ResolvedRecipient;
+      };
+      if (!slots.amount || !slots.recipient) {
+        throw new FourError('intent_invalid_state');
+      }
+      execution = await executeBankSend({
+        userId: input.userId,
+        amount: Number(slots.amount),
+        recipient: slots.recipient,
+      });
+    }
 
     const completed = await updateIntent(input.userId, intent.id, {
       status: 'COMPLETED',
@@ -97,18 +152,15 @@ export async function authorizeIntentWithPin(input: {
       metadata: {
         intentId: intent.id,
         reference: execution.reference,
-        amount: slots.amount,
-        currency: slots.currency ?? 'NGN',
+        amount: (intent.slots as { amount?: unknown }).amount,
+        currency:
+          (intent.slots as { currency?: string; asset?: string }).currency ??
+          (intent.slots as { asset?: string }).asset ??
+          'NGN',
       },
     });
 
-    const link = await getLinkByUserId(input.userId);
-    if (link?.chat_id) {
-      await sendTelegramMessage({
-        chatId: link.chat_id,
-        text: execution.message,
-      });
-    }
+    await deliverAzapPush(input.userId, execution.message, { persist: false });
 
     return {
       intent: toPublicIntent(completed!),
@@ -123,7 +175,7 @@ export async function authorizeIntentWithPin(input: {
       },
     });
 
-    const message =
+    const rawMessage =
       err instanceof Error
         ? err.message
         : "The payment couldn't be completed. Please try again.";
@@ -133,22 +185,22 @@ export async function authorizeIntentWithPin(input: {
       conversationId: intent.conversation_id,
       role: 'assistant',
       type: 'error',
-      content: `❌ ${message}`,
+      content: `❌ ${rawMessage}`,
     });
 
-    const link = await getLinkByUserId(input.userId);
-    if (link?.chat_id) {
-      await sendTelegramMessage({
-        chatId: link.chat_id,
-        text: `❌ ${message}`,
-      });
-    }
+    await deliverAzapPush(input.userId, `❌ ${rawMessage}`, { persist: false });
 
-    throw new FourError('transfer_failed');
+    // Preserve provider/Dayfi reason for clients instead of a generic transfer_failed.
+    const fail = new FourError('transfer_failed');
+    (fail as Error & { cause?: unknown }).cause = err;
+    (fail as Error & { detail?: string }).detail = rawMessage;
+    throw Object.assign(fail, { message: rawMessage });
   }
 }
 
-export function buildReviewSummary(intent: ReturnType<typeof toPublicIntent>): string {
+export function buildReviewSummary(
+  intent: ReturnType<typeof toPublicIntent>
+): string {
   const slots = intent.slots as {
     amount?: number;
     currency?: string;

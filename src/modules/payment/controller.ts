@@ -14,9 +14,7 @@ import {
   usdLedgerBalance,
 } from './walletModel';
 import { normalizeRecipientPhone } from './recipientPhone';
-import {
-  buildYellowCardSendPartyFields,
-} from './yellowCardSender';
+import { buildYellowCardSendPartyFields } from './yellowCardSender';
 import {
   isYellowCardReceiveWebhookEvent,
   isYellowCardSendWebhookEvent,
@@ -227,9 +225,8 @@ class PaymentController {
       const user = req.user;
       const userId = user?.user_id as string;
 
-      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
-        userId
-      );
+      const walletsByCurrency =
+        await this.paymentService.ensureUserLedgerWallets(userId);
 
       // Only auto-provision when deposit addresses are missing (avoid Horizon on every balance load).
       const cryptoRow = await db.oneOrNone<{
@@ -241,7 +238,8 @@ class PaymentController {
         [userId]
       );
       const needsCryptoProvision =
-        !cryptoRow?.stellar_deposit_address || !cryptoRow?.ethereum_deposit_address;
+        !cryptoRow?.stellar_deposit_address ||
+        !cryptoRow?.ethereum_deposit_address;
       if (needsCryptoProvision) {
         try {
           await provisionCryptoWalletsForUser(userId);
@@ -256,13 +254,16 @@ class PaymentController {
         }
       }
 
-      let stellarSync: Awaited<ReturnType<typeof syncStellarInflowsToLedger>> | null =
-        null;
+      let stellarSync: Awaited<
+        ReturnType<typeof syncStellarInflowsToLedger>
+      > | null = null;
       let stellarDepositAddress: string | null = null;
 
       // Keep app balances in sync with inbound Stellar testnet/mainnet deposits.
       try {
-        const addrRow = await db.oneOrNone<{ stellar_deposit_address: string | null }>(
+        const addrRow = await db.oneOrNone<{
+          stellar_deposit_address: string | null;
+        }>(
           `SELECT stellar_deposit_address FROM wallets
            WHERE user_id = $1 AND currency = 'USD' LIMIT 1`,
           [userId]
@@ -278,7 +279,9 @@ class PaymentController {
           (stellarSync.processed > 0 && stellarSync.credited === 0)
         ) {
           console.warn(
-            `[getWalletDetails] stellar sync user=${userId} address=${stellarDepositAddress} ${JSON.stringify(stellarSync)}`
+            `[getWalletDetails] stellar sync user=${userId} address=${stellarDepositAddress} ${JSON.stringify(
+              stellarSync
+            )}`
           );
         }
       } catch (syncErr: unknown) {
@@ -296,7 +299,9 @@ class PaymentController {
         const repair = await repairUnreversedFailedYellowCardDebits(userId);
         if (repair.reversed > 0) {
           console.info(
-            `[getWalletDetails] reversed ${repair.reversed} failed YC debits ($${repair.totalUsd.toFixed(2)}) user=${userId}`
+            `[getWalletDetails] reversed ${
+              repair.reversed
+            } failed YC debits ($${repair.totalUsd.toFixed(2)}) user=${userId}`
           );
         }
       } catch (repairErr: unknown) {
@@ -307,9 +312,7 @@ class PaymentController {
         );
       }
 
-      const wallets = await this.paymentService.getWalletsByUserId(
-        userId
-      );
+      const wallets = await this.paymentService.getWalletsByUserId(userId);
 
       const totalUsd = usdLedgerBalance(wallets as any);
       const data = {
@@ -370,13 +373,13 @@ class PaymentController {
       const userRow = await db.oneOrNone<{
         first_name: string | null;
         last_name: string | null;
-      }>(
-        `SELECT first_name, last_name FROM users WHERE user_id = $1 LIMIT 1`,
-        [wallet.user_id]
-      );
+      }>(`SELECT first_name, last_name FROM users WHERE user_id = $1 LIMIT 1`, [
+        wallet.user_id,
+      ]);
 
-      const fullName =
-        `${userRow?.first_name ?? ''} ${userRow?.last_name ?? ''}`.trim();
+      const fullName = `${userRow?.first_name ?? ''} ${
+        userRow?.last_name ?? ''
+      }`.trim();
       const accountName =
         String(wallet.account_name ?? '').trim() || fullName || null;
 
@@ -406,7 +409,11 @@ class PaymentController {
       const wallet = (req as any).wallet;
       const recipient = await this.paymentService.getWalletByDayfiId(dayfiId);
       if (!recipient) {
-        return errorResponse(res, 'Recipient Dayfi tag not found', enums.HTTP_NOT_FOUND);
+        return errorResponse(
+          res,
+          'Recipient Dayfi tag not found',
+          enums.HTTP_NOT_FOUND
+        );
       }
 
       const currency = String(
@@ -477,10 +484,11 @@ class PaymentController {
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const status =
-        /insufficient|invalid|flutterwave|bank code|account/i.test(msg)
-          ? enums.HTTP_BAD_REQUEST
-          : enums.HTTP_INTERNAL_SERVER_ERROR;
+      const status = /insufficient|invalid|flutterwave|bank code|account/i.test(
+        msg
+      )
+        ? enums.HTTP_BAD_REQUEST
+        : enums.HTTP_INTERNAL_SERVER_ERROR;
       return errorResponse(res, msg, status);
     }
   };
@@ -552,11 +560,7 @@ class PaymentController {
       const limitNum = Math.max(1, Math.min(200, Number(limit)));
       const offset = (Math.max(1, Number(page)) - 1) * limitNum;
 
-      const result = await listSavedRecipients(
-        user?.user_id,
-        limitNum,
-        offset
-      );
+      const result = await listSavedRecipients(user?.user_id, limitNum, offset);
 
       return success(
         res,
@@ -593,11 +597,7 @@ class PaymentController {
         recipient
       );
     } catch (err: any) {
-      return errorResponse(
-        res,
-        err.message,
-        enums.HTTP_UNPROCESSABLE_ENTITY
-      );
+      return errorResponse(res, err.message, enums.HTTP_UNPROCESSABLE_ENTITY);
     }
   };
 
@@ -706,9 +706,14 @@ class PaymentController {
     }
   };
 
-  getWalletExchangeRates = async (_req: Request, res: Response): Promise<void> => {
+  getWalletExchangeRates = async (
+    _req: Request,
+    res: Response
+  ): Promise<void> => {
     try {
-      const { getWalletExchangeRateMatrix } = await import('./fxRateSyncService');
+      const { getWalletExchangeRateMatrix } = await import(
+        './fxRateSyncService'
+      );
       const matrix = await getWalletExchangeRateMatrix();
       success(res, 'Wallet exchange rates', enums.HTTP_OK, matrix);
     } catch (err: any) {
@@ -843,29 +848,38 @@ class PaymentController {
   };
 
   /** Feature flags + Yellow Card readiness for mobile (stablecoin top-up, etc.). */
-  getPaymentCapabilities = async (_req: Request, res: Response): Promise<any> => {
+  getPaymentCapabilities = async (
+    _req: Request,
+    res: Response
+  ): Promise<any> => {
     try {
       const yellowCardReady = this.yellowCardService.isConfigured();
       const greyReady = this.greyService.isConfigured();
       const stablecoinTopup =
         Boolean(
-          (config as { STABLECOIN_TOPUP_ENABLED?: boolean }).STABLECOIN_TOPUP_ENABLED
+          (config as { STABLECOIN_TOPUP_ENABLED?: boolean })
+            .STABLECOIN_TOPUP_ENABLED
         ) && yellowCardReady;
 
-      return success(res, enums.FETCHED_SUCCESSFULLY('Payment capabilities'), enums.HTTP_OK, {
-        primaryCurrency: PRIMARY_CURRENCY,
-        stablecoinTopup,
-        yellowCardReady,
-        greyReady,
-        fincraReady: false,
-        stellarDeposits: Boolean(process.env.WALLET_ENCRYPTION_KEY),
-        investmentPocket: true,
-        receiveUsBank: true,
-        receiveCrypto: true,
-        localSpendNgn: true,
-        tapToPay: false,
-        virtualNairaCard: false,
-      });
+      return success(
+        res,
+        enums.FETCHED_SUCCESSFULLY('Payment capabilities'),
+        enums.HTTP_OK,
+        {
+          primaryCurrency: PRIMARY_CURRENCY,
+          stablecoinTopup,
+          yellowCardReady,
+          greyReady,
+          fincraReady: false,
+          stellarDeposits: Boolean(process.env.WALLET_ENCRYPTION_KEY),
+          investmentPocket: true,
+          receiveUsBank: true,
+          receiveCrypto: true,
+          localSpendNgn: true,
+          tapToPay: false,
+          virtualNairaCard: false,
+        }
+      );
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
@@ -1164,8 +1178,7 @@ class PaymentController {
       currency: 'USD',
       transfer: {
         dayfi_to_dayfi: 0,
-        dayfi_to_bank:
-          Number.isFinite(feeUsd) && feeUsd >= 0 ? feeUsd : 0.05,
+        dayfi_to_bank: Number.isFinite(feeUsd) && feeUsd >= 0 ? feeUsd : 0.05,
       },
       withdrawal: { local: 0, international: 0 },
     });
@@ -1264,7 +1277,11 @@ class PaymentController {
         [sequenceId, userId]
       );
       if (!row) {
-        return errorResponse(res, 'Transaction not found', enums.HTTP_NOT_FOUND);
+        return errorResponse(
+          res,
+          'Transaction not found',
+          enums.HTTP_NOT_FOUND
+        );
       }
       return success(
         res,
@@ -1309,7 +1326,10 @@ class PaymentController {
     }
   };
 
-  getWalletProvisionStatus = async (req: Request, res: Response): Promise<any> => {
+  getWalletProvisionStatus = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
     try {
       const user = req.user;
       const { jobId } = req.params;
@@ -1332,7 +1352,10 @@ class PaymentController {
     }
   };
 
-  getWalletRecoveryPhrase = async (req: Request, res: Response): Promise<any> => {
+  getWalletRecoveryPhrase = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
     try {
       const userId = req.user?.user_id as string;
       const mnemonic = await getRecoveryMnemonicForUser(userId);
@@ -1365,7 +1388,8 @@ class PaymentController {
       const user = req.user;
       await this.paymentService.ensureUserLedgerWallets(user?.user_id);
       const accountName =
-        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() || 'Dayfi User';
+        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() ||
+        'Dayfi User';
       const usdVa = await this.greyService.ensureVirtualAccount({
         userId: user?.user_id,
         currency: 'USD',
@@ -1401,7 +1425,8 @@ class PaymentController {
       const user = req.user;
       await this.paymentService.ensureUserLedgerWallets(user?.user_id);
       const accountName =
-        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() || 'Dayfi User';
+        `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() ||
+        'Dayfi User';
       const currencies: Array<'USD' | 'EUR' | 'GBP' | 'NGN'> = [
         'USD',
         'GBP',
@@ -1417,7 +1442,9 @@ class PaymentController {
           })
         )
       );
-      const wallets = await this.paymentService.getWalletsByUserId(user?.user_id);
+      const wallets = await this.paymentService.getWalletsByUserId(
+        user?.user_id
+      );
       const accounts = formatGreyAccountsList(accountsRaw, wallets as any);
       const totalUsd = usdLedgerBalance(wallets as any);
 
@@ -1459,7 +1486,10 @@ class PaymentController {
   };
 
   /** PRD: POST /wallets/add/fiat/ngn — Flutterwave VA on NGN wallet */
-  provisionNgnFiatAccount = async (req: Request, res: Response): Promise<any> => {
+  provisionNgnFiatAccount = async (
+    req: Request,
+    res: Response
+  ): Promise<any> => {
     try {
       const user = req.user;
       if (!user?.user_id) {
@@ -1520,7 +1550,9 @@ class PaymentController {
 
       const payload = parseFlutterwaveDepositWebhook(body);
       if (!payload) {
-        console.warn('[flutterwaveWebhook] ignored payload (not a successful charge)');
+        console.warn(
+          '[flutterwaveWebhook] ignored payload (not a successful charge)'
+        );
         return res.status(200).json({ received: true, ignored: true });
       }
 
@@ -1545,6 +1577,19 @@ class PaymentController {
         payload.amount,
         result.duplicate
       );
+      if (!result.duplicate && result.userId) {
+        const { deliverAzapPush } = await import(
+          '../four/finance/azapNotifyService'
+        );
+        const { formatMoney } = await import('./walletModel');
+        void deliverAzapPush(
+          result.userId,
+          `Your ${formatMoney(
+            payload.amount,
+            'NGN'
+          )} bank transfer has arrived.`
+        );
+      }
 
       return res.status(200).json({
         received: true,
@@ -1561,9 +1606,8 @@ class PaymentController {
   getCryptoBalances = async (req: Request, res: Response): Promise<any> => {
     try {
       const userId = req.user?.user_id as string;
-      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
-        userId
-      );
+      const walletsByCurrency =
+        await this.paymentService.ensureUserLedgerWallets(userId);
       await provisionCryptoWalletsForUser(userId);
 
       try {
@@ -1594,9 +1638,8 @@ class PaymentController {
   syncCryptoInflows = async (req: Request, res: Response): Promise<any> => {
     try {
       const userId = req.user?.user_id as string;
-      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
-        userId
-      );
+      const walletsByCurrency =
+        await this.paymentService.ensureUserLedgerWallets(userId);
       await provisionCryptoWalletsForUser(userId);
 
       const sync = await syncAllCryptoInflowsToLedger({
@@ -1606,15 +1649,10 @@ class PaymentController {
       const wallets = await this.paymentService.getWalletsByUserId(userId);
       const totalUsd = usdLedgerBalance(wallets as any);
 
-      return success(
-        res,
-        'Crypto inflows synced',
-        enums.HTTP_OK,
-        {
-          sync,
-          walletDetails: await formatPrdWalletDetails(wallets as any, totalUsd),
-        }
-      );
+      return success(res, 'Crypto inflows synced', enums.HTTP_OK, {
+        sync,
+        walletDetails: await formatPrdWalletDetails(wallets as any, totalUsd),
+      });
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
@@ -1655,12 +1693,10 @@ class PaymentController {
         from: result.from,
       });
 
-      return success(
-        res,
-        'Crypto transfer submitted',
-        enums.HTTP_OK,
-        { ...result, ledger }
-      );
+      return success(res, 'Crypto transfer submitted', enums.HTTP_OK, {
+        ...result,
+        ledger,
+      });
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
     }
@@ -1670,11 +1706,10 @@ class PaymentController {
     try {
       const user = req.user;
       const userId = user?.user_id as string;
-      const walletsByCurrency = await this.paymentService.ensureUserLedgerWallets(
-        userId
-      );
+      const walletsByCurrency =
+        await this.paymentService.ensureUserLedgerWallets(userId);
 
-      let row = await db.oneOrNone<{
+      const row = await db.oneOrNone<{
         stellar_deposit_address: string | null;
         ethereum_deposit_address: string | null;
       }>(
@@ -1722,8 +1757,16 @@ class PaymentController {
       enums.HTTP_OK,
       {
         options: [
-          { id: 'us_bank', label: 'US Bank Account', path: '/payments/receive/us-bank' },
-          { id: 'crypto', label: 'USDC Wallet', path: '/payments/receive/crypto' },
+          {
+            id: 'us_bank',
+            label: 'US Bank Account',
+            path: '/payments/receive/us-bank',
+          },
+          {
+            id: 'crypto',
+            label: 'USDC Wallet',
+            path: '/payments/receive/crypto',
+          },
         ],
       }
     );
@@ -1821,12 +1864,9 @@ class PaymentController {
   ): Promise<any> => {
     try {
       await acceptInvestmentRisk(req.user?.user_id);
-      return success(
-        res,
-        'Risk disclosure accepted',
-        enums.HTTP_OK,
-        { accepted: true }
-      );
+      return success(res, 'Risk disclosure accepted', enums.HTTP_OK, {
+        accepted: true,
+      });
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_INTERNAL_SERVER_ERROR);
     }
@@ -1844,12 +1884,7 @@ class PaymentController {
         name: String(name || '').trim(),
         idempotencyKey,
       });
-      return success(
-        res,
-        'Funds invested successfully',
-        enums.HTTP_OK,
-        result
-      );
+      return success(res, 'Funds invested successfully', enums.HTTP_OK, result);
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
     }
@@ -1890,12 +1925,7 @@ class PaymentController {
         amount: Number(amount),
         idempotencyKey,
       });
-      return success(
-        res,
-        'Withdrawal successful',
-        enums.HTTP_OK,
-        result
-      );
+      return success(res, 'Withdrawal successful', enums.HTTP_OK, result);
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
     }
@@ -2013,12 +2043,7 @@ class PaymentController {
         withdrawAll: withdrawAll === true,
         idempotencyKey,
       });
-      return success(
-        res,
-        'Withdrawal successful',
-        enums.HTTP_OK,
-        result
-      );
+      return success(res, 'Withdrawal successful', enums.HTTP_OK, result);
     } catch (err: any) {
       return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
     }
@@ -2051,14 +2076,22 @@ class PaymentController {
         this.greyService.isConfigured() &&
         !this.greyService.verifyWebhookSignature(raw, signature)
       ) {
-        return errorResponse(res, 'Invalid webhook signature', enums.HTTP_UNAUTHORIZED);
+        return errorResponse(
+          res,
+          'Invalid webhook signature',
+          enums.HTTP_UNAUTHORIZED
+        );
       }
 
       const parsed = this.greyService.parseCollectionWebhook(
         req.body as Record<string, unknown>
       );
       if (!parsed) {
-        return errorResponse(res, 'Invalid webhook payload', enums.HTTP_BAD_REQUEST);
+        return errorResponse(
+          res,
+          'Invalid webhook payload',
+          enums.HTTP_BAD_REQUEST
+        );
       }
 
       const target = String(parsed.currency).toUpperCase();
@@ -2071,7 +2104,9 @@ class PaymentController {
         parsed.reference
       );
 
-      return res.status(200).json({ received: true, duplicate: result.duplicate });
+      return res
+        .status(200)
+        .json({ received: true, duplicate: result.duplicate });
     } catch (err: any) {
       console.error('Grey webhook error:', err.message);
       return res.status(500).json({ error: err.message });

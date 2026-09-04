@@ -6,10 +6,7 @@ import {
   resolveEurcIssuer,
   resolveUsdcIssuer,
 } from '../../config/stellarIssuers';
-import {
-  buildIdempotencyKey,
-  creditWalletBalance,
-} from './balanceService';
+import { buildIdempotencyKey, creditWalletBalance } from './balanceService';
 import { convertAmountToUsd } from './fxService';
 
 type WalletRef = {
@@ -54,11 +51,79 @@ function pickRef(record: Record<string, unknown>): string {
   );
 }
 
+/**
+ * Horizon payment ids look like `19347126861451265`.
+ * Effect ids look like `0019347126861451265-0000000001` (same op, padded).
+ */
+function normalizeHorizonOperationId(id: unknown): string | null {
+  const raw = String(id || '').trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    try {
+      return BigInt(raw).toString();
+    } catch {
+      return raw.replace(/^0+/, '') || '0';
+    }
+  }
+  const m = raw.match(/^0*(\d+)-\d+$/);
+  if (m) {
+    try {
+      return BigInt(m[1]).toString();
+    } catch {
+      return m[1].replace(/^0+/, '') || '0';
+    }
+  }
+  return null;
+}
+
+/** Prefer shared Horizon operation id so payment + effect collapse to one credit. */
+function pickInflowIdempotencyRef(record: Record<string, unknown>): string {
+  const assetType = String(record.asset_type || '').toLowerCase();
+  const assetCode =
+    assetType === 'native'
+      ? 'XLM'
+      : String(record.asset_code || '').toUpperCase();
+  const amount = toAmount(record.amount);
+
+  const opId = normalizeHorizonOperationId(record.id);
+  if (opId) {
+    return `op:${opId}:${assetCode}:${amount}`;
+  }
+
+  const txHash = String(record.transaction_hash || '').trim().toLowerCase();
+  if (/^[a-f0-9]{64}$/.test(txHash)) {
+    return `tx:${txHash}:${assetCode}:${amount}`;
+  }
+
+  return pickRef(record);
+}
+
+/** All dedup keys for an inflow record (op + tx) so either form skips the other. */
+function inflowDedupKeys(record: Record<string, unknown>): string[] {
+  const assetType = String(record.asset_type || '').toLowerCase();
+  const assetCode =
+    assetType === 'native'
+      ? 'XLM'
+      : String(record.asset_code || '').toUpperCase();
+  const amount = toAmount(record.amount);
+  const keys: string[] = [];
+
+  const opId = normalizeHorizonOperationId(record.id);
+  if (opId) keys.push(`op:${opId}:${assetCode}:${amount}`);
+
+  const txHash = String(record.transaction_hash || '').trim().toLowerCase();
+  if (/^[a-f0-9]{64}$/.test(txHash)) {
+    keys.push(`tx:${txHash}:${assetCode}:${amount}`);
+  }
+
+  if (!keys.length) keys.push(pickRef(record));
+  return keys;
+}
+
 function isKnownStablecoinPayment(rec: Record<string, unknown>): boolean {
   const assetType = String(rec.asset_type || '').toLowerCase();
-  const assetCode = assetType === 'native'
-    ? 'XLM'
-    : String(rec.asset_code || '').toUpperCase();
+  const assetCode =
+    assetType === 'native' ? 'XLM' : String(rec.asset_code || '').toUpperCase();
   if (assetCode !== 'USDC' && assetCode !== 'EURC') return false;
 
   const issuer = String(rec.asset_issuer || '').trim();
@@ -130,6 +195,57 @@ export async function syncStellarInflowsToLedger(params: {
       .order('desc')
       .call();
     records = (page.records as unknown as Record<string, unknown>[]) || [];
+
+    const paymentTxHashes = new Set(
+      records
+        .map((r) => String(r.transaction_hash || '').trim().toLowerCase())
+        .filter((h) => /^[a-f0-9]{64}$/.test(h))
+    );
+
+    // Soroban/SAC USDC may credit the classic trustline without a classic
+    // `payment` op. Also ingest matching `account_credited` effects.
+    try {
+      const effectsPage = await server
+        .effects()
+        .forAccount(address)
+        .limit(200)
+        .order('desc')
+        .call();
+      for (const effect of (effectsPage.records as unknown as Record<
+        string,
+        unknown
+      >[]) || []) {
+        if (String(effect.type || '').toLowerCase() !== 'account_credited') {
+          continue;
+        }
+        const effectTx = String(effect.transaction_hash || '')
+          .trim()
+          .toLowerCase();
+        // Already covered by a classic payment for this tx — do not double-ingest.
+        if (effectTx && paymentTxHashes.has(effectTx)) {
+          continue;
+        }
+        records.push({
+          type: 'payment',
+          to: address,
+          from: '', // unknown counterparty for SAC; do not self-skip
+          amount: effect.amount,
+          asset_type: effect.asset_type,
+          asset_code: effect.asset_code,
+          asset_issuer: effect.asset_issuer,
+          transaction_hash: effect.transaction_hash || '',
+          id: effect.id,
+          paging_token: effect.paging_token,
+          created_at: effect.created_at,
+        });
+      }
+    } catch (effectErr: unknown) {
+      const msg =
+        effectErr instanceof Error ? effectErr.message : String(effectErr);
+      console.warn(
+        `[syncStellarInflows] effects fetch failed user=${userId}: ${msg}`
+      );
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
@@ -140,6 +256,8 @@ export async function syncStellarInflowsToLedger(params: {
     result.errors.push(`horizon: ${msg}`);
     return result;
   }
+
+  const seenRefs = new Set<string>();
 
   for (const rec of records) {
     if (String(rec.type || '').toLowerCase() !== 'payment') continue;
@@ -152,9 +270,10 @@ export async function syncStellarInflowsToLedger(params: {
     if (!isKnownStablecoinPayment(rec)) continue;
 
     const assetType = String(rec.asset_type || '').toLowerCase();
-    const assetCode = assetType === 'native'
-      ? 'XLM'
-      : String(rec.asset_code || '').toUpperCase();
+    const assetCode =
+      assetType === 'native'
+        ? 'XLM'
+        : String(rec.asset_code || '').toUpperCase();
 
     const amount = toAmount(rec.amount);
     if (amount <= 0) {
@@ -169,7 +288,14 @@ export async function syncStellarInflowsToLedger(params: {
       continue;
     }
 
-    const reference = `stellar-in:${pickRef(rec)}`;
+    const dedupKeys = inflowDedupKeys(rec);
+    if (dedupKeys.some((k) => seenRefs.has(k))) {
+      result.skipped += 1;
+      continue;
+    }
+    for (const k of dedupKeys) seenRefs.add(k);
+
+    const reference = `stellar-in:${pickInflowIdempotencyRef(rec)}`;
     const idempotencyKey = buildIdempotencyKey('stellar', reference);
 
     let usdEquivalent = amount;
@@ -212,6 +338,15 @@ export async function syncStellarInflowsToLedger(params: {
         duplicate: credit.duplicate,
         reference,
       });
+      if (!credit.duplicate) {
+        const { deliverAzapPush } = await import(
+          '../four/finance/azapNotifyService'
+        );
+        void deliverAzapPush(
+          userId,
+          `Your ${amount} ${assetCode} deposit has arrived.`
+        );
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(

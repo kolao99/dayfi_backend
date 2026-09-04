@@ -34,9 +34,12 @@ export function resolveUsdcIssuer(isTestnet = isStellarTestnet()): string {
 }
 
 export function resolveEurcIssuer(isTestnet = isStellarTestnet()): string {
-  const fromEnv = process.env.STELLAR_EURC_ISSUER?.trim() || process.env.EURC_ISSUER?.trim();
+  const fromEnv =
+    process.env.STELLAR_EURC_ISSUER?.trim() || process.env.EURC_ISSUER?.trim();
   const fallback = isTestnet ? TESTNET_EURC_ISSUER : MAINNET_EURC_ISSUER;
   if (!fromEnv || !isValidIssuerKey(fromEnv)) return fallback;
+  if (isTestnet && fromEnv === MAINNET_EURC_ISSUER) return TESTNET_EURC_ISSUER;
+  if (!isTestnet && fromEnv === TESTNET_EURC_ISSUER) return MAINNET_EURC_ISSUER;
   return fromEnv;
 }
 

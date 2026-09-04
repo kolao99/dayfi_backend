@@ -1,7 +1,7 @@
 import express from 'express';
 import fourController from './controller';
 import fourValidator from './validator';
-import { requireFourSession, requireFourSessionOrTelegramWebApp, requireTelegramWebhookSecret } from './middleware';
+import { requireFourSession, requireFourSessionOrTelegramWebApp, requireTelegramWebhookSecret, requireWhatsappWebhookPost } from './middleware';
 
 /**
  * Four API — mounted at /api/v1/four.
@@ -101,6 +101,14 @@ fourRouter.post(
   fourController.telegramWebhook
 );
 
+fourRouter.get('/whatsapp/webhook', fourController.whatsappWebhookVerify);
+
+fourRouter.post(
+  '/whatsapp/webhook',
+  requireWhatsappWebhookPost,
+  fourController.whatsappWebhook
+);
+
 fourRouter.post(
   '/telegram/link',
   requireFourSession,
@@ -126,6 +134,19 @@ fourRouter.post(
   requireFourSessionOrTelegramWebApp,
   fourValidator.setupPin,
   fourController.setupPin
+);
+
+fourRouter.get(
+  '/kyc/status',
+  requireFourSessionOrTelegramWebApp,
+  fourController.getKycStatus
+);
+
+fourRouter.post(
+  '/kyc/verify-bvn',
+  requireFourSessionOrTelegramWebApp,
+  fourValidator.verifyKycBvn,
+  fourController.verifyKycBvn
 );
 
 export { fourRouter };

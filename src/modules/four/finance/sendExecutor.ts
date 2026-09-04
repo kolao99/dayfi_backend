@@ -5,6 +5,7 @@ import { LOCAL_SPEND_CURRENCY } from '../../payment/walletModel';
 import { estimateTransferFeeNgn } from './balanceService';
 import type { ResolvedRecipient } from './recipientResolver';
 import { resolveBankName } from './recipientResolver';
+import { buildKycProfileSnapshot } from '../../kyc/smileService';
 
 export async function verifyUserPin(
   userId: string,
@@ -23,6 +24,11 @@ export async function executeBankSend(input: {
   amount: number;
   recipient: ResolvedRecipient;
 }): Promise<{ reference: string; message: string }> {
+  const kyc = await buildKycProfileSnapshot(input.userId);
+  if (!kyc.canSendMoney) {
+    throw new Error('Complete verification before sending NGN.');
+  }
+
   const fee = await estimateTransferFeeNgn();
   const bankName = await resolveBankName(input.recipient.bankCode);
 

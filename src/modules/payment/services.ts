@@ -164,14 +164,28 @@ class PaymentService {
         bankName: String(data?.bank_name ?? ''),
       };
     } catch (error: any) {
-      const fwMsg =
+      const fwMsg = String(
         error?.response?.data?.message ||
-        error?.response?.data?.data?.complete_message ||
-        error.message;
-      console.error('Error resolving bank account:', fwMsg);
-      throw new Error(
-        'Unable to verify account details at this time. Please try again.'
+          error?.response?.data?.data?.complete_message ||
+          error.message ||
+          ''
       );
+      console.error('Error resolving bank account:', fwMsg);
+      const err = new Error(
+        'Unable to verify account details at this time. Please try again.'
+      ) as Error & {
+        flutterwaveMessage?: string;
+        bankResolveKind?: 'invalid' | 'unavailable';
+      };
+      err.flutterwaveMessage = fwMsg;
+      const lower = fwMsg.toLowerCase();
+      err.bankResolveKind =
+        /invalid account|account number|could not be found|does not exist|no account/i.test(
+          lower
+        )
+          ? 'invalid'
+          : 'unavailable';
+      throw err;
     }
   }
 

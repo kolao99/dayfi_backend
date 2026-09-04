@@ -27,6 +27,10 @@ import {
 } from './conversation/messageService';
 import { linkTelegramUser } from './telegram/telegramLinkService';
 import { processTelegramUpdate } from './telegram/telegramWebhookService';
+import { processWhatsappWebhook, processMetaWhatsappWebhook } from './whatsapp/whatsappWebhookService';
+import { buildTwimlResponse } from './whatsapp/whatsappReplyContext';
+import { verifyMetaWebhookSubscribe } from './whatsapp/metaCloudProvider';
+import { isMetaWhatsappProvider } from './whatsapp/whatsappProviderEnv';
 import {
   authorizeIntentWithPin,
   buildReviewSummary,
@@ -36,6 +40,10 @@ import {
   toMiniAppReview,
 } from './intent/miniAppService';
 import { setupTransactionPin } from './security/pinSetupService';
+import {
+  getFourKycStatus,
+  verifyBvnFromFour,
+} from './security/kycVerifyService';
 
 /**
  * Four API controller — auth, conversations, Telegram vertical slice.
@@ -347,6 +355,37 @@ class FourController {
     }
   };
 
+  /** GET /api/v1/four/whatsapp/webhook — Meta webhook verification */
+  whatsappWebhookVerify = (req: Request, res: Response): any => {
+    const result = verifyMetaWebhookSubscribe(
+      req.query as Record<string, unknown>
+    );
+    if (result.ok) {
+      return res.status(200).type('text/plain').send(result.challenge);
+    }
+    console.warn(`[four/whatsapp] Meta verify failed: ${result.reason}`);
+    return res.status(403).type('text/plain').send('Forbidden');
+  };
+
+  /** POST /api/v1/four/whatsapp/webhook — Twilio or Meta WhatsApp inbound */
+  whatsappWebhook = async (req: Request, res: Response): Promise<any> => {
+    try {
+      if (isMetaWhatsappProvider()) {
+        void processMetaWhatsappWebhook(req.body).catch((err) => {
+          console.error('[four/whatsapp] Meta inbound handler failed', err);
+        });
+        return res.status(200).type('text/plain').send('EVENT_RECEIVED');
+      }
+
+      const result = await processWhatsappWebhook(req.body);
+      res.status(enums.HTTP_OK);
+      res.type('text/xml');
+      return res.send(buildTwimlResponse(result.twimlBodies ?? []));
+    } catch (err) {
+      return fail(res, err, 'whatsappWebhook');
+    }
+  };
+
   /** POST /api/v1/four/telegram/link — after phone OTP in Mini App */
   linkTelegram = async (req: Request, res: Response): Promise<any> => {
     try {
@@ -407,6 +446,42 @@ class FourController {
       return success(res, 'PIN secured.', enums.HTTP_OK, { ok: true });
     } catch (err) {
       return fail(res, err, 'setupPin');
+    }
+  };
+
+  /** GET /api/v1/four/kyc/status — Mini App KYC status surface */
+  getKycStatus = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const snapshot = await getFourKycStatus(req.four!.userId);
+      // Tell the frontend if name fields are needed for BVN verification
+      const user = await getUserById(req.four!.userId);
+      const nameNeeded =
+        !String(user?.first_name ?? '').trim() ||
+        !String(user?.last_name ?? '').trim();
+      return success(res, 'KYC status.', enums.HTTP_OK, {
+        ...snapshot,
+        nameNeeded,
+      });
+    } catch (err) {
+      return fail(res, err, 'getKycStatus');
+    }
+  };
+
+  /** POST /api/v1/four/kyc/verify-bvn — delegates to existing Dayfi KYC service */
+  verifyKycBvn = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const result = await verifyBvnFromFour({
+        userId: req.four!.userId,
+        bvn: String(req.body.bvn),
+        firstName: req.body.firstName ? String(req.body.firstName) : undefined,
+        lastName: req.body.lastName ? String(req.body.lastName) : undefined,
+      });
+      return success(res, 'BVN verified.', enums.HTTP_OK, result);
+    } catch (err) {
+      if (err instanceof Error && err.message) {
+        return errorResponse(res, err.message, enums.HTTP_BAD_REQUEST);
+      }
+      return fail(res, err, 'verifyKycBvn');
     }
   };
 }

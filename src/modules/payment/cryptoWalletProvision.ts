@@ -267,7 +267,9 @@ async function isCryptoFullyProvisioned(userId: string): Promise<boolean> {
   }
 }
 
-const USER_FUNDING_AMOUNT_XLM = '1';
+/** Base reserve + buffer for fees; trustlines are master-sponsored when possible. */
+const USER_FUNDING_AMOUNT_XLM = '1.5';
+const USER_FUNDING_AMOUNT_XLM_MAX = 1.5;
 
 function resolveFundingAmountXlm(): string {
   const raw =
@@ -278,8 +280,8 @@ function resolveFundingAmountXlm(): string {
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return USER_FUNDING_AMOUNT_XLM;
   }
-  // Never send more than 1 XLM to a user's Stellar deposit address.
-  return Math.min(parsed, 1).toString();
+  // Cap per-user createAccount funding (activation + fee buffer).
+  return Math.min(parsed, USER_FUNDING_AMOUNT_XLM_MAX).toString();
 }
 
 const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -361,20 +363,44 @@ async function getMasterNativeBalanceXlm(): Promise<number | null> {
 }
 
 /** Minimum XLM master must hold to fund one new user (createAccount + sponsored trustlines). */
-function estimateXlmRequiredForProvision(): number {
+export function estimateXlmRequiredForProvision(): number {
   const funding = parseFloat(resolveFundingAmountXlm());
   const trustlineCount = buildReceiveTrustlineAssets().length;
   const sponsorReserves = trustlineCount * STELLAR_BASE_RESERVE_XLM;
   const fees = 0.05;
+  // funding (to user) + sponsor locks on master + operational buffer + fee pad
   return funding + sponsorReserves + STELLAR_BASE_RESERVE_XLM + fees;
 }
 
-async function assertMasterCanFundProvision(): Promise<void> {
-  if (isStellarTestnet()) return;
+export type CryptoProvisionErrorCode =
+  | 'MASTER_LIQUIDITY_INSUFFICIENT'
+  | 'MASTER_WALLET_NOT_CONFIGURED'
+  | 'STELLAR_PROVIDER_ERROR'
+  | 'WALLET_PROVISIONING_ERROR'
+  | 'TIMEOUT';
 
+export class CryptoProvisionError extends Error {
+  readonly code: CryptoProvisionErrorCode;
+  constructor(code: CryptoProvisionErrorCode, message: string) {
+    super(message);
+    this.name = 'CryptoProvisionError';
+    this.code = code;
+  }
+}
+
+async function assertMasterCanFundProvision(): Promise<void> {
   const masterKeypair = resolveMasterKeypair();
   if (!masterKeypair) {
-    throw new Error(
+    // Testnet may fall back to friendbot for createAccount when master is unset,
+    // but sponsored trustlines require master — fail closed for production-grade path.
+    if (isStellarTestnet()) {
+      throw new CryptoProvisionError(
+        'MASTER_WALLET_NOT_CONFIGURED',
+        'Stellar master wallet is not configured for sponsored trustline provisioning'
+      );
+    }
+    throw new CryptoProvisionError(
+      'MASTER_WALLET_NOT_CONFIGURED',
       'Mainnet requires MASTER_WALLET_PUBLIC_KEY and MASTER_WALLET_SECRET_KEY to fund new Stellar accounts'
     );
   }
@@ -382,13 +408,17 @@ async function assertMasterCanFundProvision(): Promise<void> {
   const balance = await getMasterNativeBalanceXlm();
   const required = estimateXlmRequiredForProvision();
   if (balance === null) {
-    throw new Error('Could not read Stellar master wallet balance from Horizon');
+    throw new CryptoProvisionError(
+      'STELLAR_PROVIDER_ERROR',
+      'Could not read Stellar master wallet balance from Horizon'
+    );
   }
   if (balance < required) {
-    throw new Error(
+    const network = isStellarTestnet() ? 'testnet' : 'mainnet';
+    throw new CryptoProvisionError(
+      'MASTER_LIQUIDITY_INSUFFICIENT',
       `Stellar master wallet (${masterKeypair.publicKey()}) has ${balance.toFixed(2)} XLM ` +
-        `but needs ~${required.toFixed(2)} XLM to provision one user. ` +
-        'Send XLM to the master wallet on mainnet and retry.'
+        `but needs ~${required.toFixed(2)} XLM liquidity gate to provision one user on ${network}.`
     );
   }
 }
@@ -519,7 +549,11 @@ async function addSponsoredTrustline(
         source: userPublicKey,
       })
     )
-    .addOperation(StellarSdk.Operation.endSponsoringFutureReserves())
+    .addOperation(
+      StellarSdk.Operation.endSponsoringFutureReserves({
+        source: userPublicKey,
+      })
+    )
     .setTimeout(60)
     .build();
 
@@ -560,7 +594,7 @@ async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
     if (nativeBalance < 0.5) {
       throw new Error(
         `Insufficient XLM (${nativeBalance}) on ${userPublicKey} to pay trustline fees. ` +
-          'Configure MASTER_WALLET_* to sponsor trustlines when STELLAR_FUNDING_AMOUNT_XLM=1.'
+          'Configure MASTER_WALLET_* to sponsor USDC/EURC trustlines when funding is ~1.5 XLM.'
       );
     }
 
@@ -584,16 +618,52 @@ async function addReceiveTrustlines(stellarSecret: string): Promise<void> {
 
 async function runProvisionWork(uid: string): Promise<void> {
   await ensureUsdWalletRow(uid);
+  // Persist Dayfi deposit key material first so EVM addresses can be returned
+  // even when Stellar master funding is temporarily unavailable.
+  await ensureCryptoKeyMaterial(uid);
+
   if (await isCryptoFullyProvisioned(uid)) {
     return;
   }
 
   await assertMasterCanFundProvision();
 
-  const { stellarPublic, stellarSecret } = await ensureCryptoKeyMaterial(uid);
+  const row = await loadWalletRow(uid);
+  const stellarSecret = row?.stellar_secret_encrypted
+    ? decryptSecret(String(row.stellar_secret_encrypted))
+    : null;
+  const stellarPublic = String(row?.stellar_deposit_address || '').trim();
+  if (!stellarPublic || !stellarSecret) {
+    throw new Error('Crypto wallet keys were not persisted');
+  }
 
   await fundStellarAccount(stellarPublic);
   await addReceiveTrustlines(stellarSecret);
+}
+
+const PROVISION_HARD_TIMEOUT_MS = 90_000;
+
+function raceWithTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
 }
 
 /** Serialize provision attempts per user (concurrent HTTP calls share one chain). */
@@ -603,32 +673,79 @@ function queueProvisionForUser(uid: string): Promise<void> {
     .catch(() => {
       // Prior attempt failed; still allow this queued run to retry idempotently.
     })
-    .then(() => runProvisionWork(uid));
+    .then(() =>
+      raceWithTimeout(
+        runProvisionWork(uid),
+        PROVISION_HARD_TIMEOUT_MS,
+        'crypto wallet provision work'
+      )
+    );
   provisionLocks.set(uid, next);
-  void next.finally(() => {
-    if (provisionLocks.get(uid) === next) {
-      provisionLocks.delete(uid);
-    }
-  });
+  // Always attach a no-op catch so a rejected lock never becomes an
+  // unhandledRejection that can interrupt WhatsApp reply delivery.
+  void next
+    .catch((err) => {
+      console.warn(
+        '[cryptoWalletProvision] provision failed',
+        err instanceof Error ? err.message : String(err)
+      );
+    })
+    .finally(() => {
+      if (provisionLocks.get(uid) === next) {
+        provisionLocks.delete(uid);
+      }
+    });
   return next;
 }
 
-/** Idempotent: create Stellar + ETH wallets, fund testnet, add USDC/EURC trustlines. */
+/** Persisted Dayfi deposit addresses only — never invents keys. */
+export async function getPersistedCryptoDepositAddresses(
+  userId: string
+): Promise<{ stellar: string | null; evm: string | null }> {
+  const row = await loadWalletRow(String(userId || '').trim());
+  return {
+    stellar: String(row?.stellar_deposit_address || '').trim() || null,
+    evm: String(row?.ethereum_deposit_address || '').trim() || null,
+  };
+}
+
+/** Idempotent: create Stellar + ETH wallets, fund, add USDC/EURC trustlines. */
 export async function provisionCryptoWalletsForUser(userId: string): Promise<{
   stellarAddress: string;
   ethereumAddress: string;
 }> {
   const uid = String(userId || '').trim();
-  if (!uid) throw new Error('Invalid user id');
+  if (!uid) {
+    throw new CryptoProvisionError(
+      'WALLET_PROVISIONING_ERROR',
+      'Invalid user id'
+    );
+  }
 
-  await queueProvisionForUser(uid);
+  try {
+    await queueProvisionForUser(uid);
+  } catch (err) {
+    if (err instanceof CryptoProvisionError) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/timed out/i.test(msg)) {
+      throw new CryptoProvisionError('TIMEOUT', msg);
+    }
+    if (/Horizon|friendbot|Request failed|status code/i.test(msg)) {
+      throw new CryptoProvisionError('STELLAR_PROVIDER_ERROR', msg);
+    }
+    throw new CryptoProvisionError('WALLET_PROVISIONING_ERROR', msg);
+  }
 
   const row = await loadWalletRow(uid);
   if (!row?.stellar_deposit_address || !row?.ethereum_deposit_address) {
-    throw new Error('Crypto wallet provisioning did not persist addresses');
+    throw new CryptoProvisionError(
+      'WALLET_PROVISIONING_ERROR',
+      'Crypto wallet provisioning did not persist addresses'
+    );
   }
   if (!(await isCryptoFullyProvisioned(uid))) {
-    throw new Error(
+    throw new CryptoProvisionError(
+      'WALLET_PROVISIONING_ERROR',
       'Crypto wallet provisioning incomplete. Trustlines may still be pending — retry shortly.'
     );
   }
@@ -636,6 +753,11 @@ export async function provisionCryptoWalletsForUser(userId: string): Promise<{
     stellarAddress: row.stellar_deposit_address,
     ethereumAddress: row.ethereum_deposit_address,
   };
+}
+
+/** True when Dayfi wallet keys exist and Stellar receive trustlines are live on the configured network. */
+export async function isUserCryptoWalletReady(userId: string): Promise<boolean> {
+  return isCryptoFullyProvisioned(String(userId || '').trim());
 }
 
 function setJob(jobId: string, patch: Partial<JobRecord>) {

@@ -504,9 +504,25 @@ export function listCryptoNetworks(asset?: string) {
       ? receive.filter((n) => n.assets.map(String).includes(a))
       : receive
     ).filter((n) =>
-      ['stellar', 'ethereum', 'bsc', 'arbitrum'].includes(n.key)
+      [
+        'stellar',
+        'ethereum',
+        'bsc',
+        'arbitrum',
+        'mantle',
+        'sonic',
+        'xdc',
+      ].includes(n.key)
     ),
-    topKeys: ['stellar', 'ethereum', 'bsc', 'arbitrum'],
+    topKeys: [
+      'stellar',
+      'ethereum',
+      'bsc',
+      'arbitrum',
+      'mantle',
+      'sonic',
+      'xdc',
+    ],
     depositConfigured: {
       stellar: Boolean(stellar),
       evm: Boolean(evm),

@@ -2,10 +2,24 @@ import { db } from '../../../config/database';
 import HashText from '../../../shared/services/hashing';
 import { FourError } from '../errors';
 import { getUserById } from '../auth/identityService';
-import { getLinkByUserId } from '../telegram/telegramLinkService';
+import { getLinkByUserId as getTelegramLinkByUserId } from '../telegram/telegramLinkService';
 import { sendTelegramMessage } from '../telegram/telegramClient';
-import { pinSecuredMessage } from '../telegram/onboardingService';
-import { sendCapabilitiesIntro } from '../telegram/telegramRouter';
+import {
+  CAPABILITY_BUTTONS,
+  capabilitiesIntro,
+  pinSecuredMessage,
+} from '../telegram/onboardingService';
+import { sendCapabilitiesIntro as sendTelegramCapabilitiesIntro } from '../telegram/telegramRouter';
+import {
+  getLinkByUserId as getWhatsappLinkByUserId,
+  updateLinkMetadata,
+} from '../whatsapp/whatsappLinkService';
+import { sendWhatsappMessage } from '../whatsapp/whatsappClient';
+import {
+  createConversation,
+  getLatestConversation,
+} from '../conversation/conversationService';
+import { deliverWhatsappReplies } from '../whatsapp/whatsappDelivery';
 
 export async function setupTransactionPin(input: {
   userId: string;
@@ -33,21 +47,49 @@ export async function setupTransactionPin(input: {
     [input.userId, hashed]
   );
 
-  const link = await getLinkByUserId(input.userId);
-  if (link?.chat_id) {
+  const telegramLink = await getTelegramLinkByUserId(input.userId);
+  if (telegramLink?.chat_id) {
     await sendTelegramMessage({
-      chatId: link.chat_id,
+      chatId: telegramLink.chat_id,
       text: '🚀 Securing your account 🔐...',
     });
     await sendTelegramMessage({
-      chatId: link.chat_id,
+      chatId: telegramLink.chat_id,
       text: pinSecuredMessage(),
     });
-    await sendCapabilitiesIntro(
-      link.chat_id,
+    await sendTelegramCapabilitiesIntro(
+      telegramLink.chat_id,
       input.userId,
-      link.telegram_user_id
+      telegramLink.telegram_user_id
     );
+  }
+
+  const whatsappLink = await getWhatsappLinkByUserId(input.userId);
+  if (whatsappLink?.whatsapp_phone_e164) {
+    const phone = whatsappLink.whatsapp_phone_e164;
+    await updateLinkMetadata(phone, {
+      pinSetupStep: null,
+      pinSetupDraft: null,
+      introShown: true,
+    });
+    await sendWhatsappMessage({
+      toPhoneE164: phone,
+      text: pinSecuredMessage(),
+    });
+
+    let conversation = await getLatestConversation(input.userId);
+    if (!conversation) {
+      conversation = await createConversation(input.userId, 'WhatsApp');
+    }
+    await deliverWhatsappReplies(phone, input.userId, conversation.id, [
+      {
+        role: 'assistant',
+        type: 'choice',
+        content: capabilitiesIntro(),
+        buttons: CAPABILITY_BUTTONS.map((b) => ({ ...b })),
+        scope: 'capability',
+      },
+    ]);
   }
 
   return { ok: true };

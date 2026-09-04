@@ -1,11 +1,18 @@
 import { db } from '../../../config/database';
 
-export type IntentName = 'BALANCE' | 'SEND_MONEY';
+export type IntentName =
+  | 'BALANCE'
+  | 'SEND_MONEY'
+  | 'FUND_CRYPTO'
+  | 'SEND_CRYPTO'
+  | 'PAY_BILL'
+  | 'SEND_YC';
 
 export type IntentStatus =
   | 'COLLECTING_INFORMATION'
   | 'AWAITING_CONFIRMATION'
   | 'AWAITING_AUTHORIZATION'
+  | 'AWAITING_DEPOSIT'
   | 'PROCESSING'
   | 'COMPLETED'
   | 'FAILED'
