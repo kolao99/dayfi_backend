@@ -219,13 +219,37 @@ export function pinSecuredMessage(): string {
   );
 }
 
+const SOFT_GREETINGS: Array<(name: string) => string> = [
+  (name) =>
+    `Hey there${name ? `, ${name}` : ''}! 😊 I'm here to help with your money needs. Send /menu to see everything I can do for you!`,
+  (name) =>
+    `Hey${name ? ` ${name}` : ''}! 👋 What can I help you with today? Send /menu anytime to see what I can do.`,
+  () =>
+    `Yoo! 😄 I'm here. Need to send money, fund your wallet, buy airtime, pay a bill, or check your balance? Try /menu.`,
+  (name) =>
+    `Hey there${name ? ` ${name}` : ''} 👋 Good to see you! Just tell me what you need, or send /menu to explore.`,
+  () =>
+    `Hi! 😊 I'm Azap. Tell me what you need and I'll help you sort it out. You can also send /menu to see my options.`,
+];
+
+let _greetingIndex = 0;
+
+/**
+ * Soft returning greeting — does NOT dump the transaction menu.
+ * Rotates through a few short, human variants.
+ */
 export function returningGreeting(firstName: string): string {
-  return (
-    `Hey ${firstName}! What would you like Azap to help with?\n\n` +
-    '• Send ₦5,000 to Kola\n' +
-    '• Fund my wallet\n' +
-    '• Check my balance'
-  );
+  const name = String(firstName || '').trim();
+  const safe =
+    name && !/^(there|friend|user)$/i.test(name) ? name.split(/\s+/)[0] : '';
+  const fn = SOFT_GREETINGS[_greetingIndex % SOFT_GREETINGS.length];
+  _greetingIndex = (_greetingIndex + 1) % SOFT_GREETINGS.length;
+  return fn(safe);
+}
+
+/** Test helper — reset greeting rotation. */
+export function resetGreetingRotationForTests(): void {
+  _greetingIndex = 0;
 }
 
 export function menuMessage(): string {

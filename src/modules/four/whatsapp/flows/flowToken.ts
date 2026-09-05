@@ -2,7 +2,9 @@ import crypto from 'crypto';
 
 type FlowTokenPayload = {
   u: string;
-  p: 'pin_setup' | 'pin_auth';
+  p: 'pin_setup' | 'pin_auth' | 'bill';
+  /** Bill category when p === 'bill' */
+  c?: string;
   e: number;
 };
 
@@ -31,7 +33,8 @@ function b64urlDecode(value: string): Buffer {
 
 export function createWhatsappFlowToken(input: {
   userId: string;
-  purpose?: 'pin_setup' | 'pin_auth';
+  purpose?: 'pin_setup' | 'pin_auth' | 'bill';
+  category?: string;
   ttlSeconds?: number;
 }): string {
   const payload: FlowTokenPayload = {
@@ -39,6 +42,9 @@ export function createWhatsappFlowToken(input: {
     p: input.purpose ?? 'pin_setup',
     e: Math.floor(Date.now() / 1000) + (input.ttlSeconds ?? 3600),
   };
+  if (input.purpose === 'bill' && input.category) {
+    payload.c = String(input.category).toUpperCase();
+  }
   const encoded = b64url(JSON.stringify(payload));
   const sig = b64url(
     crypto.createHmac('sha256', signingSecret()).update(encoded).digest()
@@ -49,7 +55,12 @@ export function createWhatsappFlowToken(input: {
 export function verifyWhatsappFlowToken(
   token: string
 ):
-  | { ok: true; userId: string; purpose: 'pin_setup' | 'pin_auth' }
+  | {
+      ok: true;
+      userId: string;
+      purpose: 'pin_setup' | 'pin_auth' | 'bill';
+      category?: string;
+    }
   | { ok: false; reason: string } {
   const raw = String(token || '').trim();
   const [encoded, signature] = raw.split('.', 2);
@@ -75,10 +86,19 @@ export function verifyWhatsappFlowToken(
     if (!payload.u || !payload.e || payload.e < Math.floor(Date.now() / 1000)) {
       return { ok: false, reason: 'expired_or_invalid' };
     }
-    if (payload.p !== 'pin_setup' && payload.p !== 'pin_auth') {
+    if (
+      payload.p !== 'pin_setup' &&
+      payload.p !== 'pin_auth' &&
+      payload.p !== 'bill'
+    ) {
       return { ok: false, reason: 'bad_purpose' };
     }
-    return { ok: true, userId: payload.u, purpose: payload.p };
+    return {
+      ok: true,
+      userId: payload.u,
+      purpose: payload.p,
+      category: payload.c,
+    };
   } catch {
     return { ok: false, reason: 'bad_payload' };
   }

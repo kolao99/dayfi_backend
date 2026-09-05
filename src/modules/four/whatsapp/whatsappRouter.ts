@@ -31,8 +31,13 @@ import {
 } from './whatsappPinSetupFlow';
 import { beginCryptoFunding } from '../finance/cryptoDepositFlow';
 import { beginNgnBankFunding } from '../finance/fiatFundingFlow';
+import { detectBillCategory } from '../finance/billPaymentFlow';
 import { getActiveIntentForConversation } from '../intent/intentService';
 import { handleAzapUtterance } from '../../azap/core/azapCore';
+import {
+  billFlowIntro,
+  sendWhatsappBillFlow,
+} from './flows/sendBillFlow';
 import { formatCapabilityMenu } from '../../azap/capabilities/registry';
 import { getCryptoNetwork } from '../../../config/cryptoNetworks';
 
@@ -126,6 +131,48 @@ async function withTypingPulse<T>(
     return await work();
   } finally {
     clearInterval(timer);
+  }
+}
+
+/**
+ * Prefer Meta Bill Flow; fall back to conversational BillsService collection.
+ * Same backend either way — Flow is presentation only.
+ */
+async function tryOfferBillFlow(input: {
+  phoneE164: string;
+  userId: string;
+  conversationId: string;
+  text: string;
+}): Promise<boolean> {
+  const category = detectBillCategory(input.text);
+  if (!category) return false;
+
+  try {
+    await sendWhatsappBillFlow({
+      toPhoneE164: input.phoneE164,
+      userId: input.userId,
+      category,
+      bodyText: billFlowIntro(category),
+    });
+    await appendMessage({
+      userId: input.userId,
+      conversationId: input.conversationId,
+      role: 'assistant',
+      type: 'text',
+      content: billFlowIntro(category),
+      metadata: {
+        source: 'whatsapp_flow_offer',
+        category,
+        channel: 'whatsapp',
+      },
+    });
+    return true;
+  } catch (err) {
+    console.warn(
+      '[azap/flow] bill Flow send failed; using chat collection',
+      err instanceof Error ? err.message : err
+    );
+    return false;
   }
 }
 
@@ -244,6 +291,13 @@ async function executeButtonAction(input: {
     }
 
     if (action === 'cap_airtime') {
+      const offered = await tryOfferBillFlow({
+        phoneE164: input.phoneE164,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        text: 'Buy airtime',
+      });
+      if (offered) return;
       const result = await handleUserText({
         userId: input.userId,
         conversationId: input.conversationId,
@@ -261,6 +315,13 @@ async function executeButtonAction(input: {
     }
 
     if (action === 'cap_bills') {
+      const offered = await tryOfferBillFlow({
+        phoneE164: input.phoneE164,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        text: 'Buy data',
+      });
+      if (offered) return;
       const result = await handleUserText({
         userId: input.userId,
         conversationId: input.conversationId,
@@ -490,6 +551,19 @@ async function processUserUtterance(input: {
           },
         ]
       );
+      return;
+    }
+
+    // NL bill → Meta Flow handoff (falls back to chat BillsService collection).
+    if (
+      detectBillCategory(input.text) &&
+      (await tryOfferBillFlow({
+        phoneE164: input.phoneE164,
+        userId: input.userId,
+        conversationId: conversation.id,
+        text: input.text,
+      }))
+    ) {
       return;
     }
 

@@ -120,13 +120,24 @@ async function handleMetaInboundMessage(
       const { handleWhatsappPinFlowCompletion } = await import(
         './flows/handlePinFlowCompletion'
       );
-      const handled = await handleWhatsappPinFlowCompletion({
+      const pinHandled = await handleWhatsappPinFlowCompletion({
         phoneE164: normalized.e164,
         userId: session.user.user_id,
         flowToken: inbound.flowReply.flowToken,
         response: inbound.flowReply.response,
       });
-      if (handled) return;
+      if (pinHandled) return;
+
+      const { handleWhatsappBillFlowCompletion } = await import(
+        './flows/handleBillFlowCompletion'
+      );
+      const billHandled = await handleWhatsappBillFlowCompletion({
+        phoneE164: normalized.e164,
+        userId: session.user.user_id,
+        flowToken: inbound.flowReply.flowToken,
+        response: inbound.flowReply.response,
+      });
+      if (billHandled) return;
     }
 
     const firstName =

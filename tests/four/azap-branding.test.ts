@@ -11,6 +11,7 @@ import {
   walletReadyMessage,
   pinSecuredMessage,
   returningGreeting,
+  resetGreetingRotationForTests,
   menuMessage,
   capabilitiesIntro,
 } from '../../src/modules/four/telegram/onboardingService';
@@ -51,7 +52,6 @@ describe('azap branding', () => {
       welcomeMessage('Kola', 'whatsapp'),
       walletReadyMessage(),
       pinSecuredMessage(),
-      returningGreeting('Kola'),
       menuMessage(),
       capabilitiesIntro(),
     ];
@@ -71,5 +71,16 @@ describe('azap branding', () => {
     const text = walletCreatingMessage();
     expect(text.toLowerCase()).to.include('creating your wallet');
     expect(text).to.not.match(/\bMONY\b/i);
+  });
+
+  it('soft greetings do not dump the transaction menu', () => {
+    resetGreetingRotationForTests();
+    for (let i = 0; i < 5; i++) {
+      const text = returningGreeting('Kola');
+      expect(text.toLowerCase()).to.match(/hey|hi|yoo|hello/);
+      expect(text).to.not.include('Send ₦5,000 to Kola');
+      expect(text).to.not.include('Fund my wallet');
+      expect(text.toLowerCase()).to.include('menu');
+    }
   });
 });

@@ -47,8 +47,23 @@ If health shows `141010 The Business has not passed business verification`, fini
 
 Redeploy / restart the API container after updating env.
 
-### Manual alternative (Meta UI)
+## Bill Flows (airtime / data / electricity / TV / internet)
 
-1. WhatsApp Manager → Flows → Create  
-2. Paste JSON from `AZAP_PIN_SETUP_FLOW_JSON` (static, no endpoint)  
-3. Publish → copy Flow ID into `META_WHATSAPP_PIN_FLOW_ID`
+Same `BillsService` as conversational bills. Flow is presentation only.
+
+| Piece | Detail |
+| --- | --- |
+| Flow JSON | `src/modules/four/whatsapp/flows/billFlowJson.ts` |
+| Send | `sendWhatsappBillFlow` — NL “Buy airtime” → Flow CTA |
+| Complete | `nfm_reply` → `handleWhatsappBillFlowCompletion` → PAY_BILL review/PIN |
+| Fallback | If Flow send fails (e.g. 139000), chat collection via `beginBillPayment` |
+
+```bash
+npx ts-node -r dotenv/config scripts/publish-azap-bill-flows.ts
+```
+
+Set `META_WHATSAPP_FLOW_*_ID` + `META_WHATSAPP_BILL_FLOW_MODE=draft` until publish is allowed.
+
+## Soft greetings
+
+`returningGreeting` rotates soft variants and points users to `/menu` — it does **not** dump Send/Fund/Balance bullets.
