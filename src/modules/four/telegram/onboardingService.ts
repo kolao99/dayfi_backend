@@ -194,6 +194,14 @@ export function welcomeMessage(
   );
 }
 
+/** Immediate ack while ledger + crypto addresses are provisioned (can take several seconds). */
+export function walletCreatingMessage(): string {
+  return (
+    "On it — creating your wallet now…\n" +
+    "This usually takes a few seconds while we set up your balance and deposit addresses."
+  );
+}
+
 export function walletReadyMessage(): string {
   const brand = assistantName();
   return (

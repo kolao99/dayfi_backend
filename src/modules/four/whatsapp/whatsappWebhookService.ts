@@ -103,10 +103,12 @@ async function handleMetaInboundMessage(
     return;
   }
 
-  // Show "Azap is typing…" immediately while we process the reply.
-  void sendMetaTypingIndicator(inbound.messageId).catch((err) => {
+  // Show "Azap is typing…" before any work so button taps aren't a blank wait.
+  try {
+    await sendMetaTypingIndicator(inbound.messageId);
+  } catch (err) {
     console.warn('[four/whatsapp] typing indicator error', err);
-  });
+  }
 
   try {
     const session = await resolveWhatsappSession({

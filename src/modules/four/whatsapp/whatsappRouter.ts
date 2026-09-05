@@ -17,6 +17,7 @@ import {
   ONBOARDING_BUTTONS,
   returningGreeting,
   transferPrompt,
+  walletCreatingMessage,
   walletReadyMessage,
   welcomeMessage,
   type ChoiceButton,
@@ -98,6 +99,36 @@ async function markWhatsappIntroShown(phoneE164: string): Promise<void> {
   await updateLinkMetadata(phoneE164, { introShown: true });
 }
 
+async function pulseTyping(inboundMessageId?: string): Promise<void> {
+  const messageId = String(inboundMessageId || '').trim();
+  if (!messageId) return;
+  try {
+    const { sendMetaTypingIndicator } = await import('./metaCloudProvider');
+    await sendMetaTypingIndicator(messageId);
+  } catch (err) {
+    console.warn(
+      '[four/whatsapp] typing pulse failed',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+/** Keep WhatsApp "…" visible during long work (Meta typing lasts ~25s). */
+async function withTypingPulse<T>(
+  inboundMessageId: string | undefined,
+  work: () => Promise<T>
+): Promise<T> {
+  await pulseTyping(inboundMessageId);
+  const timer = setInterval(() => {
+    void pulseTyping(inboundMessageId);
+  }, 15_000);
+  try {
+    return await work();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 async function executeButtonAction(input: {
   phoneE164: string;
   userId: string;
@@ -105,12 +136,28 @@ async function executeButtonAction(input: {
   scope: string;
   button: ChoiceButton;
   firstName?: string;
+  inboundMessageId?: string;
 }): Promise<void> {
   const { scope, button } = input;
   const action = button.id;
 
   if (scope === 'onboard' && action === 'create_wallet') {
-    await createUserWallet(input.userId);
+    // Immediate ack so the chat isn't blank while Stellar/EVM provision runs.
+    await deliverWhatsappReplies(
+      input.phoneE164,
+      input.userId,
+      input.conversationId,
+      [
+        {
+          role: 'assistant',
+          type: 'text',
+          content: walletCreatingMessage(),
+        },
+      ]
+    );
+    await withTypingPulse(input.inboundMessageId, () =>
+      createUserWallet(input.userId)
+    );
     const setupUrl = whatsappSecureUrl({
       mode: 'setup',
       userId: input.userId,
@@ -399,6 +446,7 @@ async function processUserUtterance(input: {
       scope: buttonMatch.scope,
       button: buttonMatch.button,
       firstName: input.firstName,
+      inboundMessageId: input.inboundMessageId,
     });
     return;
   }

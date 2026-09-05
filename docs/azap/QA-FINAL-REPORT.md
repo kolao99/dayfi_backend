@@ -1,8 +1,9 @@
 # Azap QA Final Report — FULL PASS blockers (live)
 
-**Date:** 2026-09-04  
+**Date:** 2026-09-05  
 **Environment:** Production VPS `api.dayfi.co` + Stellar Testnet + live Flutterwave/YC APIs  
-**CEO WhatsApp:** `+2348131208415` (`DAYFI-986738`)
+**CEO WhatsApp:** `+2348131208415`  
+**Meta Flows:** Still **139000** (App Review in progress) — not blocking conversational money paths.
 
 ---
 
@@ -11,11 +12,11 @@
 | Blocker | Status now | Evidence |
 |---------|------------|----------|
 | `test:four-engine` | **PASS** | Docker up; **14/14** green |
-| FLW bill pay (each category) | **BLOCKED externally** | Ran live on VPS. Flutterwave merchant wallet **NGN available_balance = 0** → every VAS pay returns *Insufficient funds in your wallet* (FLW merchant, not user). Catalog works (5 categories, airtime billers OK). |
-| YC GHS/KES/ZAR on WhatsApp | **WIRED (LIVE adapter)** | `SEND_YC` → Yellow Card channels/networks → quote → PIN. KES bank channel **active**; GH bank often **inactive** on YC (honest message). Deployed. |
-| Full 14yo journey on WhatsApp | **PARTIAL PASS** | Drove Meta path `routeWhatsappText` for CEO phone (Hey, balance, naira, fund, KES send, tx, swap). Replies pushed to WhatsApp. Live bill **money** failed only because FLW merchant float is empty. |
+| FLW bill pay (each category) | **BLOCKED externally** | Flutterwave merchant **NGN available_balance = 0** (rechecked 2026-09-05). Catalog + Azap PAY_BILL path live; settle fails until float funded. |
+| YC GHS/KES/ZAR on WhatsApp | **WIRED (LIVE adapter)** | `SEND_YC` → channels → quote → PIN. |
+| Full 14yo journey on WhatsApp | **PARTIAL PASS** | Chat + CTA PIN work. Native Flows blocked Meta. Create-wallet blank wait **fixed** (immediate ack + typing pulse). |
 
-**Overall: NOT FULL PASS** — Azap code paths for these features are live on WhatsApp; **Flutterwave merchant NGN float must be funded** before bill money can succeed.
+**Overall: NOT FULL PASS** — need FLW merchant NGN float + Meta Flow approval for native sheets. Conversational pipeline is the go-live path while waiting.
 
 ---
 

@@ -7,6 +7,7 @@ import {
 } from '../../src/modules/four/brand';
 import {
   welcomeMessage,
+  walletCreatingMessage,
   walletReadyMessage,
   pinSecuredMessage,
   returningGreeting,
@@ -64,5 +65,11 @@ describe('azap branding', () => {
     }
 
     expect(welcomeMessage('Kola')).to.include('Azap by Dayfi');
+  });
+
+  it('acks immediately while creating a wallet', () => {
+    const text = walletCreatingMessage();
+    expect(text.toLowerCase()).to.include('creating your wallet');
+    expect(text).to.not.match(/\bMONY\b/i);
   });
 });

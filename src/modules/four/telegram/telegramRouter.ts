@@ -22,6 +22,7 @@ import {
   ONBOARDING_BUTTONS,
   transferPrompt,
   returningGreeting,
+  walletCreatingMessage,
   walletReadyMessage,
   welcomeMessage,
   type ChoiceButton,
@@ -227,6 +228,19 @@ async function executeButtonAction(input: {
   const action = button.id;
 
   if (scope === 'onboard' && action === 'create_wallet') {
+    await deliverReplies(
+      input.chatId,
+      input.userId,
+      input.conversationId,
+      [
+        {
+          role: 'assistant',
+          type: 'text',
+          content: walletCreatingMessage(),
+        },
+      ],
+      { clearKeyboard: true }
+    );
     await createUserWallet(input.userId);
     await deliverReplies(
       input.chatId,

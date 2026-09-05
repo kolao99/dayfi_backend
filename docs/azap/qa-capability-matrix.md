@@ -43,7 +43,7 @@ NGN / GHS / KES / ZAR / etc. are **display and interaction currencies** (valuati
 | Capability | Provider | Dayfi service | Azap entry | KYC | PIN | Notes | Azap status | Test status |
 |---|---|---|---|---|---|---|---|---|
 | NGN bank transfer | Flutterwave | `PaymentService.bankTransfer` · `executeBankSend` | SEND_MONEY / “Send Kola ₦5k” / “sell USDC” → send | Yes | Yes | Debits USDC equivalent; recipient gets NGN | LIVE | PARTIAL |
-| African corridors (YC) | Yellow Card | `POST /payments/send/yellowcard` | — | Yes | App PIN | SendHome path | HTTP | NOT STARTED |
+| African corridors (YC) | Yellow Card | `yellowCardSendFlow` · `SEND_YC` · authorize | “Send Kola KES 2k” / GHS/ZAR when channel active | Yes | Yes | Honest refuse when YC channel inactive | WIRE / LIVE (KES bank often active) | PARTIAL |
 | Crypto send USDC/EURC | Stellar / EVM | `cryptoSendService` · `continueCryptoSend` | SEND_CRYPTO | No | Yes | Address validation | LIVE | PARTIAL |
 | Saved recipients | Dayfi DB | `savedRecipientService` | Name resolve | — | — | Soft match | LIVE | PARTIAL |
 | Send cost quote | Dayfi FX | `buildSendCostQuoteReply` · `fxService` | “How much USDC to send ₦10k?” | No | No | Authoritative rates only | LIVE | UNIT |
@@ -69,11 +69,11 @@ NGN / GHS / KES / ZAR / etc. are **display and interaction currencies** (valuati
 
 | Category | Code | Dayfi | SendHome | Azap entry | KYC | PIN | Validate | Azap status | Test status |
 |---|---|---|---|---|---|---|---|---|---|
-| Airtime | AIRTIME | `BillsService.payBill` | Yes | PAY_BILL | Soft | Yes | Skip | WIRE → LIVE | IN PROGRESS |
-| Data | MOBILEDATA | same | Yes | PAY_BILL | Soft | Yes | Skip | WIRE | IN PROGRESS |
-| Electricity | UTILITYBILLS | same | Yes | PAY_BILL | Soft | Yes | Required | WIRE | IN PROGRESS |
-| Internet | INTSERVICE | same | Yes | PAY_BILL | Soft | Yes | Required | WIRE | IN PROGRESS |
-| TV / Cable | CABLEBILLS | same | Yes | PAY_BILL | Soft | Yes | Required | WIRE | IN PROGRESS |
+| Airtime | AIRTIME | `BillsService.payBill` | Yes | PAY_BILL | Soft | Yes | Skip | LIVE (chat; Flows blocked Meta 139000) | BLOCKED — FLW NGN float 0 |
+| Data | MOBILEDATA | same | Yes | PAY_BILL | Soft | Yes | Skip | LIVE (chat) | BLOCKED — FLW NGN float 0 |
+| Electricity | UTILITYBILLS | same | Yes | PAY_BILL | Soft | Yes | Required | LIVE (chat) | BLOCKED — float / test IDs |
+| Internet | INTSERVICE | same | Yes | PAY_BILL | Soft | Yes | Required | LIVE (chat) | BLOCKED — float / test IDs |
+| TV / Cable | CABLEBILLS | same | Yes | PAY_BILL | Soft | Yes | Required | LIVE (chat) | BLOCKED — float / test IDs |
 
 HTTP: `GET/POST /payments/bills/*` · Infra twin exists for orgs (`infraBillsService`) — **Azap uses consumer `billsService` only.**
 
