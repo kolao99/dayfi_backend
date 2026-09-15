@@ -42,6 +42,41 @@ async function main(app: Express): Promise<void> {
   if (Env.get<string>('NODE_ENV') === AppEnv.PRODUCTION || onRailway) {
     app.set('trust proxy', 1);
   }
+
+  // Fail closed: production must be Stellar Mainnet + Ethereum Mainnet.
+  const {
+    assertStellarMainnetForProduction,
+    assertEthereumMainnetForProduction,
+    probeStellarMainnetHorizon,
+    probeEthereumMainnetRpc,
+    isProductionRuntime,
+  } = await import('./config/productionNetworkGuard');
+  assertStellarMainnetForProduction();
+  assertEthereumMainnetForProduction();
+  if (isProductionRuntime()) {
+    const stellarProbe = await probeStellarMainnetHorizon();
+    console.log(
+      `[network] Stellar Mainnet Horizon: ${stellarProbe.ok ? 'ok' : 'FAIL'} (${stellarProbe.horizonUrl}) ${stellarProbe.detail}`
+    );
+    if (!stellarProbe.ok) {
+      throw new Error(
+        `[FATAL] Cannot reach Stellar Mainnet Horizon: ${stellarProbe.detail}`
+      );
+    }
+    const ethRpc =
+      process.env.EVM_ETHEREUM_RPC_URL?.trim() ||
+      'https://ethereum.publicnode.com';
+    const ethProbe = await probeEthereumMainnetRpc(ethRpc);
+    console.log(
+      `[network] Ethereum Mainnet RPC: ${ethProbe.ok ? 'ok' : 'FAIL'} chainId=${ethProbe.chainId} ${ethProbe.detail}`
+    );
+    if (!ethProbe.ok) {
+      throw new Error(
+        `[FATAL] Ethereum Mainnet RPC check failed: ${ethProbe.detail}`
+      );
+    }
+  }
+
   await db.connect();
 
   const jwtTtl = config?.JWT_TIME_TO_LIVE?.trim() || '30d (default)';

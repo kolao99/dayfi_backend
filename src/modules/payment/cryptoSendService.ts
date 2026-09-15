@@ -5,8 +5,12 @@
 import StellarSdk from '@stellar/stellar-sdk';
 import { ethers } from 'ethers';
 import { db } from '../../config/database';
+import { getStellarConfig } from '../../config/stellarConfig';
 import {
-  isStellarTestnet,
+  assertEvmChainIdMainnet,
+  assertStellarTxNetworkSafe,
+} from '../../config/productionNetworkGuard';
+import {
   resolveEurcIssuer,
   resolveUsdcIssuer,
 } from '../../config/stellarIssuers';
@@ -22,14 +26,9 @@ import {
 } from '../../config/evmChains';
 import { decryptWalletSecret } from './cryptoWalletSecrets';
 
-const horizonUrl = () =>
-  process.env.STELLAR_HORIZON_URL ||
-  (isStellarTestnet()
-    ? 'https://horizon-testnet.stellar.org'
-    : 'https://horizon.stellar.org');
+const horizonUrl = () => getStellarConfig().horizonUrl;
 
-const networkPassphrase = () =>
-  isStellarTestnet() ? StellarSdk.Networks.TESTNET : StellarSdk.Networks.PUBLIC;
+const networkPassphrase = () => getStellarConfig().networkPassphrase;
 
 function stellarAsset(code: string) {
   const c = code.toUpperCase();
@@ -76,11 +75,14 @@ export async function sendStellarAsset(params: {
     throw new Error('Invalid Stellar address (must start with G)');
   }
 
+  const passphrase = networkPassphrase();
+  assertStellarTxNetworkSafe(passphrase);
+
   const server = new StellarSdk.Horizon.Server(horizonUrl());
   const senderAccount = await server.loadAccount(keypair.publicKey());
   const txBuilder = new StellarSdk.TransactionBuilder(senderAccount, {
     fee: StellarSdk.BASE_FEE,
-    networkPassphrase: networkPassphrase(),
+    networkPassphrase: passphrase,
   });
 
   let destExists = true;
@@ -157,6 +159,7 @@ export async function sendEvmToken(params: {
 
   const secret = decryptWalletSecret(row.ethereum_secret_encrypted);
   const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
+  await assertEvmChainIdMainnet(provider);
   const wallet = new ethers.Wallet(secret, provider);
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, wallet);
   const decimals = await token.decimals();

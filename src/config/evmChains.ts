@@ -79,13 +79,29 @@ export function resolveEvmChainConfig(chainKey: string): EvmChainConfig | null {
     return null;
   }
 
+  const ethNet = String(process.env.ETH_NETWORK || 'mainnet')
+    .trim()
+    .toLowerCase();
+  if (ethNet === 'sepolia' || ethNet === 'testnet') {
+    return null;
+  }
+
   const key = chainKey.toLowerCase() as EvmChainKey;
   const base = MAINNET_CHAINS[key];
   if (!base) return null;
 
+  const rpcUrl = envRpc(key, base.rpcUrl);
+  if (
+    /sepolia|goerli|localhost|127\.0\.0\.1/i.test(rpcUrl)
+  ) {
+    throw new Error(
+      `[FATAL] EVM_${key.toUpperCase()}_RPC_URL looks like a non-mainnet endpoint`
+    );
+  }
+
   return {
     key,
-    rpcUrl: envRpc(key, base.rpcUrl),
+    rpcUrl,
     usdc: envToken(key, 'USDC', base.usdc) ?? base.usdc,
     eurc: envToken(key, 'EURC', base.eurc),
     nativeSymbol: base.nativeSymbol,

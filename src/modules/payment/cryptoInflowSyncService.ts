@@ -6,6 +6,7 @@ import {
   resolveEurcIssuer,
   resolveUsdcIssuer,
 } from '../../config/stellarIssuers';
+import { getStellarConfig } from '../../config/stellarConfig';
 import { buildIdempotencyKey, creditWalletBalance } from './balanceService';
 import { convertAmountToUsd } from './fxService';
 
@@ -29,11 +30,7 @@ export type StellarInflowSyncResult = {
 };
 
 function horizonUrl(): string {
-  const fromEnv = process.env.STELLAR_HORIZON_URL?.trim();
-  if (fromEnv) return fromEnv;
-  return isStellarTestnet()
-    ? 'https://horizon-testnet.stellar.org'
-    : 'https://horizon.stellar.org';
+  return getStellarConfig().horizonUrl;
 }
 
 function toAmount(value: unknown): number {
