@@ -80,7 +80,8 @@ describe('azap branding', () => {
       expect(text.toLowerCase()).to.match(/hey|hi|yoo|hello/);
       expect(text).to.not.include('Send ₦5,000 to Kola');
       expect(text).to.not.include('Fund my wallet');
-      expect(text.toLowerCase()).to.include('menu');
+      expect(text.toLowerCase()).to.not.include('/menu');
+      expect(text.toLowerCase()).to.not.include('what would you like to do');
     }
   });
 });

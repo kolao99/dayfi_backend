@@ -33,6 +33,20 @@ export interface LLMProvider {
   readonly name: string;
   planActions(input: LlmPlanRequest): Promise<LlmPlanResult>;
   complete?(messages: LlmChatMessage[]): Promise<string>;
+  /**
+   * Conversational brain: chat OR structured action. Never executes money.
+   * Optional — callers fall back to complete()/stub heuristics.
+   */
+  reason?(messages: LlmChatMessage[]): Promise<
+    | { kind: 'chat'; reply: string; source: 'llm' }
+    | {
+        kind: 'action';
+        actions: LlmPlanResult['plan']['actions'];
+        note?: string;
+        source: 'llm';
+      }
+    | null
+  >;
 }
 
 export function createLlmProviderFromEnv(): LLMProvider {

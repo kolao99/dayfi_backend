@@ -462,6 +462,8 @@ async function processUserUtterance(input: {
   buttonPayload?: string;
   firstName?: string;
   inboundMessageId?: string;
+  mediaKind?: 'voice' | 'image';
+  mediaId?: string;
 }): Promise<void> {
   const conversation = await ensureConversation(input.userId);
   const linkMeta = await getLinkMetadata(input.phoneE164);
@@ -473,18 +475,103 @@ async function processUserUtterance(input: {
     userId: input.userId,
     conversationId: conversation.id,
     role: 'user',
-    type: input.buttonPayload ? 'event' : 'text',
+    type: input.mediaKind === 'voice'
+      ? 'voice'
+      : input.mediaKind === 'image'
+        ? 'image'
+        : input.buttonPayload
+          ? 'event'
+          : 'text',
     content: input.text,
     metadata: {
       source: 'user',
       channel: 'whatsapp',
-      ...(input.buttonPayload
-        ? { event: 'BUTTON_EVENT', buttonPayload: input.buttonPayload }
-        : { event: 'USER_MESSAGE' }),
+      ...(input.mediaKind
+        ? { event: 'USER_MEDIA', mediaKind: input.mediaKind, mediaId: input.mediaId }
+        : input.buttonPayload
+          ? { event: 'BUTTON_EVENT', buttonPayload: input.buttonPayload }
+          : { event: 'USER_MESSAGE' }),
     },
     clientMessageId: input.inboundMessageId ?? null,
   });
   if (stored?.deduplicated) {
+    return;
+  }
+
+  // Phase 2/3 scaffold — acknowledge media; never auto-execute money.
+  if (input.mediaKind === 'voice') {
+    const { ingestVoiceNote } = await import(
+      '../../azap/modality/voiceIngest'
+    );
+    const result = await ingestVoiceNote({
+      userId: input.userId,
+      mediaId: input.mediaId,
+    });
+    if (!result.ok) {
+      await deliverWhatsappReplies(
+        input.phoneE164,
+        input.userId,
+        conversation.id,
+        [
+          {
+            role: 'assistant',
+            type: 'text',
+            content: result.userMessage,
+          },
+        ]
+      );
+      return;
+    }
+    const engine = await handleUserText({
+      userId: input.userId,
+      conversationId: conversation.id,
+      text: result.transcript,
+    });
+    await deliverWhatsappReplies(
+      input.phoneE164,
+      input.userId,
+      conversation.id,
+      engine.replies
+    );
+    return;
+  }
+
+  if (input.mediaKind === 'image') {
+    const { ingestPaymentImage } = await import(
+      '../../azap/modality/imageIngest'
+    );
+    const result = await ingestPaymentImage({
+      userId: input.userId,
+      mediaId: input.mediaId,
+    });
+    const caption = String(input.text || '').trim();
+    // Caption-only image: treat caption as text if present and not placeholder.
+    if (caption && caption !== '[image]') {
+      const engine = await handleUserText({
+        userId: input.userId,
+        conversationId: conversation.id,
+        text: caption,
+      });
+      await deliverWhatsappReplies(
+        input.phoneE164,
+        input.userId,
+        conversation.id,
+        engine.replies
+      );
+      return;
+    }
+    await deliverWhatsappReplies(
+      input.phoneE164,
+      input.userId,
+      conversation.id,
+      [
+        {
+          role: 'assistant',
+          type: 'text',
+          content: result.ok ? result.prompt : result.userMessage,
+        },
+      ]
+    );
     return;
   }
 
@@ -674,6 +761,8 @@ export async function routeWhatsappText(input: {
   buttonPayload?: string;
   firstName?: string;
   inboundMessageId?: string;
+  mediaKind?: 'voice' | 'image';
+  mediaId?: string;
 }): Promise<void> {
   await processUserUtterance(input);
 }

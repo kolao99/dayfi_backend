@@ -81,7 +81,10 @@ describe('azap foundation', () => {
 
   it('entity not-found and ambiguous copy are user-facing', () => {
     expect(formatEntityNotFound({ alias: 'Kola', kind: 'recipient' })).to.include(
-      'Add Kola'
+      'set up'
+    );
+    expect(formatEntityNotFound({ alias: 'Kola', kind: 'recipient' })).to.include(
+      'bank'
     );
     expect(
       formatEntityAmbiguous({

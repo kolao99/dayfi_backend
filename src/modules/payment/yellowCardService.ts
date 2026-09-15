@@ -266,6 +266,54 @@ export class YellowCardService {
     return this.fetchPaymentBySequenceId(sequenceId);
   }
 
+  /**
+   * Direct-settlement collection (BUY: local fiat → crypto to customer wallet).
+   * Only call when live account entitlement is confirmed.
+   */
+  async createDirectSettlementCollection(
+    payload: Record<string, unknown>
+  ): Promise<unknown> {
+    if (!payload || payload.directSettlement !== true) {
+      throw new Error('directSettlement must be true for crypto buy collections');
+    }
+    const info = payload.settlementInfo as Record<string, unknown> | undefined;
+    if (
+      !info ||
+      !info.walletAddress ||
+      !info.cryptoCurrency ||
+      !info.cryptoNetwork
+    ) {
+      throw new Error(
+        'settlementInfo.walletAddress, cryptoCurrency, and cryptoNetwork are required'
+      );
+    }
+    return this.createCollectionRequest(payload);
+  }
+
+  /**
+   * Direct-settlement payment (SELL: crypto → local fiat).
+   * Customer sends crypto to YC-returned address; YC pays bank/momo.
+   */
+  async createDirectSettlementPayment(
+    payload: Record<string, unknown>
+  ): Promise<unknown> {
+    if (!payload || payload.directSettlement !== true) {
+      throw new Error('directSettlement must be true for crypto sell payments');
+    }
+    const info = payload.settlementInfo as Record<string, unknown> | undefined;
+    if (
+      !info ||
+      !info.cryptoCurrency ||
+      !info.cryptoNetwork ||
+      info.cryptoAmount == null
+    ) {
+      throw new Error(
+        'settlementInfo.cryptoCurrency, cryptoNetwork, and cryptoAmount are required'
+      );
+    }
+    return this.createPaymentRequest(payload);
+  }
+
   async resolveBankDetailsYC(
     accountNumber: string,
     networkId: string

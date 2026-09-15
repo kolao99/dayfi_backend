@@ -2,7 +2,9 @@ import { expect } from 'chai';
 import { describe, it } from 'mocha';
 import {
   isBalanceQuery,
+  isCollectionDeferral,
   isKycRequest,
+  isLikelyBankName,
   parseAmount,
   parseDestinationPart,
   parseSendMessage,
@@ -257,5 +259,24 @@ describe('four: intent parser', () => {
     if (ghs.kind === 'unsupported_corridor') {
       expect(ghs.currency).to.equal('GHS');
     }
+  });
+
+  it('parses Actually send 10k to Kola as an interrupting send', () => {
+    const parsed = parseUserMessage('Actually send 10k to Kola');
+    expect(parsed.kind).to.equal('send');
+    if (parsed.kind === 'send') {
+      expect(parsed.amount).to.equal(10000);
+      expect(parsed.recipientName).to.equal('Kola');
+    }
+  });
+
+  it('does not treat deferrals as bank names', () => {
+    expect(isCollectionDeferral("I don't have her account number")).to.equal(
+      true
+    );
+    expect(isCollectionDeferral("I'll get it later")).to.equal(true);
+    expect(isLikelyBankName("I don't have her account number")).to.equal(false);
+    expect(isLikelyBankName('GTBank')).to.equal(true);
+    expect(isLikelyBankName('OPay')).to.equal(true);
   });
 });

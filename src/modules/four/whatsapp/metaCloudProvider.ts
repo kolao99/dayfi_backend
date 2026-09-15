@@ -8,6 +8,9 @@ export type MetaWhatsappInbound = {
   body: string;
   buttonPayload?: string;
   profileName?: string;
+  /** Phase 2/3: audio or image — STT/vision not wired yet. */
+  mediaKind?: 'voice' | 'image';
+  mediaId?: string;
   /** WhatsApp Flow completion (nfm_reply) */
   flowReply?: {
     flowToken: string;
@@ -187,6 +190,32 @@ export function parseMetaInbound(body: unknown): MetaWhatsappInbound[] {
             | undefined;
           buttonPayload = String(button?.payload ?? '').trim() || undefined;
           text = String(button?.text ?? buttonPayload ?? '').trim();
+        } else if (type === 'audio' || type === 'voice') {
+          const audio = message.audio as { id?: string } | undefined;
+          const voice = message.voice as { id?: string } | undefined;
+          const mediaId = String(audio?.id || voice?.id || '').trim();
+          out.push({
+            messageId,
+            fromPhoneE164: from,
+            body: '[voice_note]',
+            profileName: contactName,
+            mediaKind: 'voice',
+            mediaId: mediaId || undefined,
+          });
+          continue;
+        } else if (type === 'image') {
+          const image = message.image as { id?: string; caption?: string } | undefined;
+          const mediaId = String(image?.id || '').trim();
+          const caption = String(image?.caption || '').trim();
+          out.push({
+            messageId,
+            fromPhoneE164: from,
+            body: caption || '[image]',
+            profileName: contactName,
+            mediaKind: 'image',
+            mediaId: mediaId || undefined,
+          });
+          continue;
         }
 
         if (!text && !buttonPayload) continue;

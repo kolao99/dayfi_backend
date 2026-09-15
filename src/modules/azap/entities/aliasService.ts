@@ -143,16 +143,14 @@ export function formatEntityNotFound(input: {
 }): string {
   if (input.kind === 'recipient') {
     return (
-      `I couldn't find a saved recipient called ${input.alias}.\n\n` +
-      `Would you like to:\n` +
-      `• Add ${input.alias}\n` +
-      `• Choose a saved recipient\n` +
-      `• Enter bank details`
+      `I can help you set up *${input.alias}*. ` +
+      `Send me their bank name and account number and we'll continue — ` +
+      `or pick someone already saved.`
     );
   }
   return (
-    `I don't have a saved ${input.kind} called ${input.alias} yet.\n\n` +
-    `Tell me the details and I'll help you set it up.`
+    `I don't have that ${input.kind} set up yet. ` +
+    `Share the details and I'll help you continue.`
   );
 }
 

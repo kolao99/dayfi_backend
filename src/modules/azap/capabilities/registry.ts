@@ -92,9 +92,9 @@ export const AZAP_CAPABILITIES: readonly AzapCapability[] = [
   },
   {
     id: 'crypto_buy',
-    name: 'Fund USDC (fiat or crypto)',
+    name: 'Buy / fund USDC',
     description:
-      'Fund your USDC wallet via NGN bank transfer or crypto deposit — not a CEX buy',
+      'Fund DayFi custodial USDC/EURC via NGN (Flutterwave) or crypto deposit — launch path, not YC CEX buy',
     command: '/buy',
     category: 'crypto',
     enabled: true,
@@ -103,6 +103,7 @@ export const AZAP_CAPABILITIES: readonly AzapCapability[] = [
     requiresPin: true,
     conversationalExamples: [
       'Buy USDC',
+      'Buy ₦50k USDC',
       'Fund my wallet with ₦50,000',
       'Add money',
     ],
@@ -110,16 +111,20 @@ export const AZAP_CAPABILITIES: readonly AzapCapability[] = [
   },
   {
     id: 'crypto_sell',
-    name: 'Cash out USDC',
+    name: 'Cash out to NGN',
     description:
-      'Withdraw USDC value as NGN (or other supported payout) — off-ramp / send',
+      'Off-ramp DayFi USDC/EURC balance to NGN bank send — custodial, not a CEX sell',
     command: '/sell',
     category: 'crypto',
     enabled: true,
     requiresAuth: true,
     requiresKyc: true,
     requiresPin: true,
-    conversationalExamples: ['Sell USDC', 'Cash out to my bank'],
+    conversationalExamples: [
+      'Sell USDC',
+      'Convert my USDC to naira',
+      'Cash out to my bank',
+    ],
     handler: 'crypto_sell',
   },
   {

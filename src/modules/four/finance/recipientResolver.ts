@@ -127,36 +127,47 @@ export function formatRecipientLine(recipient: ResolvedRecipient): string {
   return `${recipient.name} — ${bank} ${maskAccount(recipient.accountNumber)}`;
 }
 
+/** All saved recipients matching a name (exact preferred, else partial). */
+export async function lookupRecipientsByName(
+  userId: string,
+  name: string
+): Promise<ResolvedRecipient[]> {
+  const query = normalizeName(name);
+  if (!query) return [];
+
+  const { recipients } = await listSavedRecipients(userId, 100, 0);
+
+  const toResolved = (row: (typeof recipients)[number]): ResolvedRecipient | null => {
+    if (row.beneficiary.accountType !== 'bank') return null;
+    return {
+      beneficiaryId: row.beneficiary.id,
+      name: row.beneficiary.name,
+      accountNumber: row.beneficiary.accountNumber,
+      bankCode: row.source.networkId,
+      bankName: row.source.networkId,
+      accountType: row.beneficiary.accountType,
+    };
+  };
+
+  const exact = recipients
+    .filter((r) => normalizeName(r.beneficiary.name) === query)
+    .map(toResolved)
+    .filter((r): r is ResolvedRecipient => Boolean(r));
+  if (exact.length) return exact;
+
+  return recipients
+    .filter((r) => normalizeName(r.beneficiary.name).includes(query))
+    .map(toResolved)
+    .filter((r): r is ResolvedRecipient => Boolean(r));
+}
+
 export async function resolveRecipientByName(
   userId: string,
   name: string
 ): Promise<ResolvedRecipient | null> {
-  const query = normalizeName(name);
-  if (!query) return null;
-
-  const { recipients } = await listSavedRecipients(userId, 100, 0);
-
-  const exact = recipients.filter(
-    (r) => normalizeName(r.beneficiary.name) === query
-  );
-  const partial = recipients.filter((r) =>
-    normalizeName(r.beneficiary.name).includes(query)
-  );
-
-  const matches = exact.length ? exact : partial;
+  const matches = await lookupRecipientsByName(userId, name);
   if (matches.length !== 1) return null;
-
-  const row = matches[0];
-  if (row.beneficiary.accountType !== 'bank') return null;
-
-  return {
-    beneficiaryId: row.beneficiary.id,
-    name: row.beneficiary.name,
-    accountNumber: row.beneficiary.accountNumber,
-    bankCode: row.source.networkId,
-    bankName: row.source.networkId,
-    accountType: row.beneficiary.accountType,
-  };
+  return matches[0];
 }
 
 function sleep(ms: number): Promise<void> {

@@ -6,8 +6,12 @@ import {
 } from '../intent/intentService';
 import { handleKycRequest } from '../kyc/kycFlowService';
 import {
+  isAmbiguityClarification,
+  isCollectionDeferral,
   isLikelyBankName,
+  isResumeSendWithNewAmount,
   isSellUsdcIntent,
+  parseAmount,
   parseDestinationPart,
   parseUserMessage,
 } from './intentParser';
@@ -41,17 +45,35 @@ import {
 } from '../finance/yellowCardSendFlow';
 import { buildKycProfileSnapshot } from '../../kyc/smileService';
 import { proposeActionPlanFromText } from '../../azap/core/azapCore';
+import { runConversationalBrain } from '../../azap/conversation/conversationalBrain';
+import {
+  getLastMoneyContext,
+  rememberMoneyContext,
+} from '../../azap/conversation/dialogueContext';
+import { prepareCryptoTrade } from '../../payment/cryptoTradeGate';
+import {
+  replyAmbiguousRecipients,
+  replyBankVerifyFailed,
+  replyCancelled,
+  replyCollectionDeferred,
+  replyIncompleteAccount,
+  replyInsufficientBalance,
+  replyMissingAmount,
+  replyMissingRecipient,
+  replyRecipientNotFound,
+  replyUnknownBank,
+  tryAnswerCapabilityQuestion,
+} from '../../azap/conversation/solutionOriented';
 import { formatMoney } from '../../payment/walletModel';
 import {
   FUND_BUTTONS,
   fundWalletPromptMessage,
   genericNudge,
-  insufficientBalanceMessage,
   transferPrompt,
 } from '../telegram/onboardingService';
 import {
   formatRecipientLine,
-  resolveRecipientByName,
+  lookupRecipientsByName,
   resolveBankRecipient,
   resolveBankName,
   type ResolvedRecipient,
@@ -130,7 +152,7 @@ async function finalizeSendReview(input: {
     const reply: EngineReply = {
       role: 'assistant',
       type: 'choice',
-      content: insufficientBalanceMessage(formatMoney(amount, 'NGN')),
+      content: replyInsufficientBalance(formatMoney(amount, 'NGN')),
       metadata: {
         buttons: FUND_BUTTONS.map((b) => ({ ...b })),
         scope: 'fund',
@@ -172,6 +194,19 @@ async function finalizeSendReview(input: {
     },
   });
 
+  await rememberMoneyContext({
+    userId,
+    conversationId,
+    context: {
+      recipientName: resolved.name,
+      bankName: resolved.bankName,
+      accountNumber: resolved.accountNumber,
+      amount,
+      currency: 'NGN',
+      intent: 'SEND_MONEY',
+    },
+  });
+
   const total = amount + fee;
   const reply: EngineReply = {
     role: 'assistant',
@@ -207,6 +242,10 @@ async function resolveSendDestination(input: {
       reply: EngineReply;
       needsBank?: boolean;
       needsCompleteAccount?: boolean;
+      needsRecipientSetup?: boolean;
+      ambiguous?: boolean;
+      candidates?: ResolvedRecipient[];
+      pendingRecipientLabel?: string;
       accountNumber?: string;
       bankHint?: string;
     }
@@ -223,7 +262,7 @@ async function resolveSendDestination(input: {
           role: 'assistant',
           type: 'text',
           content:
-            `I need the complete ${hint} account number. You entered ${digits} digits; please send the full 10-digit account number.`,
+            replyIncompleteAccount(hint, digits),
         },
         needsCompleteAccount: true,
         accountNumber: bankTarget.accountNumber,
@@ -248,11 +287,12 @@ async function resolveSendDestination(input: {
     const resolved = await resolveBankRecipient(userId, bankTarget);
     if (!resolved.ok) {
       const hint = bankTarget.bankHint || 'bank';
-      let content = `I couldn't verify that ${hint} account. Please check the account number and try again.`;
+      let content = replyBankVerifyFailed(hint);
       if (resolved.reason === 'unknown_bank') {
-        content = `I don't recognize "${hint}". Try a bank name like OPay, GTBank, or Access Bank.`;
+        content = replyUnknownBank(hint);
       } else if (resolved.reason === 'unavailable') {
-        content = `I couldn't reach ${hint} just now. Please try again in a moment.`;
+        content =
+          `I couldn't reach ${hint} just now. Try again in a moment — I'll stay ready.`;
       }
       return {
         ok: false,
@@ -276,18 +316,37 @@ async function resolveSendDestination(input: {
       });
     }
 
-    const resolved = await resolveRecipientByName(userId, recipientName);
-    if (!resolved) {
+    const matches = await lookupRecipientsByName(userId, recipientName);
+    if (matches.length > 1) {
       return {
         ok: false,
+        ambiguous: true,
+        candidates: matches,
+        pendingRecipientLabel: recipientName,
         reply: {
           role: 'assistant',
           type: 'text',
-          content: `I couldn't find a saved contact named "${recipientName}". You can send to a bank account directly, like: Send 2k to OPay 8012345678.`,
+          content: replyAmbiguousRecipients(
+            recipientName,
+            matches.map((m) => ({ name: m.name, bankName: m.bankName }))
+          ),
         },
       };
     }
-    return { ok: true, resolved };
+    if (matches.length === 1) {
+      return { ok: true, resolved: matches[0] };
+    }
+
+    return {
+      ok: false,
+      reply: {
+        role: 'assistant',
+        type: 'text',
+        content: replyRecipientNotFound(recipientName),
+      },
+      needsRecipientSetup: true,
+      pendingRecipientLabel: recipientName,
+    };
   }
 
   return {
@@ -295,8 +354,7 @@ async function resolveSendDestination(input: {
     reply: {
       role: 'assistant',
       type: 'text',
-      content:
-        'Who should I send the money to? You can use a saved name or bank details like Send 2k to OPay 8012345678.',
+      content: replyMissingRecipient(),
     },
   };
 }
@@ -309,7 +367,7 @@ export async function handleUserText(input: {
 }): Promise<EngineResult> {
   const { userId, conversationId, text, skipPlanner } = input;
   const parsed = parseUserMessage(text);
-  const active = await getActiveIntentForConversation(userId, conversationId);
+  let active = await getActiveIntentForConversation(userId, conversationId);
 
   if (parsed.kind === 'cancel') {
     const wasCryptoDeposit = active?.intent === 'FUND_CRYPTO';
@@ -318,8 +376,103 @@ export async function handleUserText(input: {
       role: 'assistant',
       type: 'text',
       content: wasCryptoDeposit
-        ? "Okay, I've cancelled the crypto deposit. What would you like to do next?"
-        : 'Cancelled. What would you like to do next?',
+        ? "Okay, I've cancelled the crypto deposit. " + replyCancelled()
+        : replyCancelled(),
+    };
+    await persistAssistant(userId, conversationId, reply);
+    return { replies: [reply] };
+  }
+
+  // Explicit new money action supersedes active slot collection (no cancel required).
+  if (
+    active &&
+    active.status === 'COLLECTING_INFORMATION' &&
+    shouldInterruptCollection(parsed)
+  ) {
+    await cancelActiveIntent(userId, conversationId);
+    active = null;
+  }
+
+  // Deferral while collecting send details — never treat as bank/account slots.
+  if (
+    active?.intent === 'SEND_MONEY' &&
+    active.status === 'COLLECTING_INFORMATION' &&
+    isCollectionDeferral(text)
+  ) {
+    const slots: Record<string, unknown> = {
+      ...(active.slots as Record<string, unknown>),
+      deferred: true,
+    };
+    // Drop any accidental pending bank label that is sentence-like.
+    delete slots.pendingBankHint;
+    const intent = await upsertActiveIntent({
+      userId,
+      conversationId,
+      intent: 'SEND_MONEY',
+      status: 'COLLECTING_INFORMATION',
+      slots,
+    });
+    const reply: EngineReply = {
+      role: 'assistant',
+      type: 'text',
+      content: replyCollectionDeferred(),
+    };
+    await persistAssistant(userId, conversationId, reply);
+    return { replies: [reply], intentId: intent.id };
+  }
+
+  // Ambiguity clarification: "the other Kola" while candidates are active.
+  if (
+    active?.intent === 'SEND_MONEY' &&
+    active.status === 'COLLECTING_INFORMATION' &&
+    Array.isArray((active.slots as Record<string, unknown>).ambiguousCandidates)
+  ) {
+    const slots = active.slots as Record<string, unknown>;
+    const candidates = slots.ambiguousCandidates as ResolvedRecipient[];
+    if (candidates.length >= 2 && isAmbiguityClarification(text)) {
+      const picked = pickAmbiguousCandidate(text, candidates);
+      const amount = slots.amount != null ? Number(slots.amount) : null;
+      if (picked && amount && amount > 0) {
+        return finalizeSendReview({
+          userId,
+          conversationId,
+          amount,
+          resolved: picked,
+        });
+      }
+      if (picked) {
+        const intent = await upsertActiveIntent({
+          userId,
+          conversationId,
+          intent: 'SEND_MONEY',
+          status: 'COLLECTING_INFORMATION',
+          slots: {
+            recipient: picked,
+            currency: 'NGN',
+            amount: amount && amount > 0 ? amount : undefined,
+          },
+        });
+        const reply: EngineReply = {
+          role: 'assistant',
+          type: 'text',
+          content: amount && amount > 0
+            ? `Got it — ${formatRecipientLine(picked)}. Confirm with your PIN when ready.`
+            : replyMissingAmount(formatRecipientLine(picked)),
+        };
+        // If amount present we already finalize above; this branch is amount-missing.
+        await persistAssistant(userId, conversationId, reply);
+        return { replies: [reply], intentId: intent.id };
+      }
+    }
+  }
+
+  // Capability discovery before money FSMs / planner (backend is source of truth).
+  const capabilityAnswer = tryAnswerCapabilityQuestion(text);
+  if (capabilityAnswer && parsed.kind === 'unknown') {
+    const reply: EngineReply = {
+      role: 'assistant',
+      type: 'text',
+      content: capabilityAnswer,
     };
     await persistAssistant(userId, conversationId, reply);
     return { replies: [reply] };
@@ -422,7 +575,7 @@ export async function handleUserText(input: {
       type: 'text',
       content:
         "I can't convert USDC↔EURC (or other crypto assets) right now — there's no live swap rail. " +
-        'Your wallet stays in USDC. Ask for a NGN/GHS *equivalent*, fund USDC, or send money in local currency.',
+        'Your wallet stays in USDC. I can show a NGN/GHS *equivalent*, help you fund USDC, or send money in local currency.',
     };
     await persistAssistant(userId, conversationId, reply);
     return { replies: [reply] };
@@ -647,7 +800,7 @@ export async function handleUserText(input: {
       const reply: EngineReply = {
         role: 'assistant',
         type: 'text',
-        content: 'Who should I send it to?',
+        content: replyMissingRecipient(),
       };
       await persistAssistant(userId, conversationId, reply);
       return { replies: [reply], intentId: active.id };
@@ -660,6 +813,50 @@ export async function handleUserText(input: {
       amount,
       resolved: recipient,
     });
+  }
+
+  // After cancel: "Actually send 10k instead" → resume last recipient from dialogue context.
+  if (
+    isResumeSendWithNewAmount(text) &&
+    (!active || active.intent !== 'SEND_MONEY')
+  ) {
+    const amount = parseAmount(text);
+    if (amount && amount > 0) {
+      const last = await getLastMoneyContext(conversationId);
+      if (last?.recipientName) {
+        const outcome = await resolveSendDestination({
+          userId,
+          recipientName: last.recipientName,
+          bankTarget: null,
+        });
+        if (outcome.ok) {
+          return finalizeSendReview({
+            userId,
+            conversationId,
+            amount,
+            resolved: outcome.resolved,
+          });
+        }
+        await upsertActiveIntent({
+          userId,
+          conversationId,
+          intent: 'SEND_MONEY',
+          status: 'COLLECTING_INFORMATION',
+          slots: {
+            amount,
+            currency: 'NGN',
+            pendingRecipientLabel: last.recipientName,
+          },
+        });
+        const reply: EngineReply = {
+          role: 'assistant',
+          type: 'text',
+          content: replyRecipientNotFound(last.recipientName),
+        };
+        await persistAssistant(userId, conversationId, reply);
+        return { replies: [reply] };
+      }
+    }
   }
 
   if (
@@ -677,6 +874,22 @@ export async function handleUserText(input: {
     });
 
     if (!outcome.ok) {
+      if (outcome.ambiguous && outcome.candidates?.length) {
+        const intent = await upsertActiveIntent({
+          userId,
+          conversationId,
+          intent: 'SEND_MONEY',
+          status: 'COLLECTING_INFORMATION',
+          slots: {
+            amount: amount > 0 ? amount : undefined,
+            currency: 'NGN',
+            pendingRecipientLabel: parsed.recipientName,
+            ambiguousCandidates: outcome.candidates,
+          },
+        });
+        await persistAssistant(userId, conversationId, outcome.reply);
+        return { replies: [outcome.reply], intentId: intent.id };
+      }
       await persistAssistant(userId, conversationId, outcome.reply);
       return { replies: [outcome.reply], intentId: active.id };
     }
@@ -711,6 +924,53 @@ export async function handleUserText(input: {
     });
   }
 
+  // Bank name already known — user sends account digits next.
+  if (
+    active?.intent === 'SEND_MONEY' &&
+    active.status === 'COLLECTING_INFORMATION'
+  ) {
+    const slots = active.slots as Record<string, unknown>;
+    const pendingBank = String(slots.pendingBankHint || '').trim();
+    const digits = String(text || '').replace(/\D/g, '');
+    if (pendingBank && digits.length === 10 && !/\bk\b/i.test(text)) {
+      const outcome = await resolveSendDestination({
+        userId,
+        recipientName: null,
+        bankTarget: { accountNumber: digits, bankHint: pendingBank },
+      });
+      if (!outcome.ok) {
+        await persistAssistant(userId, conversationId, outcome.reply);
+        return { replies: [outcome.reply], intentId: active.id };
+      }
+      const amount = slots.amount != null ? Number(slots.amount) : null;
+      if (!amount || amount <= 0) {
+        const intent = await upsertActiveIntent({
+          userId,
+          conversationId,
+          intent: 'SEND_MONEY',
+          status: 'COLLECTING_INFORMATION',
+          slots: {
+            recipient: outcome.resolved,
+            currency: 'NGN',
+          },
+        });
+        const reply: EngineReply = {
+          role: 'assistant',
+          type: 'text',
+          content: replyMissingAmount(formatRecipientLine(outcome.resolved)),
+        };
+        await persistAssistant(userId, conversationId, reply);
+        return { replies: [reply], intentId: intent.id };
+      }
+      return finalizeSendReview({
+        userId,
+        conversationId,
+        amount,
+        resolved: outcome.resolved,
+      });
+    }
+  }
+
   if (
     active?.intent === 'SEND_MONEY' &&
     active.status === 'COLLECTING_INFORMATION' &&
@@ -719,6 +979,30 @@ export async function handleUserText(input: {
   ) {
     const slots = active.slots as Record<string, unknown>;
     const pendingAccount = String(slots.pendingAccountNumber ?? '');
+    // "My wife" flow: user sent bank name only → ask for account number.
+    if (
+      !pendingAccount &&
+      (slots.pendingRecipientLabel || slots.amount) &&
+      !slots.pendingBankHint
+    ) {
+      const intent = await upsertActiveIntent({
+        userId,
+        conversationId,
+        intent: 'SEND_MONEY',
+        status: 'COLLECTING_INFORMATION',
+        slots: {
+          ...slots,
+          pendingBankHint: text.trim(),
+        },
+      });
+      const reply: EngineReply = {
+        role: 'assistant',
+        type: 'text',
+        content: `Great. What's the account number for ${text.trim()}?`,
+      };
+      await persistAssistant(userId, conversationId, reply);
+      return { replies: [reply], intentId: intent.id };
+    }
     if (pendingAccount) {
       const outcome = await resolveSendDestination({
         userId,
@@ -745,9 +1029,9 @@ export async function handleUserText(input: {
         const reply: EngineReply = {
           role: 'assistant',
           type: 'text',
-          content: `I found ${formatRecipientLine(
-            outcome.resolved
-          )}. How much would you like to send?`,
+          content: replyMissingAmount(
+            formatRecipientLine(outcome.resolved)
+          ),
         };
         await persistAssistant(userId, conversationId, reply);
         return { replies: [reply], intentId: intent.id };
@@ -914,8 +1198,25 @@ export async function handleUserText(input: {
     let recipientName = parsed.recipientName;
     const bankTarget = parsed.bankTarget;
 
+    if (parsed.pronounRecipient) {
+      const last = await getLastMoneyContext(conversationId);
+      if (last?.recipientName) {
+        recipientName = last.recipientName;
+      } else {
+        const reply: EngineReply = {
+          role: 'assistant',
+          type: 'text',
+          content:
+            "I don't have a recent recipient yet. Who should I send it to — a name or bank details?",
+        };
+        await persistAssistant(userId, conversationId, reply);
+        return { replies: [reply] };
+      }
+    }
+
     if (active?.intent === 'SEND_MONEY') {
       const slots = active.slots as Record<string, unknown>;
+      // Only inherit amount/recipient when this utterance did not name a new destination.
       if (!amount && slots.amount) amount = Number(slots.amount);
       if (!recipientName && !bankTarget) {
         const existing = slots.recipient as { name?: string } | undefined;
@@ -961,9 +1262,24 @@ export async function handleUserText(input: {
         await persistAssistant(userId, conversationId, outcome.reply);
         return { replies: [outcome.reply], intentId: intent.id };
       }
+      if (outcome.ambiguous && outcome.candidates?.length) {
+        const intent = await upsertActiveIntent({
+          userId,
+          conversationId,
+          intent: 'SEND_MONEY',
+          status: 'COLLECTING_INFORMATION',
+          slots: {
+            amount,
+            currency: 'NGN',
+            pendingRecipientLabel: outcome.pendingRecipientLabel || recipientName,
+            ambiguousCandidates: outcome.candidates,
+          },
+        });
+        await persistAssistant(userId, conversationId, outcome.reply);
+        return { replies: [outcome.reply], intentId: intent.id };
+      }
 
-      // Persist amount even on contact-not-found so a corrected destination
-      // can continue the same SEND_MONEY turn.
+      // Persist amount + nickname so bank details can continue this send.
       if (amount && amount > 0) {
         await upsertActiveIntent({
           userId,
@@ -973,12 +1289,26 @@ export async function handleUserText(input: {
           slots: {
             amount,
             currency: 'NGN',
+            ...(outcome.pendingRecipientLabel
+              ? { pendingRecipientLabel: outcome.pendingRecipientLabel }
+              : {}),
+          },
+        });
+      } else if (outcome.pendingRecipientLabel) {
+        await upsertActiveIntent({
+          userId,
+          conversationId,
+          intent: 'SEND_MONEY',
+          status: 'COLLECTING_INFORMATION',
+          slots: {
+            currency: 'NGN',
+            pendingRecipientLabel: outcome.pendingRecipientLabel,
           },
         });
       }
 
       await persistAssistant(userId, conversationId, outcome.reply);
-      return { replies: [outcome.reply] };
+      return { replies: [outcome.reply], intentId: active?.id };
     }
 
     const resolved = outcome.resolved;
@@ -997,9 +1327,9 @@ export async function handleUserText(input: {
       const reply: EngineReply = {
         role: 'assistant',
         type: 'text',
-        content: `I found ${formatRecipientLine(
+        content: `Got ${formatRecipientLine(
           resolved
-        )}. How much would you like to send?`,
+        )}. How much should I send?`,
       };
       await persistAssistant(userId, conversationId, reply);
       return { replies: [reply], intentId: intent.id };
@@ -1074,10 +1404,12 @@ export async function handleUserText(input: {
         content =
           'Which bank is that account with? For example: OPay, GTBank, or Access Bank.';
       } else if (!slots.recipient) {
-        content =
-          'Who should I send it to? Share a saved name or bank details like OPay 8012345678.';
+        const label = String(slots.pendingRecipientLabel || '').trim();
+        content = label
+          ? replyRecipientNotFound(label)
+          : replyMissingRecipient();
       } else if (!slots.amount) {
-        content = 'How much would you like to send?';
+        content = replyMissingAmount();
       } else {
         content =
           'I have your transfer details. Say confirm when you are ready, or cancel to stop.';
@@ -1127,6 +1459,55 @@ export async function handleUserText(input: {
   }
 
   if (!skipPlanner) {
+    // Conversational brain first: ChatGPT-like chat OR structured action.
+    try {
+      const brain = await runConversationalBrain({
+        userId,
+        conversationId,
+        text,
+      });
+      if (brain.kind === 'action' && brain.actions.length) {
+        const dispatched = await dispatchFirstPlanAction({
+          userId,
+          conversationId,
+          action: brain.actions[0],
+        });
+        if (dispatched) {
+          if (brain.note) {
+            const note: EngineReply = {
+              role: 'assistant',
+              type: 'text',
+              content: brain.note,
+            };
+            await persistAssistant(userId, conversationId, note);
+            return {
+              replies: [note, ...dispatched.replies],
+              intentId: dispatched.intentId,
+            };
+          }
+          return {
+            replies: dispatched.replies,
+            intentId: dispatched.intentId,
+          };
+        }
+      }
+      if (brain.kind === 'chat' && brain.reply) {
+        const reply: EngineReply = {
+          role: 'assistant',
+          type: 'text',
+          content: brain.reply,
+        };
+        await persistAssistant(userId, conversationId, reply);
+        return { replies: [reply] };
+      }
+    } catch (err) {
+      console.warn(
+        '[azap/engine] conversational brain',
+        err instanceof Error ? err.message : 'error'
+      );
+    }
+
+    // Legacy planner only if brain did not produce a chat/action.
     try {
       const plan = await proposeActionPlanFromText({
         userId,
@@ -1141,30 +1522,8 @@ export async function handleUserText(input: {
           action: actions[0],
         });
         if (dispatched) {
-          const extra: EngineReply[] = [];
-          if (actions.length > 1) {
-            const summary: EngineReply = {
-              role: 'assistant',
-              type: 'text',
-              content:
-                `I understood ${actions.length} requests. I'll start with the first and keep each one separate — I will not mark all of them done unless each one succeeds.\n\n` +
-                actions
-                  .map((a, i) => {
-                    const bits: string[] = [a.type];
-                    if (a.amount) bits.push(String(a.amount));
-                    if (a.asset) bits.push(String(a.asset));
-                    if (a.network) bits.push(String(a.network));
-                    if (a.recipientReference)
-                      bits.push(String(a.recipientReference));
-                    return `${i + 1}. ${bits.join(' · ')}`;
-                  })
-                  .join('\n'),
-            };
-            await persistAssistant(userId, conversationId, summary);
-            extra.push(summary);
-          }
           return {
-            replies: [...extra, ...dispatched.replies],
+            replies: dispatched.replies,
             intentId: dispatched.intentId,
           };
         }
@@ -1280,11 +1639,52 @@ async function dispatchFirstPlanAction(input: {
 
   if (action.type === 'crypto_buy') {
     await cancelActiveIntent(userId, conversationId);
+    const asset = String(action.asset || 'USDC').toUpperCase();
+    const network = String(action.network || '').trim() || undefined;
+    // Launch path: USDC/EURC = custodial DayFi fund (FLW NGN or on-chain deposit).
+    // YC direct-settlement is a future rail — do not block Nigeria launch on it.
+    const custodialLaunch = !asset || asset === 'USDC' || asset === 'EURC';
+    if (!custodialLaunch) {
+      try {
+        const gate = await prepareCryptoTrade({
+          userId,
+          side: 'buy',
+          asset,
+          network,
+          fiatAmount: action.amount ? Number(action.amount) : null,
+        });
+        if (!gate.ok) {
+          const reply: EngineReply = {
+            role: 'assistant',
+            type: 'text',
+            content: gate.message,
+          };
+          await persistAssistant(userId, conversationId, reply);
+          return { replies: [reply] };
+        }
+        if (gate.ready === false) {
+          const reply: EngineReply = {
+            role: 'assistant',
+            type: 'text',
+            content: gate.message,
+          };
+          await persistAssistant(userId, conversationId, reply);
+          return { replies: [reply] };
+        }
+      } catch (err) {
+        console.warn(
+          '[azap/engine] crypto_buy gate',
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
     const reply: EngineReply = {
       role: 'assistant',
       type: 'choice',
       content:
-        'Buying USDC here means *funding your USDC wallet* — with NGN bank transfer or a crypto deposit. Which do you want?',
+        asset === 'EURC'
+          ? 'Getting EURC means *funding your DayFi wallet* — NGN bank transfer or a crypto deposit. Balances are custodial (DayFi ledger + treasury). Which do you want?'
+          : 'Buying USDC here means *funding your DayFi wallet* — NGN bank transfer (Flutterwave) or a USDC deposit. Balances are custodial (DayFi ledger + treasury), not a non-custodial exchange. Which do you want?',
       metadata: {
         buttons: FUND_BUTTONS.map((b) => ({ ...b })),
         scope: 'fund',
@@ -1295,11 +1695,49 @@ async function dispatchFirstPlanAction(input: {
   }
 
   if (action.type === 'crypto_sell') {
+    await cancelActiveIntent(userId, conversationId);
+    const asset = String(action.asset || 'USDC').toUpperCase();
+    const network = String(action.network || '').trim() || undefined;
+    const custodialLaunch = !asset || asset === 'USDC' || asset === 'EURC';
+    if (!custodialLaunch) {
+      try {
+        const gate = await prepareCryptoTrade({
+          userId,
+          side: 'sell',
+          asset,
+          network,
+          cryptoAmount: action.amount ? Number(action.amount) : null,
+        });
+        if (!gate.ok) {
+          const reply: EngineReply = {
+            role: 'assistant',
+            type: 'text',
+            content: gate.message,
+          };
+          await persistAssistant(userId, conversationId, reply);
+          return { replies: [reply] };
+        }
+        if (gate.ready === false) {
+          const reply: EngineReply = {
+            role: 'assistant',
+            type: 'text',
+            content: gate.message,
+          };
+          await persistAssistant(userId, conversationId, reply);
+          return { replies: [reply] };
+        }
+      } catch (err) {
+        console.warn(
+          '[azap/engine] crypto_sell gate',
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
     const reply: EngineReply = {
       role: 'assistant',
       type: 'text',
       content:
-        'Selling USDC here means *sending/withdrawing value as NGN* (or another supported payout). ' +
+        'Cashing out USDC/EURC means *sending value as NGN* (or another supported payout) from your DayFi balance — custodial off-ramp, not a CEX sell order. ' +
         transferPrompt(),
     };
     await persistAssistant(userId, conversationId, reply);
@@ -1318,5 +1756,53 @@ async function dispatchFirstPlanAction(input: {
     return { replies: [reply] };
   }
 
+  return null;
+}
+
+function shouldInterruptCollection(
+  parsed: ReturnType<typeof parseUserMessage>
+): boolean {
+  if (
+    parsed.kind === 'fund' ||
+    parsed.kind === 'bill_prompt' ||
+    parsed.kind === 'airtime_prompt' ||
+    parsed.kind === 'kyc' ||
+    parsed.kind === 'balance' ||
+    parsed.kind === 'balance_in_currency' ||
+    parsed.kind === 'unsupported_corridor'
+  ) {
+    return true;
+  }
+  if (parsed.kind === 'send') {
+    // New destination or a fully specified send replaces the open collection.
+    return Boolean(parsed.recipientName || parsed.bankTarget || parsed.pronounRecipient);
+  }
+  return false;
+}
+
+function pickAmbiguousCandidate(
+  text: string,
+  candidates: ResolvedRecipient[]
+): ResolvedRecipient | null {
+  if (!candidates.length) return null;
+  const q = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  const numbered = q.match(/\b([1-9])\b/);
+  if (numbered) {
+    const idx = Number(numbered[1]) - 1;
+    if (idx >= 0 && idx < candidates.length) return candidates[idx];
+  }
+
+  for (const c of candidates) {
+    const name = c.name.toLowerCase();
+    if (q.includes(name) && name.length > 2) return c;
+  }
+
+  if (/\b(the\s+)?other\b|\bsecond\b|\blatter\b|\bno\s+wait\b/.test(q)) {
+    return candidates[1] ?? candidates[0];
+  }
+  if (/\bfirst\b|\bformer\b/.test(q)) {
+    return candidates[0];
+  }
   return null;
 }

@@ -150,6 +150,8 @@ async function handleMetaInboundMessage(
       buttonPayload: inbound.buttonPayload,
       firstName,
       inboundMessageId: inbound.messageId,
+      mediaKind: inbound.mediaKind,
+      mediaId: inbound.mediaId,
     });
   } catch (err) {
     console.error('[four/whatsapp] Meta inbound message failed', err);

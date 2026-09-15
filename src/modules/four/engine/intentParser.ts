@@ -25,6 +25,8 @@ export type ParsedUserMessage =
       recipientName: string | null;
       bankTarget?: BankTransferTarget | null;
       raw: string;
+      /** Resolve recipient from last money context (him/her/same). */
+      pronounRecipient?: boolean;
     }
   | { kind: 'send_prompt' }
   | { kind: 'fund' }
@@ -516,15 +518,88 @@ export function parseRecipientUpdate(text: string): string | null {
   return null;
 }
 
+/**
+ * "Send him another 10k" / "Send her 5k" / "Send the same person 20k"
+ * Amount only — recipient resolved from dialogue context in the engine.
+ */
+export function parsePronounSend(text: string): {
+  amount: number;
+  pronoun: true;
+} | null {
+  const trimmed = text.trim();
+  const m = trimmed.match(
+    /^send\s+(?:him|her|them|the same(?:\s+person)?|same (?:guy|one)|that (?:guy|person))\s+(?:another\s+)?(.+)$/i
+  );
+  if (!m?.[1]) return null;
+  const amount = parseAmount(m[1]);
+  if (amount == null || amount <= 0) return null;
+  return { amount, pronoun: true };
+}
+
 export function parseAmountUpdate(text: string): number | null {
   const q = text.toLowerCase().trim();
   if (
     /^(make it|change (it )?to|update to|actually)\s+/i.test(q) ||
+    /instead\b/i.test(q) ||
     /^\d/.test(q)
   ) {
     return parseAmount(text);
   }
   return null;
+}
+
+/** "Actually send 10k instead" after a cancelled transfer — resume last recipient. */
+export function isResumeSendWithNewAmount(text: string): boolean {
+  const q = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  // New recipient present → full send, not resume-last-recipient.
+  if (/\bto\s+[a-z]/i.test(q) && !/\bto\s+(him|her|them|the same)\b/i.test(q)) {
+    return false;
+  }
+  return (
+    /\b(actually|instead)\b/.test(q) &&
+    (/\bsend\b/.test(q) || /\bmake it\b/.test(q)) &&
+    parseAmount(text) != null
+  );
+}
+
+/**
+ * User is deferring / declining to fill an active slot — not bank/account data.
+ * Must never populate account number, bank name, or recipient slots.
+ */
+export function isCollectionDeferral(text: string): boolean {
+  const q = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!q) return false;
+  return (
+    /\b(i\s+)?(don'?t|do not)\s+have\b/.test(q) ||
+    /\b(haven'?t|have not)\s+(got|gotten)\b/.test(q) ||
+    /\bno\s+(account|number|details|bank)\b/.test(q) ||
+    /\bi'?ll\s+get\s+(it|them|that)\s+later\b/.test(q) ||
+    /\bget\s+(it|them|that)\s+later\b/.test(q) ||
+    /\b(not\s+now|maybe\s+later|another\s+time)\b/.test(q) ||
+    /\bi\s+don'?t\s+know\s+(it|the|her|his|their)\b/.test(q)
+  );
+}
+
+/**
+ * Strip discourse markers so "Actually send 10k to Kola" parses as a send.
+ */
+export function normalizeSendUtterance(text: string): string | null {
+  const q = text.trim().replace(/\s+/g, ' ');
+  if (/^send\b/i.test(q)) return q;
+  const m = q.match(
+    /^(?:actually|please|abeg|ok(?:ay)?|wait,?|no\s+wait,?)\s+(send\b.+)$/i
+  );
+  return m?.[1]?.trim() || null;
+}
+
+/** Clarifying among ambiguous saved recipients ("the other Kola"). */
+export function isAmbiguityClarification(text: string): boolean {
+  const q = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  return (
+    /\b(the\s+)?other\b/.test(q) ||
+    /\b(first|second|latter|former)\b/.test(q) ||
+    /^no\s+wait\b/.test(q)
+  );
 }
 
 export function parseUserMessage(text: string): ParsedUserMessage {
@@ -574,6 +649,39 @@ export function parseUserMessage(text: string): ParsedUserMessage {
   }
   if (isSendPrompt(trimmed)) return { kind: 'send_prompt' };
 
+  const pronounSend = parsePronounSend(trimmed);
+  if (pronounSend) {
+    return {
+      kind: 'send',
+      amount: pronounSend.amount,
+      recipientName: null,
+      bankTarget: null,
+      raw: trimmed,
+      pronounRecipient: true,
+    };
+  }
+
+  // Explicit send (incl. "Actually send 10k to Kola") before amount_update /
+  // "actually …" amount-only patterns so collection flows can be interrupted.
+  // Amount-less "Actually send it to Jane" stays recipient_update (keep amount).
+  const sendUtterance = normalizeSendUtterance(trimmed);
+  if (sendUtterance && !/^send\s+it\s+to\b/i.test(sendUtterance)) {
+    const parsed = parseSendMessage(sendUtterance);
+    if (
+      parsed.amount != null ||
+      parsed.recipientName ||
+      parsed.bankTarget
+    ) {
+      return {
+        kind: 'send',
+        amount: parsed.amount,
+        recipientName: parsed.recipientName,
+        bankTarget: parsed.bankTarget,
+        raw: trimmed,
+      };
+    }
+  }
+
   const recipientUpdate = parseRecipientUpdate(trimmed);
   if (recipientUpdate) {
     return {
@@ -586,17 +694,6 @@ export function parseUserMessage(text: string): ParsedUserMessage {
   const amountUpdate = parseAmountUpdate(trimmed);
   if (amountUpdate != null && /make it|change|update|actually/i.test(trimmed)) {
     return { kind: 'amount_update', amount: amountUpdate };
-  }
-
-  if (/^send\b/i.test(trimmed)) {
-    const parsed = parseSendMessage(trimmed);
-    return {
-      kind: 'send',
-      amount: parsed.amount,
-      recipientName: parsed.recipientName,
-      bankTarget: parsed.bankTarget,
-      raw: trimmed,
-    };
   }
 
   // Follow-up destination: "OPay 8131208415" / incomplete "OPay 813120841"
@@ -623,9 +720,25 @@ export function parseUserMessage(text: string): ParsedUserMessage {
   return { kind: 'unknown', raw: trimmed };
 }
 
+const KNOWN_BANK_NAME_RE =
+  /^(opay|o pay|paycom|palmpay|palm pay|gtbank|gtb|guaranty trust|access(?:\s+bank)?|uba|united bank for africa|zenith(?:\s+bank)?|kuda|moniepoint|monie point|first\s*bank|firstbank|fbn|fcmb|sterling(?:\s+bank)?|wema|alat|stanbic|fidelity|union\s+bank|polaris|ecobank|keystone|providus)$/i;
+
 export function isLikelyBankName(text: string): boolean {
   const q = text.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!q || q.length > 40) return false;
   if (/\d{7,}/.test(q)) return false;
-  return /^[a-z0-9][a-z0-9\s'.-]{1,38}$/i.test(q);
+  // Never treat conversational deferrals / sentences as bank names.
+  if (isCollectionDeferral(text)) return false;
+  if (KNOWN_BANK_NAME_RE.test(q)) return true;
+  const words = q.split(/\s+/);
+  if (words.length > 3) return false;
+  if (
+    /\b(i|don'?t|do|not|have|her|his|their|my|account|number|later|get|send|actually|wait|please|want|need)\b/.test(
+      q
+    )
+  ) {
+    return false;
+  }
+  // Short brand-like labels only (e.g. "GTBank", "Access").
+  return /^[a-z][a-z0-9'.-]{1,24}$/i.test(q) || words.length <= 2;
 }

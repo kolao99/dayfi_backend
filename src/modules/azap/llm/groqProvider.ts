@@ -164,8 +164,8 @@ export class GroqLLMProvider implements LLMProvider {
           'https://api.groq.com/openai/v1/chat/completions',
         {
           model: groqModel(),
-          temperature: 0.3,
-          max_tokens: 220,
+          temperature: 0.55,
+          max_tokens: 450,
           messages,
         },
         {
@@ -173,12 +173,80 @@ export class GroqLLMProvider implements LLMProvider {
             Authorization: `Bearer ${key}`,
             'Content-Type': 'application/json',
           },
-          timeout: 20000,
+          timeout: 25000,
         }
       );
       return String(data.choices?.[0]?.message?.content || '').trim();
     } catch {
       return '';
+    }
+  }
+
+  async reason(messages: LlmChatMessage[]): Promise<
+    | { kind: 'chat'; reply: string; source: 'llm' }
+    | {
+        kind: 'action';
+        actions: LlmPlanResult['plan']['actions'];
+        note?: string;
+        source: 'llm';
+      }
+    | null
+  > {
+    const key = groqKey();
+    if (!key) return null;
+
+    try {
+      const { data } = await axios.post<{
+        choices?: { message?: { content?: string } }[];
+      }>(
+        process.env.GROQ_BASE_URL?.trim() ||
+          'https://api.groq.com/openai/v1/chat/completions',
+        {
+          model: groqModel(),
+          temperature: 0.5,
+          max_tokens: 500,
+          response_format: { type: 'json_object' },
+          messages,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 25000,
+        }
+      );
+
+      const content = data.choices?.[0]?.message?.content?.trim();
+      if (!content) return null;
+      const parsed = JSON.parse(content) as {
+        mode?: string;
+        reply?: string;
+        actions?: unknown;
+      };
+      const actions = mapActions(parsed.actions);
+      if (
+        String(parsed.mode || '').toLowerCase() === 'action' &&
+        actions.length
+      ) {
+        return {
+          kind: 'action',
+          actions,
+          note: String(parsed.reply || '').trim() || undefined,
+          source: 'llm',
+        };
+      }
+      const reply = String(parsed.reply || '').trim();
+      if (reply.length >= 2) {
+        return { kind: 'chat', reply, source: 'llm' };
+      }
+      return null;
+    } catch (err) {
+      console.warn(
+        '[azap/llm] groq reason failed',
+        err instanceof Error ? err.message : 'error'
+      );
+      return null;
     }
   }
 }

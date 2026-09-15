@@ -176,8 +176,8 @@ export function fundWalletPromptMessage(): string {
 
 export function insufficientBalanceMessage(amountFormatted: string): string {
   return (
-    `You don't have enough balance to send ${amountFormatted}.\n\n` +
-    'Fund your wallet first — choose an option below:'
+    `That ${amountFormatted} send needs more than what's in your wallet right now. ` +
+    `Fund your wallet first, or send a smaller amount.`
   );
 }
 
@@ -220,16 +220,11 @@ export function pinSecuredMessage(): string {
 }
 
 const SOFT_GREETINGS: Array<(name: string) => string> = [
-  (name) =>
-    `Hey there${name ? `, ${name}` : ''}! 😊 I'm here to help with your money needs. Send /menu to see everything I can do for you!`,
-  (name) =>
-    `Hey${name ? ` ${name}` : ''}! 👋 What can I help you with today? Send /menu anytime to see what I can do.`,
-  () =>
-    `Yoo! 😄 I'm here. Need to send money, fund your wallet, buy airtime, pay a bill, or check your balance? Try /menu.`,
-  (name) =>
-    `Hey there${name ? ` ${name}` : ''} 👋 Good to see you! Just tell me what you need, or send /menu to explore.`,
-  () =>
-    `Hi! 😊 I'm Azap. Tell me what you need and I'll help you sort it out. You can also send /menu to see my options.`,
+  (name) => `Hey${name ? ` ${name}` : ''} 👋 How you doing?`,
+  (name) => `Yoo${name ? ` ${name}` : ''}! What's good?`,
+  () => `Hey! How far?`,
+  (name) => `Hi${name ? ` ${name}` : ''} 😊 I'm here — what's up?`,
+  () => `Hey hey 👋 Ready when you are.`,
 ];
 
 let _greetingIndex = 0;
@@ -320,15 +315,11 @@ export function transferPrompt(): string {
 }
 
 /**
- * Fallback nudge for natural-language users who haven't stated a clear intent.
+ * Fallback nudge when conversation layer has nothing better.
+ * Prefer natural dialogue over dumping a banking menu.
  */
 export function genericNudge(): string {
-  return (
-    'For example:\n' +
-    "• What's my balance?\n" +
-    '• Send ₦20,000 to Kola\n' +
-    '• Fund my wallet'
-  );
+  return `I hear you. You can say things like "send 20k to Tunde", "what's my balance?", or just keep chatting.`;
 }
 
 export function airtimePrompt(): string {
